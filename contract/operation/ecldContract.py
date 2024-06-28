@@ -2,12 +2,15 @@ from web3 import Web3
 from enums import ECNetworkByChainIdDictionary
 from contract.abi.ecldAbi import contract
 from eth_account.messages import encode_defunct
+from web3.middleware.geth_poa import geth_poa_middleware
 
 
 class EcldContract:
-    def __init__(self, network_address):
-        self.provider = Web3(Web3.HTTPProvider(network_address))
-        self.signer = self.provider.eth.default_account
+    def __init__(self, network_address, signer):
+        self.provider = Web3(Web3.HTTPProvider("https://core.bloxberg.org"))
+        self.provider.enable_unstable_package_management_api()
+        self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)
+        self.signer = signer
         self.ecld_contract = self.provider.eth.contract(
             address=network_address, abi=contract["abi"]
         )
@@ -49,7 +52,7 @@ class EcldContract:
     def check_and_set_allowance(self, protocol_address, amount, task_price):
         allowance_amount = Web3.to_wei(amount, "ether")
         task_price_amount = Web3.to_wei(task_price, "ether")
-        current_wallet_address = self.signer
+        current_wallet_address = self.signer.address
         allowance = self.ecld_contract.functions.allowance(
             current_wallet_address, protocol_address
         ).call()
@@ -69,14 +72,14 @@ class EcldContract:
 
     def approve(self, tokens):
         allowance_amount = Web3.to_wei(tokens, "ether")
-        address = self.signer
+        address = self.signer.address
         return self.ecld_contract.functions.approve(
             address, allowance_amount
         ).transact()
 
     def get_balance(self):
         try:
-            address = self.signer
+            address = self.signer.address
             balance = self.ecld_contract.functions.balanceOf(address).call()
             return Web3.from_wei(balance, "ether")
         except Exception as e:

@@ -2,12 +2,15 @@ from web3 import Web3
 from enums import ECNetworkByChainIdDictionary
 from contract.abi.etnyAbi import contract
 from eth_account.messages import encode_defunct
+from web3.middleware.geth_poa import geth_poa_middleware
 
 
 class EtnyContract:
-    def __init__(self, network_address):
-        self.provider = Web3(Web3.HTTPProvider(network_address))
-        self.signer = self.provider.eth.default_account
+    def __init__(self, network_address, signer):
+        self.provider = Web3(Web3.HTTPProvider("https://core.bloxberg.org"))
+        self.provider.enable_unstable_package_management_api()
+        self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)
+        self.signer = signer
         self.etny_contract = self.provider.eth.contract(
             address=network_address, abi=contract["abi"]
         )
@@ -31,7 +34,8 @@ class EtnyContract:
         return self.provider
 
     def get_current_wallet(self):
-        return self.current_wallet
+        # return self.current_wallet
+        return self.signer
 
     def _get_current_wallet(self):
         try:
@@ -43,7 +47,7 @@ class EtnyContract:
 
     def get_balance(self):
         try:
-            address = self.signer
+            address = self.signer.address
             balance = self.etny_contract.functions.balanceOf(address).call()
             return Web3.from_wei(balance, "ether")
         except Exception as e:
@@ -55,4 +59,8 @@ class EtnyContract:
         return ECNetworkByChainIdDictionary[network]
 
     def sign_message(self, message):
-        return self.provider.eth.account.sign_message(encode_defunct(text=message))
+        if isinstance(message, bytes):
+            message = message.decode("utf-8")
+        return self.provider.eth.account.sign_message(
+            encode_defunct(text=message), self.signer._private_key
+        )

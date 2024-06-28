@@ -1,12 +1,16 @@
 from web3 import Web3
 from contract.abi.etnyAbi import contract as etny_contract_abi
 from eth_account.messages import encode_defunct
+from web3.middleware.geth_poa import geth_poa_middleware
 
 
 class BloxbergProtocolContract:
-    def __init__(self, network_address):
-        self.provider = Web3(Web3.HTTPProvider(network_address))
-        self.signer = self.provider.eth.default_account
+    def __init__(self, network_address, signer):
+        self.provider = Web3(Web3.HTTPProvider("https://core.bloxberg.org"))
+        self.provider.enable_unstable_package_management_api()
+        self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)
+
+        self.signer = signer
         self.etny_contract = self.provider.eth.contract(
             address=network_address, abi=etny_contract_abi["abi"]
         )
@@ -16,6 +20,16 @@ class BloxbergProtocolContract:
 
     def contract_address(self):
         return etny_contract_abi["address"]
+
+    @property
+    def __transaction_object(self) -> object:
+        nonce = self.provider.eth.get_transaction_count(self.signer.address)
+        return {
+            "gas": 1000000,
+            "chainId": 8995,
+            "nonce": nonce,
+            "gasPrice": self.provider.to_wei("1", "mwei"),
+        }
 
     def get_signer(self):
         return self.signer
@@ -48,7 +62,7 @@ class BloxbergProtocolContract:
             payload_metadata,
             input_metadata,
             node_address,
-        ).transact()
+        ).build_transaction(self.__transaction_object)
 
     def get_order(self, order_id):
         return self.etny_contract.functions._getOrder(order_id).call()
@@ -72,4 +86,6 @@ class BloxbergProtocolContract:
             return False
 
     def sign_message(self, message):
-        return self.provider.eth.account.sign_message(encode_defunct(text=message))
+        return self.provider.eth.account.sign_message(
+            encode_defunct(text=message), self.signer._private_key
+        )

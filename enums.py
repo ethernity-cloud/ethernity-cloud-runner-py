@@ -2,28 +2,28 @@ from enum import Enum
 
 
 class ECStatus(Enum):
-    ERROR = "error"
-    SUCCESS = "success"
-    DEFAULT = ""
+    ERROR: str = "error"
+    SUCCESS: str = "success"
+    DEFAULT: str = ""
 
 
 class ECEvent(Enum):
-    TASK_CREATED = "ecTaskCreated"
-    TASK_ORDER_PLACED = "ecTaskOrderPlaced"
-    TASK_NOT_PROCESSED = "ecTaskNotProcessed"
-    TASK_PROGRESS = "ecTaskProgress"
-    TASK_COMPLETED = "ecTaskCompleted"
+    TASK_CREATED: str = "ecTaskCreated"
+    TASK_ORDER_PLACED: str = "ecTaskOrderPlaced"
+    TASK_NOT_PROCESSED: str = "ecTaskNotProcessed"
+    TASK_PROGRESS: str = "ecTaskProgress"
+    TASK_COMPLETED: str = "ecTaskCompleted"
 
 
 class ECOrderTaskStatus(Enum):
-    SUCCESS = 0
-    SYSTEM_ERROR = 1
-    KEY_ERROR = 2
-    SYNTAX_WARNING = 3
-    BASE_EXCEPTION = 4
-    PAYLOAD_NOT_DEFINED = 5
-    PAYLOAD_CHECKSUM_ERROR = 6
-    INPUT_CHECKSUM_ERROR = 7
+    SUCCESS: int = 0
+    SYSTEM_ERROR: int = 1
+    KEY_ERROR: int = 2
+    SYNTAX_WARNING: int = 3
+    BASE_EXCEPTION: int = 4
+    PAYLOAD_NOT_DEFINED: int = 5
+    PAYLOAD_CHECKSUM_ERROR: int = 6
+    INPUT_CHECKSUM_ERROR: int = 7
 
 
 class ECOrderTaskStatusCode(Enum):

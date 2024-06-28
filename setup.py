@@ -14,5 +14,6 @@ setup(
         "python-dotenv",
         "tinyec",
         "cryptography",
+        "requests",
     ],
 )

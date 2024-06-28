@@ -1,5 +1,9 @@
+from datetime import datetime
 import time
+from typing import Any, Literal, Union
+from eth_typing import HexStr
 from web3 import Web3
+from web3.contract.contract import Contract
 from ipfs import IPFSClient
 from utils import generate_random_hex_of_size, format_date, is_address, is_null_or_empty
 from crypto import encrypt_with_certificate, decrypt_with_private_key, sha256
@@ -21,13 +25,18 @@ from contract.operation.polygonProtocolContract import PolygonProtocolContract
 from contract.operation.bloxbergProtocolContract import BloxbergProtocolContract
 import contract.abi.etnyAbi as contractBloxberg
 import contract.abi.polygonProtocolAbi as protocolContractPolygon
+from eth_account import Account
 
 LAST_BLOCKS = 20
 VERSION = "v3"
 
+SIGNER_ACCOUNT = Account().from_key("")
+
+ipfsClient = None
+
 
 class EthernityCloudRunner:
-    def __init__(self, network_address=ECAddress.BLOXBERG.TESTNET_ADDRESS):
+    def __init__(self, network_address: str = ECAddress.BLOXBERG.TESTNET_ADDRESS):
         self.node_address = ""
         self.challenge_hash = ""
         self.order_number = -1
@@ -42,7 +51,7 @@ class EthernityCloudRunner:
         self.get_result_from_order_repeats = 1
         self.runner_type = None
         self.network_address = network_address
-        self.resource = 0
+        self.resources: dict = None
         self.enclave_image_ipfs_hash = ""
         self.enclave_public_key = ""
         self.enclave_docker_compose_ipfs_hash = ""
@@ -55,35 +64,40 @@ class EthernityCloudRunner:
             ECAddress.BLOXBERG.TESTNET_ADDRESS,
             ECAddress.BLOXBERG.MAINNET_ADDRESS,
         ]:
-            self.token_contract = EtnyContract(network_address)
-            self.protocol_contract = BloxbergProtocolContract(network_address)
+            self.token_contract = EtnyContract(network_address, SIGNER_ACCOUNT)
+            self.protocol_contract = BloxbergProtocolContract(
+                network_address, SIGNER_ACCOUNT
+            )
             self.protocol_abi = contractBloxberg.contract.get("abi")
         elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
-            self.token_contract = EcldContract(network_address)
+            self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = PolygonProtocolContract(
-                ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS
+                ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT
             )
             self.protocol_abi = protocolContractPolygon.contract.get("abi")
         elif network_address == ECAddress.POLYGON.TESTNET_ADDRESS:
-            self.token_contract = EcldContract(network_address)
+            self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = PolygonProtocolContract(
-                ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS
+                ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT
             )
             self.protocol_abi = protocolContractPolygon.contract.get("abi")
 
-    def is_mainnet(self):
+    def is_mainnet(self) -> bool:
         return self.network_address in [
             ECAddress.BLOXBERG.MAINNET_ADDRESS,
             ECAddress.POLYGON.MAINNET_ADDRESS,
         ]
 
     def dispatch_ec_event(
-        self, message, status=ECStatus.DEFAULT, event_type=ECEvent.TASK_PROGRESS
-    ):
+        self,
+        message: Any,
+        status: str = ECStatus.DEFAULT,
+        event_type: str = ECEvent.TASK_PROGRESS,
+    ) -> None:
         # Custom event dispatching logic
         print(f"Event: {event_type}, Message: {message}, Status: {status}")
 
-    def get_enclave_details(self):
+    def get_enclave_details(self) -> None:
         details = self.image_registry_contract.get_enclave_details_v3(
             self.runner_type, VERSION
         )
@@ -101,13 +115,13 @@ class EthernityCloudRunner:
                 f"ENCLAVE_DOCKER_COMPOSE_IPFS_HASH:{self.enclave_docker_compose_ipfs_hash}"
             )
 
-    def get_tokens_from_faucet(self):
+    def get_tokens_from_faucet(self) -> dict[str, Any] | dict[str, bool]:
         if self.token_contract is None:
             return {"success": False, "message": "Token contract is not initialized."}
         account = self.token_contract.get_current_wallet()
         balance = self.token_contract.get_balance()
         if int(balance) <= 100:
-            tx = self.token_contract.get_faucet_tokens(account)
+            tx = self.token_contract.get_faucet_tokens(account)  # type: ignore
             transaction_hash = tx.hash
             is_processed = self.wait_for_transaction_to_be_processed(
                 self.token_contract, transaction_hash
@@ -120,32 +134,37 @@ class EthernityCloudRunner:
             return {"success": True}
         return {"success": True}
 
-    def get_reason(self, contract, tx_hash):
-        tx = contract.get_provider().get_transaction(tx_hash)
+    def get_reason(
+        self, contract: Contract, tx_hash: str
+    ) -> Any | Literal["Transaction hash not found"]:
+        tx = contract.get_provider().get_transaction(tx_hash)  # type: ignore
         if not tx:
             print("tx not found")
             return "Transaction hash not found"
         del tx.gas_price
-        code = contract.get_provider().call(tx, tx.block_number)
-        reason = Web3.to_utf8_string(f"0x{code[138:]}")
+        code = contract.get_provider().call(tx, tx.block_number)  # type: ignore
+        reason = Web3.to_utf8_string(f"0x{code[138:]}")  # type: ignore
         print(reason)
         return reason.strip()
 
-    def wait_for_transaction_to_be_processed(self, contract, transaction_hash):
-        contract.get_provider().wait_for_transaction(transaction_hash)
-        tx_receipt = contract.get_provider().get_transaction_receipt(transaction_hash)
+    def wait_for_transaction_to_be_processed(
+        self, contract: Contract, transaction_hash: str
+    ) -> bool:
+        contract.get_provider().eth.wait_for_transaction_receipt(transaction_hash)  # type: ignore
+        tx_receipt = contract.get_provider().eth.get_transaction_receipt(transaction_hash)  # type: ignore
         print(tx_receipt)
         return not (not tx_receipt and tx_receipt.status == 0)
 
-    def handle_metamask_connection(self):
+    def handle_metamask_connection(self) -> Any | Literal[False]:
         try:
-            self.token_contract.get_provider().send("eth_requestAccounts", [])
+            # self.token_contract.get_provider().send("eth_requestAccounts", [])
+            self.token_contract.get_provider()
             wallet_address = self.token_contract.get_current_wallet()
             return wallet_address is not None and wallet_address != ""
         except Exception as e:
             return False
 
-    def listen_for_add_do_request_event(self):
+    def listen_for_add_do_request_event(self) -> None:
         interval_repeats = 0
         add_do_request_ev_passed = False
         order_placed_ev_passed = False
@@ -153,7 +172,7 @@ class EthernityCloudRunner:
 
         protocol_contract = self.protocol_contract.get_contract()
 
-        def message_interval():
+        def message_interval() -> None:
             nonlocal interval_repeats
             if interval_repeats % 2 == 0:
                 self.dispatch_ec_event(
@@ -165,7 +184,7 @@ class EthernityCloudRunner:
                 )
             interval_repeats += 1
 
-        def order_approved():
+        def order_approved() -> None:
             nonlocal order_placed_ev_passed
             order_placed_ev_passed = True
             protocol_contract.off("_orderPlacedEV", order_placed_ev)
@@ -181,7 +200,7 @@ class EthernityCloudRunner:
             )
             self.interval = time.setInterval(message_interval, 1000)
 
-        def add_do_request_ev(_from, _do_request):
+        def add_do_request_ev(_from: str, _do_request: str) -> None:
             wallet_address = self.token_contract.get_provider().send(
                 "eth_requestAccounts", []
             )[0]
@@ -205,7 +224,7 @@ class EthernityCloudRunner:
                     order_approved()
                 self.order_placed_timer = time.setInterval(lambda: None, 60 * 1000)
 
-        def order_placed_ev(order_number, do_request_id):
+        def order_placed_ev(order_number: int, do_request_id: str) -> None:
             self.task_has_been_picked_for_approval = True
             if (
                 do_request_id.to_number() == self.do_request
@@ -219,7 +238,7 @@ class EthernityCloudRunner:
                 self.order_number = order_number.to_number()
                 self.do_request_id = do_request_id.to_number()
 
-        def order_closed_ev(order_number):
+        def order_closed_ev(order_number: int) -> None:
             if (
                 self.order_number == order_number.to_number()
                 and not order_closed_ev_passed
@@ -252,7 +271,7 @@ class EthernityCloudRunner:
         protocol_contract.on("_orderPlacedEV", order_placed_ev)
         protocol_contract.on("_orderClosedEV", order_closed_ev)
 
-    def approve_order(self, order_id):
+    def approve_order(self, order_id: int) -> None:
         tx = self.protocol_contract.approve_order(order_id)
         is_processed = self.wait_for_transaction_to_be_processed(
             self.protocol_contract, tx.hash
@@ -265,14 +284,26 @@ class EthernityCloudRunner:
         self.dispatch_ec_event(f"TX hash: {tx.hash}")
         self.node_address = self.protocol_contract.get_order(order_id).dproc
 
-    def get_current_wallet_public_key(self):
+    def get_current_wallet_public_key(self) -> HexStr:
         account = self.token_contract.get_current_wallet()
-        key_b64 = self.ethereum.request(
-            {"method": "eth_getEncryptionPublicKey", "params": [account]}
-        )
-        return Web3.to_hex(Web3.to_bytes(key_b64))
+        key_b64 = account._publicapi._keys.private_key_to_public_key(account._key_obj)
+        # key_b64 = account.address
 
-    def get_v3_image_metadata(self, challenge_hash):
+        # provider = self.token_contract.provider.HTTPProvider
+        # key_b64 = provider.make_request(
+        #     self=provider, method="eth_getEncryptionPublicKey", params=[account]
+        # )
+        # self.web33 = Web3(Web3.HTTPProvider(self.network_address))
+        # key_b64 = self.web33.provider.make_request(
+        #     "eth_getEncryptionPublicKey", [account.]
+        # )
+        # key_b64 = self.ethereum.request(
+        #     {"method": "eth_getEncryptionPublicKey", "params": [account]}
+        # )
+        # return key_b64.to_hex()
+        return key_b64.to_hex()
+
+    def get_v3_image_metadata(self, challenge_hash: str) -> str:
         base64_encrypted_challenge = encrypt_with_certificate(
             challenge_hash, self.enclave_public_key
         )
@@ -280,7 +311,7 @@ class EthernityCloudRunner:
         public_key = self.get_current_wallet_public_key()
         return f"{VERSION}:{self.enclave_image_ipfs_hash}:{self.runner_type}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
 
-    def get_v3_code_metadata(self, code):
+    def get_v3_code_metadata(self, code: str) -> str:
         script_checksum = sha256(code)
         base64_encrypted_script = encrypt_with_certificate(
             code, self.enclave_public_key
@@ -289,14 +320,20 @@ class EthernityCloudRunner:
         script_checksum = self.token_contract.sign_message(script_checksum)
         return f"{VERSION}:{self.script_hash}:{script_checksum}"
 
-    def get_v3_input_metadata(self):
+    def get_v3_input_metadata(self) -> str:
         file_set_checksum = self.token_contract.sign_message(ZERO_CHECKSUM)
         return f"{VERSION}::{file_set_checksum}"
 
     def create_do_request(
-        self, image_metadata, code_metadata, input_metadata, node_address, gas_limit
-    ):
+        self,
+        image_metadata: str,
+        code_metadata: str,
+        input_metadata: str,
+        node_address: str,
+        gas_limit: int | None = None,
+    ) -> Any | bool:
         try:
+            __provider = self.protocol_contract.get_provider()
             self.dispatch_ec_event(
                 f"Submitting transaction for DO request on {format_date()}."
             )
@@ -305,17 +342,46 @@ class EthernityCloudRunner:
                 code_metadata,
                 input_metadata,
                 node_address,
-                self.resource,
-                gas_limit,
+                self.resources,
             )
-            transaction_hash = tx.hash
+            signed_tx = __provider.eth.account.sign_transaction(
+                tx, private_key=self.protocol_contract.signer._private_key
+            )
+            __provider.eth.send_raw_transaction(signed_tx.rawTransaction)
+            transaction_hash = __provider.to_hex(
+                __provider.keccak(signed_tx.rawTransaction)
+            )
             self.do_hash = transaction_hash
-            self.dispatch_ec_event(
-                f"Waiting for transaction {transaction_hash} to be processed..."
-            )
-            is_processed = self.wait_for_transaction_to_be_processed(
-                self.protocol_contract, transaction_hash
-            )
+            receipt = None
+            for i in range(100):
+                try:
+                    self.dispatch_ec_event(
+                        f"Waiting for transaction {transaction_hash} to be processed..."
+                    )
+                    # receipt = __provider.eth.wait_for_transaction_receipt(
+                    #     transaction_hash
+                    # )
+                    is_processed = self.wait_for_transaction_to_be_processed(
+                        self.protocol_contract, transaction_hash
+                    )
+                    # processed_logs = self.protocol_contract.etny_contract_with_provider.events._addDORequestEV().process_receipt(
+                    #     receipt
+                    # )
+                    # self.__dorequest = processed_logs[0].args._rowNumber
+                except KeyError:
+                    time.sleep(1)
+                    continue
+                except Exception as e:
+                    print(e)
+                    raise
+                else:
+                    # print(
+                    #     f"{datetime.now()} - Request {self.__dorequest} created successfuly!",
+                    #     "message",
+                    # )
+                    # self.__dohash = transaction_hash
+                    break
+
             if not is_processed:
                 reason = self.get_reason(self.protocol_contract, transaction_hash)
                 self.dispatch_ec_event(f"Unable to create DO request. {reason}")
@@ -333,7 +399,7 @@ class EthernityCloudRunner:
                 )
             return False
 
-    def parse_order_result(self, result):
+    def parse_order_result(self, result: str) -> dict[str, str]:
         try:
             arr = result.split(":")
             t_bytes = arr[1] if arr[1].startswith("0x") else f"0x{arr[1]}"
@@ -345,7 +411,7 @@ class EthernityCloudRunner:
         except Exception:
             raise ValueError(ECError.PARSE_ERROR)
 
-    def parse_transaction_bytes(self, bytes):
+    def parse_transaction_bytes(self, bytes: bytes) -> dict[str, str]:
         try:
             result = parse_transaction_bytes(self.protocol_abi, bytes)
             arr = result["result"].split(":")
@@ -360,7 +426,7 @@ class EthernityCloudRunner:
         except Exception:
             raise ValueError(ECError.PARSE_ERROR)
 
-    def get_result_from_order(self, order_id):
+    def get_result_from_order(self, order_id: int) -> dict[str, Any] | Any:
         try:
             order_result = self.protocol_contract.get_result_from_order(order_id)
             self.dispatch_ec_event(
@@ -456,8 +522,8 @@ class EthernityCloudRunner:
             self.get_result_from_order_repeats += 1
             return self.get_result_from_order(order_id)
 
-    def process_task(self, code):
-        self.listen_for_add_do_request_event()
+    def process_task(self, code: str) -> bool:
+        # self.listen_for_add_do_request_event()
         self.challenge_hash = generate_random_hex_of_size(20)
         image_metadata = self.get_v3_image_metadata(self.challenge_hash)
         code_metadata = self.get_v3_code_metadata(code)
@@ -466,7 +532,7 @@ class EthernityCloudRunner:
             image_metadata, code_metadata, input_metadata, self.node_address, None
         )
 
-    def reset(self):
+    def reset(self) -> None:
         self.order_number = -1
         self.do_hash = None
         self.do_request_id = -1
@@ -477,12 +543,12 @@ class EthernityCloudRunner:
         self.get_result_from_order_repeats = 1
         self.task_has_been_picked_for_approval = False
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         self.reset()
         contract = self.protocol_contract.get_contract()
-        contract.remove_all_listeners()
+        # contract.remove_all_listeners()
 
-    def is_node_operator_address(self, node_address):
+    def is_node_operator_address(self, node_address: str) -> bool:
         if is_null_or_empty(node_address):
             return True
         if is_address(node_address):
@@ -499,8 +565,84 @@ class EthernityCloudRunner:
         )
         return False
 
-    def initialize_storage(
-        self, ipfs_address: str, protocol: str = "", port: int = None, token: str = ""
-    ) -> None:
+    def initialize_storage(self, ipfs_address: str, token: str = "") -> None:
         global ipfsClient
-        ipfsClient = IPFSClient(ipfs_address, protocol, port, token)
+        ipfsClient = IPFSClient(ipfs_address, token)
+
+    def run(
+        self,
+        runner_type: str,
+        code: str,
+        node_address: str,
+        resources: Union[dict, None] = None,
+    ) -> None:
+        if resources is None:
+            self.resources = {
+                "taskPrice": 10,
+                "cpu": 1,
+                "memory": 1,
+                "storage": 40,
+                "bandwidth": 1,
+                "duration": 1,
+                "validators": 1,
+            }
+            resources = self.resources
+        else:
+            self.resources = resources
+        try:
+            balance = self.token_contract.get_balance()
+            balance = int(balance)
+
+            if balance < resources["taskPrice"]:
+                self.dispatch_ec_event(
+                    f"Your wallet balance ({balance}/{resources['taskPrice']}) is insufficient to cover the requested task price. The task has been declined.",
+                    ECStatus.ERROR,
+                )
+                return
+
+            self.node_address = node_address
+
+            is_node_operator_address = self.is_node_operator_address(node_address)
+            if is_node_operator_address:
+                self.runner_type = runner_type
+                self.image_registry_contract = ImageRegistryContract(
+                    self.network_address, runner_type, SIGNER_ACCOUNT
+                )
+                self.cleanup()
+                self.dispatch_ec_event("Started processing task...")
+
+                self.token_contract.initialize()
+
+                connected = self.handle_metamask_connection()
+                if connected:
+                    self.get_enclave_details()
+                    if self.network_address in [
+                        ECAddress.POLYGON.MAINNET_ADDRESS,
+                        ECAddress.POLYGON.TESTNET_ADDRESS,
+                    ]:
+                        self.dispatch_ec_event(
+                            "Checking for the allowance on the current wallet..."
+                        )
+                        passed_allowance = self.token_contract.check_and_set_allowance(
+                            self.protocol_contract.contract_address(),
+                            "100",
+                            str(resources["taskPrice"]),
+                        )
+                        if not passed_allowance:
+                            self.dispatch_ec_event(
+                                "Unable to set allowance.", ECStatus.ERROR
+                            )
+                            return
+                        self.dispatch_ec_event("Allowance checking completed.")
+
+                    can_process_task = self.process_task(code)
+                    if not can_process_task:
+                        self.dispatch_ec_event(
+                            "Unable to proceed with the task; exiting.", ECStatus.ERROR
+                        )
+                else:
+                    self.dispatch_ec_event(
+                        "Unable to connect to MetaMask", ECStatus.ERROR
+                    )
+        except Exception as e:
+            self.dispatch_ec_event(e, ECStatus.ERROR)

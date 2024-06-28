@@ -1,14 +1,18 @@
 from web3 import Web3
+from web3.contract.contract import Contract
 from contract.abi.polygonProtocolAbi import contract
 from eth_account.messages import encode_defunct
 import os
+from web3.middleware.geth_poa import geth_poa_middleware
 
 
 class PolygonProtocolContract:
-    def __init__(self, network_address):
+    def __init__(self, network_address, signer):
         self.network_address = network_address
-        self.provider = Web3(Web3.HTTPProvider(network_address))
-        self.signer = self.provider.eth.default_account
+        self.provider = Web3(Web3.HTTPProvider("https://core.bloxberg.org"))
+        self.provider.enable_unstable_package_management_api()
+        self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)
+        self.signer = signer
         self.protocol_contract = self.provider.eth.contract(
             address=network_address, abi=contract["abi"]
         )
@@ -22,7 +26,7 @@ class PolygonProtocolContract:
     def get_signer(self):
         return self.signer
 
-    def get_contract(self):
+    def get_contract(self) -> type[Contract]:
         return self.protocol_contract
 
     def get_provider(self):
