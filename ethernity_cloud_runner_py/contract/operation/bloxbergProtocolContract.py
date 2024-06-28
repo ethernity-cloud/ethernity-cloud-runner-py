@@ -1,5 +1,5 @@
 from web3 import Web3
-from contract.abi.etnyAbi import contract as etny_contract_abi
+from ...contract.abi.etnyAbi import contract as etny_contract_abi
 from eth_account.messages import encode_defunct
 from web3.middleware.geth_poa import geth_poa_middleware
 

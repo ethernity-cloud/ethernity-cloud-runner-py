@@ -1,6 +1,6 @@
 from web3 import Web3
-from enums import ECNetworkByChainIdDictionary
-from contract.abi.etnyAbi import contract
+from ...enums import ECNetworkByChainIdDictionary
+from ...contract.abi.etnyAbi import contract
 from eth_account.messages import encode_defunct
 from web3.middleware.geth_poa import geth_poa_middleware
 

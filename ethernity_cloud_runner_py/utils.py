@@ -8,7 +8,7 @@ from web3.auto import w3
 
 # from eth_keys import keys
 from eth_utils.hexadecimal import decode_hex, encode_hex
-from crypto import sha256
+from .crypto import sha256
 
 
 def delay(seconds):

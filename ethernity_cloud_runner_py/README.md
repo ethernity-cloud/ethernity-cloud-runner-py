@@ -47,56 +47,40 @@ To execute a new task using the Ethernity Cloud Runner, follow the straightforwa
 ```python
 # ethernity_task.py
 
-from ethernity_cloud_runner import EthernityCloudRunner
-from enums import ECEvent, ECStatus
-from utils import delay
+import os
+import sys
 
-def execute_task():
-    ipfs_address = 'https://ipfs.ethernity.cloud:5001'
-    code = 'print("Hello, World!")'
+sys.path.append(os.getcwd() + "/ethernity_cloud_runner_py")
 
-    def on_task_created(e):
-        print('Task published.')
+from ethernity_cloud_runner_py.runner import EthernityCloudRunner
+from ethernity_cloud_runner_py.enums import ECEvent, ECStatus
+from ethernity_cloud_runner_py.utils import delay
 
-    def on_task_order_placed():
-        print('Task order placed and approved, started processing.')
 
-    def on_task_progress(e):
-        if e['status'] == ECStatus.ERROR:
-            print(f"Error: {e['message']}")
-        else:
-            print(e['message'])
-
-    def on_task_not_processed(e):
-        print('Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price.')
-
-    def on_task_completed(e):
-        print(f"Task Result: {e['result']}; Task code: {e['resultTaskCode']}")
+def execute_task() -> None:
+    ipfs_address = "https://ipfs.ethernity.cloud:5001/api/v0"
+    code = '___etny_result___("Hello, World!")'
 
     runner = EthernityCloudRunner()
-    runner.initialize_storage(ipfs_address, 'https', 5001, '')
-
-    runner.add_event_listener(ECEvent.TASK_CREATED, on_task_created)
-    runner.add_event_listener(ECEvent.TASK_ORDER_PLACED, on_task_order_placed)
-    runner.add_event_listener(ECEvent.TASK_PROGRESS, on_task_progress)
-    runner.add_event_listener(ECEvent.TASK_NOT_PROCESSED, on_task_not_processed)
-    runner.add_event_listener(ECEvent.TASK_COMPLETED, on_task_completed)
+    runner.initialize_storage(ipfs_address)
 
     resources = {
-        'taskPrice': 10,
-        'cpu': 1,
-        'memory': 1,
-        'storage': 40,
-        'bandwidth': 1,
-        'duration': 1,
-        'validators': 1
+        "taskPrice": 10,
+        "cpu": 1,
+        "memory": 1,
+        "storage": 40,
+        "bandwidth": 1,
+        "duration": 1,
+        "validators": 1,
     }
     # this will execute a new task using Python template and will run the code provided above
     # the code will run on the TESTNET network
-    runner.run('PYNITHY_RUNNER_TESTNET', code, '', resources)
+    runner.run("etny-pynithy-testnet", code, "", resources)
+
 
 if __name__ == "__main__":
     execute_task()
+
 ```
 
 Save the above script as `ethernity_task.py` and run it from the command line:

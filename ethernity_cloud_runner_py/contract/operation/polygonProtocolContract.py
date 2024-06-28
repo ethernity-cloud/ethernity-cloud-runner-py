@@ -1,6 +1,6 @@
 from web3 import Web3
 from web3.contract.contract import Contract
-from contract.abi.polygonProtocolAbi import contract
+from ...contract.abi.polygonProtocolAbi import contract
 from eth_account.messages import encode_defunct
 import os
 from web3.middleware.geth_poa import geth_poa_middleware

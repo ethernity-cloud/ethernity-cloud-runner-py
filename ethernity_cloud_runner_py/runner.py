@@ -4,10 +4,15 @@ from typing import Any, Literal, Union
 from eth_typing import HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
-from ipfs import IPFSClient
-from utils import generate_random_hex_of_size, format_date, is_address, is_null_or_empty
-from crypto import encrypt_with_certificate, decrypt_with_private_key, sha256
-from enums import (
+from .ipfs import IPFSClient
+from .utils import (
+    generate_random_hex_of_size,
+    format_date,
+    is_address,
+    is_null_or_empty,
+)
+from .crypto import encrypt_with_certificate, decrypt_with_private_key, sha256
+from .enums import (
     ECEvent,
     ECStatus,
     ECOrderTaskStatus,
@@ -18,13 +23,13 @@ from enums import (
     ECNetworkNameDictionary,
     ECNetworkName1Dictionary,
 )
-from contract.operation.etnyContract import EtnyContract
-from contract.operation.ecldContract import EcldContract
-from contract.operation.imageRegistryContract import ImageRegistryContract
-from contract.operation.polygonProtocolContract import PolygonProtocolContract
-from contract.operation.bloxbergProtocolContract import BloxbergProtocolContract
-import contract.abi.etnyAbi as contractBloxberg
-import contract.abi.polygonProtocolAbi as protocolContractPolygon
+from .contract.operation.etnyContract import EtnyContract
+from .contract.operation.ecldContract import EcldContract
+from .contract.operation.imageRegistryContract import ImageRegistryContract
+from .contract.operation.polygonProtocolContract import PolygonProtocolContract
+from .contract.operation.bloxbergProtocolContract import BloxbergProtocolContract
+from .contract.abi.etnyAbi import contract as contractBloxberg
+from .contract.abi.polygonProtocolAbi import contract as protocolContractPolygon
 from eth_account import Account
 
 LAST_BLOCKS = 20
@@ -68,19 +73,19 @@ class EthernityCloudRunner:
             self.protocol_contract = BloxbergProtocolContract(
                 network_address, SIGNER_ACCOUNT
             )
-            self.protocol_abi = contractBloxberg.contract.get("abi")
+            self.protocol_abi = contractBloxberg.get("abi")
         elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
             self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = PolygonProtocolContract(
                 ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT
             )
-            self.protocol_abi = protocolContractPolygon.contract.get("abi")
+            self.protocol_abi = protocolContractPolygon.get("abi")
         elif network_address == ECAddress.POLYGON.TESTNET_ADDRESS:
             self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = PolygonProtocolContract(
                 ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT
             )
-            self.protocol_abi = protocolContractPolygon.contract.get("abi")
+            self.protocol_abi = protocolContractPolygon.get("abi")
 
     def is_mainnet(self) -> bool:
         return self.network_address in [

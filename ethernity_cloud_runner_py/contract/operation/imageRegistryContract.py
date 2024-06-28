@@ -1,6 +1,6 @@
 from web3 import Web3
-from enums import ECAddress, ECRunner
-from contract.abi.imageRegistryAbi import contract
+from ...enums import ECAddress, ECRunner
+from ...contract.abi.imageRegistryAbi import contract
 from eth_utils.address import to_checksum_address
 from web3.middleware.geth_poa import geth_poa_middleware
 from web3 import Web3
