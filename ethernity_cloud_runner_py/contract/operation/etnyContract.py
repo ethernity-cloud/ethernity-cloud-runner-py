@@ -3,10 +3,11 @@ from ...enums import ECNetworkByChainIdDictionary
 from ...contract.abi.etnyAbi import contract
 from eth_account.messages import encode_defunct
 from web3.middleware.geth_poa import geth_poa_middleware
+from typing import Any
 
 
 class EtnyContract:
-    def __init__(self, network_address, signer):
+    def __init__(self, network_address, signer) -> None:
         self.provider = Web3(Web3.HTTPProvider("https://core.bloxberg.org"))
         self.provider.enable_unstable_package_management_api()
         self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)
@@ -23,6 +24,9 @@ class EtnyContract:
 
     def contract_address(self):
         return contract["address"]
+
+    def getOrder(self, orderId: int) -> Any:
+        return self.etny_contract.functions.getOrder(orderId).call()
 
     def get_signer(self):
         return self.signer

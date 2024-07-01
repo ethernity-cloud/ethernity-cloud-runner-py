@@ -4,6 +4,7 @@ from typing import Any, Literal, Union
 from eth_typing import HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
+from web3.exceptions import TimeExhausted, TransactionNotFound
 from .ipfs import IPFSClient
 from .utils import (
     generate_random_hex_of_size,
@@ -35,7 +36,9 @@ from eth_account import Account
 LAST_BLOCKS = 20
 VERSION = "v3"
 
-SIGNER_ACCOUNT = Account().from_key("")
+SIGNER_ACCOUNT = Account().from_key(
+    "0x42585047d770516c039c8c1e0e76050f4c51b04b62a8d0d40986ab1949fe4317"
+)
 
 ipfsClient = None
 
@@ -62,6 +65,7 @@ class EthernityCloudRunner:
         self.enclave_docker_compose_ipfs_hash = ""
         self.token_contract = None
         self.protocol_contract = None
+        self.token_with_protocol = None
         self.protocol_abi = None
         self.image_registry_contract = ImageRegistryContract(self.network_address)
 
@@ -86,6 +90,8 @@ class EthernityCloudRunner:
                 ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT
             )
             self.protocol_abi = protocolContractPolygon.get("abi")
+
+        self.token_with_protocol = self.protocol_contract.ethernity_contract
 
     def is_mainnet(self) -> bool:
         return self.network_address in [
@@ -153,10 +159,21 @@ class EthernityCloudRunner:
         return reason.strip()
 
     def wait_for_transaction_to_be_processed(
-        self, contract: Contract, transaction_hash: str
+        self, contract: Contract, transaction_hash: str, attempt: int = 0
     ) -> bool:
-        contract.get_provider().eth.wait_for_transaction_receipt(transaction_hash)  # type: ignore
-        tx_receipt = contract.get_provider().eth.get_transaction_receipt(transaction_hash)  # type: ignore
+        while True and attempt < 120:
+            try:
+                contract.get_provider().eth.wait_for_transaction_receipt(transaction_hash)  # type: ignore
+                tx_receipt = contract.get_provider().eth.get_transaction_receipt(transaction_hash)  # type: ignore
+                if tx_receipt:
+                    break
+            except TransactionNotFound:
+                # we need to sleep here to avoid spamming the node
+                time.sleep(1)
+                self.wait_for_transaction_to_be_processed(
+                    contract, transaction_hash, attempt + 1
+                )
+
         print(tx_receipt)
         return not (not tx_receipt and tx_receipt.status == 0)
 
@@ -287,25 +304,12 @@ class EthernityCloudRunner:
             return
         self.dispatch_ec_event("Order successfully approved!", ECStatus.SUCCESS)
         self.dispatch_ec_event(f"TX hash: {tx.hash}")
-        self.node_address = self.protocol_contract.get_order(order_id).dproc
+        # self.node_address = self.protocol_contract.get_order(order_id)[1]
 
     def get_current_wallet_public_key(self) -> HexStr:
         account = self.token_contract.get_current_wallet()
         key_b64 = account._publicapi._keys.private_key_to_public_key(account._key_obj)
-        # key_b64 = account.address
 
-        # provider = self.token_contract.provider.HTTPProvider
-        # key_b64 = provider.make_request(
-        #     self=provider, method="eth_getEncryptionPublicKey", params=[account]
-        # )
-        # self.web33 = Web3(Web3.HTTPProvider(self.network_address))
-        # key_b64 = self.web33.provider.make_request(
-        #     "eth_getEncryptionPublicKey", [account.]
-        # )
-        # key_b64 = self.ethereum.request(
-        #     {"method": "eth_getEncryptionPublicKey", "params": [account]}
-        # )
-        # return key_b64.to_hex()
         return key_b64.to_hex()
 
     def get_v3_image_metadata(self, challenge_hash: str) -> str:
@@ -323,11 +327,11 @@ class EthernityCloudRunner:
         )
         self.script_hash = ipfsClient.upload_to_ipfs(base64_encrypted_script)
         script_checksum = self.token_contract.sign_message(script_checksum)
-        return f"{VERSION}:{self.script_hash}:{script_checksum}"
+        return f"{VERSION}:{self.script_hash}:{script_checksum.signature.hex()}"
 
     def get_v3_input_metadata(self) -> str:
         file_set_checksum = self.token_contract.sign_message(ZERO_CHECKSUM)
-        return f"{VERSION}::{file_set_checksum}"
+        return f"{VERSION}::{file_set_checksum.signature.hex()}"
 
     def create_do_request(
         self,
@@ -342,20 +346,14 @@ class EthernityCloudRunner:
             self.dispatch_ec_event(
                 f"Submitting transaction for DO request on {format_date()}."
             )
-            tx = self.protocol_contract.add_do_request(
+            transaction_hash = self.protocol_contract.add_do_request(
                 image_metadata,
                 code_metadata,
                 input_metadata,
                 node_address,
                 self.resources,
             )
-            signed_tx = __provider.eth.account.sign_transaction(
-                tx, private_key=self.protocol_contract.signer._private_key
-            )
-            __provider.eth.send_raw_transaction(signed_tx.rawTransaction)
-            transaction_hash = __provider.to_hex(
-                __provider.keccak(signed_tx.rawTransaction)
-            )
+
             self.do_hash = transaction_hash
             receipt = None
             for i in range(100):
@@ -363,16 +361,17 @@ class EthernityCloudRunner:
                     self.dispatch_ec_event(
                         f"Waiting for transaction {transaction_hash} to be processed..."
                     )
-                    # receipt = __provider.eth.wait_for_transaction_receipt(
-                    #     transaction_hash
-                    # )
+
                     is_processed = self.wait_for_transaction_to_be_processed(
                         self.protocol_contract, transaction_hash
                     )
-                    # processed_logs = self.protocol_contract.etny_contract_with_provider.events._addDORequestEV().process_receipt(
-                    #     receipt
-                    # )
-                    # self.__dorequest = processed_logs[0].args._rowNumber
+                    receipt = __provider.eth.wait_for_transaction_receipt(
+                        transaction_hash
+                    )
+                    processed_logs = self.token_with_protocol.events._addDORequestEV().process_receipt(
+                        receipt
+                    )
+                    self.do_request = processed_logs[0].args._rowNumber
                 except KeyError:
                     time.sleep(1)
                     continue
@@ -380,11 +379,11 @@ class EthernityCloudRunner:
                     print(e)
                     raise
                 else:
-                    # print(
-                    #     f"{datetime.now()} - Request {self.__dorequest} created successfuly!",
-                    #     "message",
-                    # )
-                    # self.__dohash = transaction_hash
+                    print(
+                        f"{datetime.now()} - Request {self.do_request} created successfuly!",
+                        "message",
+                    )
+                    self.do_hash = transaction_hash
                     break
 
             if not is_processed:
@@ -434,6 +433,7 @@ class EthernityCloudRunner:
     def get_result_from_order(self, order_id: int) -> dict[str, Any] | Any:
         try:
             order_result = self.protocol_contract.get_result_from_order(order_id)
+            self.protocol_contract.ethernity_contract.caller(transaction={'from': SIGNER_ACCOUNT.address)._getResultFromOrder(order_id)
             self.dispatch_ec_event(
                 f"Task with order number {order_id} was successfully processed at {format_date()}."
             )
@@ -533,9 +533,84 @@ class EthernityCloudRunner:
         image_metadata = self.get_v3_image_metadata(self.challenge_hash)
         code_metadata = self.get_v3_code_metadata(code)
         input_metadata = self.get_v3_input_metadata()
-        return self.create_do_request(
+        do_sent_successfuly = self.create_do_request(
             image_metadata, code_metadata, input_metadata, self.node_address, None
         )
+        if do_sent_successfuly:
+            self._wait_for_processor()
+            return True
+
+        return False
+
+    def _wait_for_processor(self) -> None:
+        print(str(datetime.now()) + f" - Waiting for Ethernity network...", "message")
+        while True:
+            try:
+                order = self.__find_order(self.do_request)
+            except Exception as e:
+                print("--------", str(e))
+            if order is not None:
+                print("")
+                print(f"{datetime.now()} - Connected!", "info")
+                if self.__approve_order(order):
+                    break
+
+                # if self._redistribute is True and self.__local:
+                #     print(
+                #         f"{datetime.now()} - Checking IPFS payload distribution...",
+                #         "message",
+                #     )
+                #     scripthash = self.__check_ipfs_upload(self.__script)
+                #     filesethash = self.__check_ipfs_upload(self.__fileset, True)
+                #     if scripthash is not None and filesethash is not None:
+                #         print(
+                #             f"{datetime.now()} - IPFS payload distribution confirmed!",
+                #             "info",
+                #         )
+                if self.get_result_from_order(order):
+                    break
+            else:
+                time.sleep(5)
+
+    def __find_order(self, doreq: int) -> Union[int, None]:
+        count = self.token_with_protocol.functions._getOrdersCount().call()
+        for i in range(count - 1, count - 5, -1):
+            order = self.token_with_protocol.caller()._getOrder(i)
+            if order[2] == doreq and order[4] == 0:
+                return i
+        return None
+
+    def __approve_order(self, order: int) -> bool:
+        transaction_hash = self.protocol_contract.approve_order(order)
+
+        receipt = None
+        for i in range(100):
+            try:
+                receipt = self.protocol_contract.get_provider().eth.wait_for_transaction_receipt(
+                    transaction_hash
+                )
+                self.node_address = self.protocol_contract.get_order(order)[1]
+            except KeyError:
+                time.sleep(1)
+                continue
+            except TimeExhausted:
+                raise
+            except Exception as e:
+                print("erorr = ", e)
+                raise
+            else:
+                print(f"{datetime.now()} - Order {order} approved successfuly!", "info")
+                print(f"{datetime.now()} - TX Hash: {transaction_hash}", "message")
+                break
+
+        if receipt is None:
+            print(
+                f"{datetime.now()} - Unable to approve order, please check connectivity with bloxberg node",
+                "warning",
+            )
+            return True
+
+        return False
 
     def reset(self) -> None:
         self.order_number = -1

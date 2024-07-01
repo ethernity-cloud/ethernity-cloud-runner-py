@@ -15,7 +15,8 @@ class EcldContract:
             address=network_address, abi=contract["abi"]
         )
         self.ecld_contract_with_provider = self.provider.eth.contract(
-            address=network_address, abi=contract["abi"]
+            address=network_address,
+            abi=contract["abi"],
         )
         self.current_wallet = None
 
