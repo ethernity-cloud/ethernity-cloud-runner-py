@@ -1,48 +1,36 @@
 from datetime import datetime
 import random
-import hashlib
 import time
+from typing import Any
 from eth_account import Account
-from web3 import Web3
 from web3.auto import w3
+from eth_utils.address import to_checksum_address
 
-# from eth_keys import keys
 from eth_utils.hexadecimal import decode_hex, encode_hex
 from .crypto import sha256
 
 
-def delay(seconds):
+def delay(seconds: int) -> None:
     return time.sleep(seconds)
 
 
-def get_retry_delay(retry_count, base_delay=1):
+def get_retry_delay(retry_count: int, base_delay: int = 1) -> int:
     return base_delay * 2**retry_count
 
 
-def format_date(dt=None):
-    if not dt:
-        dt = datetime.now()
+def format_date(dt: datetime = datetime.now()) -> str:
     return dt.strftime("%d/%m/%Y %H:%M:%S")
 
 
-# def format_date():
-#     from datetime import datetime
-#     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-
-def generate_random_hex_of_size(size):
+def generate_random_hex_of_size(size: int) -> str:
     return "".join(random.choice("0123456789abcdef") for _ in range(size))
-
-
-# def generate_random_hex_of_size(size):
-#     return ''.join(random.choices(string.hexdigits, k=size)).lower()
 
 
 def is_null_or_empty(value: str) -> bool:
     return value is None or value == ""
 
 
-def generate_wallet(client_challenge, enclave_challenge):
+def generate_wallet(client_challenge: str, enclave_challenge: str) -> Any:
     try:
         encoded = client_challenge + enclave_challenge
         hash = sha256(sha256(encoded, True), True)
@@ -59,23 +47,15 @@ def generate_wallet(client_challenge, enclave_challenge):
 #     return private_key.public_key.to_checksum_address()
 
 
-def is_address(address):
+def is_address(address: str) -> bool:
     try:
-        checksum_address = Web3.to_checksum_address(address)
+        checksum_address = to_checksum_address(address)
     except Exception as e:
         return False
     return True
 
 
-def parse_transaction_bytes(contract_abi, bytes_input):
+def parse_transaction_bytes(contract_abi: Any, bytes_input: bytes) -> Any:
     contract = w3.eth.contract(abi=contract_abi)
     decoded_data = contract.decode_function_input(bytes_input)
     return decoded_data
-
-
-# def parse_transaction_bytes(abi, bytes):
-#     from eth_abi import decode_abi
-#     function_hash = bytes[:10]  # First 4 bytes (10 hex chars) of the data are the function selector
-#     function_abi = next(item for item in abi if item['type'] == 'function' and item['signature'] == function_hash)
-#     decoded_data = decode_abi([param['type'] for param in function_abi['inputs']], decode_hex(bytes[10:]))
-#     return {function_abi['name']: decoded_data}

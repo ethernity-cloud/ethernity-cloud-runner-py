@@ -44,7 +44,9 @@ ipfsClient = None
 
 
 class EthernityCloudRunner:
-    def __init__(self, network_address: str = ECAddress.BLOXBERG.TESTNET_ADDRESS):
+    def __init__(
+        self, network_address: str = ECAddress.BLOXBERG.TESTNET_ADDRESS
+    ) -> None:
         self.node_address = ""
         self.challenge_hash = ""
         self.order_number = -1
@@ -126,25 +128,6 @@ class EthernityCloudRunner:
                 f"ENCLAVE_DOCKER_COMPOSE_IPFS_HASH:{self.enclave_docker_compose_ipfs_hash}"
             )
 
-    def get_tokens_from_faucet(self) -> dict[str, Any] | dict[str, bool]:
-        if self.token_contract is None:
-            return {"success": False, "message": "Token contract is not initialized."}
-        account = self.token_contract.get_current_wallet()
-        balance = self.token_contract.get_balance()
-        if int(balance) <= 100:
-            tx = self.token_contract.get_faucet_tokens(account)  # type: ignore
-            transaction_hash = tx.hash
-            is_processed = self.wait_for_transaction_to_be_processed(
-                self.token_contract, transaction_hash
-            )
-            if not is_processed:
-                return {
-                    "success": False,
-                    "message": "Unable to create request, please check connectivity with Bloxberg node.",
-                }
-            return {"success": True}
-        return {"success": True}
-
     def get_reason(
         self, contract: Contract, tx_hash: str
     ) -> Any | Literal["Transaction hash not found"]:
@@ -177,7 +160,7 @@ class EthernityCloudRunner:
         print(tx_receipt)
         return not (not tx_receipt and tx_receipt.status == 0)
 
-    def handle_metamask_connection(self) -> Any | Literal[False]:
+    def check_web3_connection(self) -> Any | Literal[False]:
         try:
             # self.token_contract.get_provider().send("eth_requestAccounts", [])
             self.token_contract.get_provider()
@@ -185,126 +168,6 @@ class EthernityCloudRunner:
             return wallet_address is not None and wallet_address != ""
         except Exception as e:
             return False
-
-    def listen_for_add_do_request_event(self) -> None:
-        interval_repeats = 0
-        add_do_request_ev_passed = False
-        order_placed_ev_passed = False
-        order_closed_ev_passed = False
-
-        protocol_contract = self.protocol_contract.get_contract()
-
-        def message_interval() -> None:
-            nonlocal interval_repeats
-            if interval_repeats % 2 == 0:
-                self.dispatch_ec_event(
-                    f"\\ Waiting for the task to be processed by {self.node_address} ..."
-                )
-            else:
-                self.dispatch_ec_event(
-                    f"/ Waiting for the task to be processed by {self.node_address} ..."
-                )
-            interval_repeats += 1
-
-        def order_approved() -> None:
-            nonlocal order_placed_ev_passed
-            order_placed_ev_passed = True
-            protocol_contract.off("_orderPlacedEV", order_placed_ev)
-            if not self.node_address:
-                self.approve_order(self.order_number)
-            self.dispatch_ec_event(
-                f"Order {self.order_number} was placed and approved."
-            )
-            self.dispatch_ec_event(
-                f"Order {self.order_number} was placed and approved.",
-                ECStatus.DEFAULT,
-                ECEvent.TASK_ORDER_PLACED,
-            )
-            self.interval = time.setInterval(message_interval, 1000)
-
-        def add_do_request_ev(_from: str, _do_request: str) -> None:
-            wallet_address = self.token_contract.get_provider().send(
-                "eth_requestAccounts", []
-            )[0]
-            if (
-                wallet_address
-                and _from.lower() == wallet_address.lower()
-                and not add_do_request_ev_passed
-            ):
-                self.do_request = _do_request.to_number()
-                self.dispatch_ec_event(
-                    f"Task was picked up and DO Request {self.do_request} was created."
-                )
-                add_do_request_ev_passed = True
-                protocol_contract.off("_addDORequestEV", add_do_request_ev)
-                self.dispatch_ec_event(
-                    f"Task was picked up and DO Request {self.do_request} was created.",
-                    ECStatus.DEFAULT,
-                    ECEvent.TASK_CREATED,
-                )
-                if self.order_number != -1 and self.do_request == self.do_request_id:
-                    order_approved()
-                self.order_placed_timer = time.setInterval(lambda: None, 60 * 1000)
-
-        def order_placed_ev(order_number: int, do_request_id: str) -> None:
-            self.task_has_been_picked_for_approval = True
-            if (
-                do_request_id.to_number() == self.do_request
-                and not order_placed_ev_passed
-                and self.do_request != -1
-            ):
-                self.order_number = order_number.to_number()
-                self.do_request_id = do_request_id.to_number()
-                order_approved()
-            elif self.do_request == -1:
-                self.order_number = order_number.to_number()
-                self.do_request_id = do_request_id.to_number()
-
-        def order_closed_ev(order_number: int) -> None:
-            if (
-                self.order_number == order_number.to_number()
-                and not order_closed_ev_passed
-                and self.order_number != -1
-            ):
-                self.interval.cancel()
-                order_closed_ev_passed = True
-                protocol_contract.off("_orderClosedEV", order_closed_ev)
-                parsed_order_result = self.get_result_from_order(order_number)
-                if not parsed_order_result["success"]:
-                    self.dispatch_ec_event(
-                        parsed_order_result["message"], ECStatus.ERROR
-                    )
-                else:
-                    self.dispatch_ec_event(
-                        {
-                            "result": parsed_order_result["result"],
-                            "result_hash": parsed_order_result["result_hash"],
-                            "result_value": parsed_order_result["result_value"],
-                            "result_value_timestamp": parsed_order_result[
-                                "result_timestamp"
-                            ],
-                            "result_task_code": parsed_order_result["result_task_code"],
-                        },
-                        ECStatus.SUCCESS,
-                        ECEvent.TASK_COMPLETED,
-                    )
-
-        protocol_contract.on("_addDORequestEV", add_do_request_ev)
-        protocol_contract.on("_orderPlacedEV", order_placed_ev)
-        protocol_contract.on("_orderClosedEV", order_closed_ev)
-
-    def approve_order(self, order_id: int) -> None:
-        tx = self.protocol_contract.approve_order(order_id)
-        is_processed = self.wait_for_transaction_to_be_processed(
-            self.protocol_contract, tx.hash
-        )
-        if not is_processed:
-            reason = self.get_reason(self.protocol_contract, tx.hash)
-            self.dispatch_ec_event(f"Unable to approve order. {reason}", ECStatus.ERROR)
-            return
-        self.dispatch_ec_event("Order successfully approved!", ECStatus.SUCCESS)
-        self.dispatch_ec_event(f"TX hash: {tx.hash}")
-        # self.node_address = self.protocol_contract.get_order(order_id)[1]
 
     def get_current_wallet_public_key(self) -> HexStr:
         account = self.token_contract.get_current_wallet()
@@ -432,8 +295,11 @@ class EthernityCloudRunner:
 
     def get_result_from_order(self, order_id: int) -> dict[str, Any] | Any:
         try:
+            # stuck here
             order_result = self.protocol_contract.get_result_from_order(order_id)
-            self.protocol_contract.ethernity_contract.caller(transaction={'from': SIGNER_ACCOUNT.address)._getResultFromOrder(order_id)
+            self.protocol_contract.ethernity_contract.caller(
+                transaction={"from": SIGNER_ACCOUNT.address}
+            )._getResultFromOrder(order_id)
             self.dispatch_ec_event(
                 f"Task with order number {order_id} was successfully processed at {format_date()}."
             )
@@ -546,33 +412,21 @@ class EthernityCloudRunner:
         print(str(datetime.now()) + f" - Waiting for Ethernity network...", "message")
         while True:
             try:
-                order = self.__find_order(self.do_request)
+                order = self.find_order(self.do_request)
             except Exception as e:
                 print("--------", str(e))
             if order is not None:
                 print("")
                 print(f"{datetime.now()} - Connected!", "info")
-                if self.__approve_order(order):
+                if self.approve_order(order):
                     break
 
-                # if self._redistribute is True and self.__local:
-                #     print(
-                #         f"{datetime.now()} - Checking IPFS payload distribution...",
-                #         "message",
-                #     )
-                #     scripthash = self.__check_ipfs_upload(self.__script)
-                #     filesethash = self.__check_ipfs_upload(self.__fileset, True)
-                #     if scripthash is not None and filesethash is not None:
-                #         print(
-                #             f"{datetime.now()} - IPFS payload distribution confirmed!",
-                #             "info",
-                #         )
                 if self.get_result_from_order(order):
                     break
             else:
                 time.sleep(5)
 
-    def __find_order(self, doreq: int) -> Union[int, None]:
+    def find_order(self, doreq: int) -> Union[int, None]:
         count = self.token_with_protocol.functions._getOrdersCount().call()
         for i in range(count - 1, count - 5, -1):
             order = self.token_with_protocol.caller()._getOrder(i)
@@ -580,7 +434,7 @@ class EthernityCloudRunner:
                 return i
         return None
 
-    def __approve_order(self, order: int) -> bool:
+    def approve_order(self, order: int) -> bool:
         transaction_hash = self.protocol_contract.approve_order(order)
 
         receipt = None
