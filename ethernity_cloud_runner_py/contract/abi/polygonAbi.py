@@ -2,7 +2,7 @@ import os
 
 contract = {
     "address": os.getenv(
-        "REACT_APP_ETNY_CONTRACT_ADDRESS", "0x02882F03097fE8cD31afbdFbB5D72a498B41112c"
+        "ECLD_CONTRACT_ADDRESS", "0x439945BE73fD86fcC172179021991E96Beff3Cc4"
     ),
     "abi": [
         {

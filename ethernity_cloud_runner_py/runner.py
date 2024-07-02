@@ -1,37 +1,37 @@
-from datetime import datetime
 import time
+from datetime import datetime
 from typing import Any, Literal, Union
-from eth_typing import HexStr
+
+from eth_account import Account
+from eth_typing import Address, HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
 from web3.exceptions import TimeExhausted, TransactionNotFound
-from .ipfs import IPFSClient
-from .utils import (
-    generate_random_hex_of_size,
-    format_date,
-    is_address,
-    is_null_or_empty,
-)
-from .crypto import encrypt_with_certificate, decrypt_with_private_key, sha256
+
+from .contract.abi.bloxbergAbi import contract as bloxbergAbi
+from .contract.abi.polygonAbi import contract as polygonAbi
+from .contract.operation.bloxbergProtocolContract import BloxbergProtocolContract
+from .contract.operation.imageRegistryContract import ImageRegistryContract
+from .contract.operation.polygonProtocolContract import PolygonProtocolContract
+from .crypto import decrypt_with_private_key, encrypt_with_certificate, sha256
 from .enums import (
-    ECEvent,
-    ECStatus,
-    ECOrderTaskStatus,
     ZERO_CHECKSUM,
     ECAddress,
     ECError,
+    ECEvent,
     ECNetworkName,
-    ECNetworkNameDictionary,
     ECNetworkName1Dictionary,
+    ECNetworkNameDictionary,
+    ECOrderTaskStatus,
+    ECStatus,
 )
-from .contract.operation.etnyContract import EtnyContract
-from .contract.operation.ecldContract import EcldContract
-from .contract.operation.imageRegistryContract import ImageRegistryContract
-from .contract.operation.polygonProtocolContract import PolygonProtocolContract
-from .contract.operation.bloxbergProtocolContract import BloxbergProtocolContract
-from .contract.abi.etnyAbi import contract as contractBloxberg
-from .contract.abi.polygonProtocolAbi import contract as protocolContractPolygon
-from eth_account import Account
+from .ipfs import IPFSClient
+from .utils import (
+    format_date,
+    generate_random_hex_of_size,
+    is_address,
+    is_null_or_empty,
+)
 
 LAST_BLOCKS = 20
 VERSION = "v3"
@@ -45,7 +45,7 @@ ipfsClient = None
 
 class EthernityCloudRunner:
     def __init__(
-        self, network_address: str = ECAddress.BLOXBERG.TESTNET_ADDRESS
+        self, network_address: Address = ECAddress.BLOXBERG.TESTNET_ADDRESS  # type: ignore
     ) -> None:
         self.node_address = ""
         self.challenge_hash = ""
@@ -59,41 +59,42 @@ class EthernityCloudRunner:
         self.order_placed_timer = None
         self.task_has_been_picked_for_approval = False
         self.get_result_from_order_repeats = 1
-        self.runner_type = None
+        # self.runner_type = None
         self.network_address = network_address
-        self.resources: dict = None
+        # self.resources: dict | None = None
         self.enclave_image_ipfs_hash = ""
         self.enclave_public_key = ""
         self.enclave_docker_compose_ipfs_hash = ""
-        self.token_contract = None
-        self.protocol_contract = None
-        self.token_with_protocol = None
-        self.protocol_abi = None
-        self.image_registry_contract = ImageRegistryContract(self.network_address)
+        # self.token_contract = None
+        # self.protocol_contract = None
+        # self.protocol_abi = None
+        self.image_registry_contract = ImageRegistryContract(
+            self.network_address, SIGNER_ACCOUNT
+        )
 
         if network_address in [
             ECAddress.BLOXBERG.TESTNET_ADDRESS,
             ECAddress.BLOXBERG.MAINNET_ADDRESS,
         ]:
-            self.token_contract = EtnyContract(network_address, SIGNER_ACCOUNT)
+            # self.token_contract = EtnyContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = BloxbergProtocolContract(
                 network_address, SIGNER_ACCOUNT
             )
-            self.protocol_abi = contractBloxberg.get("abi")
+            self.protocol_abi = bloxbergAbi.get("abi")
         elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
-            self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
+            # self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = PolygonProtocolContract(
-                ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT
+                ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT, True  # type: ignore
             )
-            self.protocol_abi = protocolContractPolygon.get("abi")
+            self.protocol_abi = polygonAbi.get("abi")
         elif network_address == ECAddress.POLYGON.TESTNET_ADDRESS:
-            self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
+            # self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = PolygonProtocolContract(
-                ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT
+                ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT, False  # type: ignore
             )
-            self.protocol_abi = protocolContractPolygon.get("abi")
+            self.protocol_abi = polygonAbi.get("abi")
 
-        self.token_with_protocol = self.protocol_contract.ethernity_contract
+        self.token_contract = self.protocol_contract.ethernity_contract
 
     def is_mainnet(self) -> bool:
         return self.network_address in [
@@ -201,7 +202,7 @@ class EthernityCloudRunner:
         image_metadata: str,
         code_metadata: str,
         input_metadata: str,
-        node_address: str,
+        node_address: Address,
         gas_limit: int | None = None,
     ) -> Any | bool:
         try:
@@ -231,8 +232,10 @@ class EthernityCloudRunner:
                     receipt = __provider.eth.wait_for_transaction_receipt(
                         transaction_hash
                     )
-                    processed_logs = self.token_with_protocol.events._addDORequestEV().process_receipt(
-                        receipt
+                    processed_logs = (
+                        self.token_contract.events._addDORequestEV().process_receipt(
+                            receipt
+                        )
                     )
                     self.do_request = processed_logs[0].args._rowNumber
                 except KeyError:
@@ -427,9 +430,9 @@ class EthernityCloudRunner:
                 time.sleep(5)
 
     def find_order(self, doreq: int) -> Union[int, None]:
-        count = self.token_with_protocol.functions._getOrdersCount().call()
+        count = self.token_contract.functions._getOrdersCount().call()
         for i in range(count - 1, count - 5, -1):
-            order = self.token_with_protocol.caller()._getOrder(i)
+            order = self.token_contract.caller()._getOrder(i)
             if order[2] == doreq and order[4] == 0:
                 return i
         return None
@@ -539,15 +542,12 @@ class EthernityCloudRunner:
             is_node_operator_address = self.is_node_operator_address(node_address)
             if is_node_operator_address:
                 self.runner_type = runner_type
-                self.image_registry_contract = ImageRegistryContract(
-                    self.network_address, runner_type, SIGNER_ACCOUNT
-                )
                 self.cleanup()
                 self.dispatch_ec_event("Started processing task...")
 
                 self.token_contract.initialize()
 
-                connected = self.handle_metamask_connection()
+                connected = self.check_web3_connection()
                 if connected:
                     self.get_enclave_details()
                     if self.network_address in [

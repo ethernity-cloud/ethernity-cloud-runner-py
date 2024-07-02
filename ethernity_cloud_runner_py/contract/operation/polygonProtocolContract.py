@@ -1,38 +1,59 @@
+import os
+from typing import Any
+
+from eth_account.messages import encode_defunct
+from eth_typing import Address, HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
-from ...contract.abi.polygonProtocolAbi import contract
-from eth_account.messages import encode_defunct
-import os
 from web3.middleware.geth_poa import geth_poa_middleware
+from web3.types import TxParams
+
+from ..abi.polygonAbi import contract as polygonAbi
 
 
 class PolygonProtocolContract:
-    def __init__(self, network_address, signer):
+    def __init__(
+        self, network_address: Address, signer: Any, is_main_net: bool = False
+    ) -> None:
+        self.is_main_net = is_main_net
         self.network_address = network_address
-        self.provider = Web3(Web3.HTTPProvider("https://core.bloxberg.org"))
+        _rpc_url = (
+            "https://polygon-rpc.com"
+            if is_main_net
+            else "https://rpc-amoy.polygon.technology"
+        )
+        self.provider = Web3(Web3.HTTPProvider(_rpc_url))
         self.provider.enable_unstable_package_management_api()
         self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)
+
         self.signer = signer
-        self.protocol_contract = self.provider.eth.contract(
-            address=network_address, abi=contract["abi"]
-        )
-        self.protocol_contract_with_provider = self.provider.eth.contract(
-            address=network_address, abi=contract["abi"]
+        self.ethernity_contract = self.provider.eth.contract(
+            address=network_address, abi=polygonAbi["abi"]
         )
 
-    def contract_address(self):
+    def contract_address(self) -> Address:
         return self.network_address
 
-    def get_signer(self):
+    @property
+    def __transaction_object(self) -> TxParams:
+        nonce = self.provider.eth.get_transaction_count(self.signer.address)
+        return {
+            "gas": 40500500010 if self.is_main_net else 1300000010,  # type: ignore
+            "chainId": 137 if self.is_main_net else 80002,
+            "nonce": nonce,
+            "gasPrice": self.provider.to_wei("1", "mwei"),  # type: ignore
+        }
+
+    def get_signer(self) -> Any:
         return self.signer
 
-    def get_contract(self) -> type[Contract]:
-        return self.protocol_contract
+    def get_contract(self) -> Contract:
+        return self.ethernity_contract
 
-    def get_provider(self):
+    def get_provider(self) -> Web3:
         return self.provider
 
-    def get_eip1559_gas_options(self):
+    def get_eip1559_gas_options(self) -> dict[str, int]:
         max_fee_per_gas = int(os.getenv("MAX_FEE_PER_GAS", 0)) * 10**9
         max_priority_fee_per_gas = int(os.getenv("MAX_PRIORITY_FEE_PER_GAS", 0)) * 10**9
         options = {
@@ -44,13 +65,13 @@ class PolygonProtocolContract:
 
     def add_do_request(
         self,
-        image_metadata,
-        payload_metadata,
-        input_metadata,
-        node_address,
-        resources,
-        gas_limit=None,
-    ):
+        image_metadata: str,
+        payload_metadata: str,
+        input_metadata: str,
+        node_address: Address,
+        resources: dict,
+        gas_limit: int | None = None,
+    ) -> HexStr:
         cpu = resources.get("cpu", 1)
         memory = resources.get("memory", 1)
         storage = resources.get("storage", 40)
@@ -58,21 +79,7 @@ class PolygonProtocolContract:
         duration = resources.get("duration", 1)
         validators = resources.get("validators", 1)
         task_price = resources.get("task_price", 10)
-        if gas_limit:
-            return self.protocol_contract.functions._addDORequest(
-                cpu,
-                memory,
-                storage,
-                bandwidth,
-                duration,
-                validators,
-                task_price,
-                image_metadata,
-                payload_metadata,
-                input_metadata,
-                node_address,
-            ).transact({"gas": gas_limit})
-        return self.protocol_contract.functions._addDORequest(
+        tx = self.ethernity_contract.functions._addDORequest(
             cpu,
             memory,
             storage,
@@ -84,29 +91,44 @@ class PolygonProtocolContract:
             payload_metadata,
             input_metadata,
             node_address,
+        ).build_transaction(self.__transaction_object)
+
+        signed_tx = self.provider.eth.account.sign_transaction(
+            tx, private_key=self.signer._private_key
         )
+        self.provider.eth.send_raw_transaction(signed_tx.rawTransaction)
+        return self.provider.to_hex(self.provider.keccak(signed_tx.rawTransaction))
 
-    def get_order(self, order_id):
-        return self.protocol_contract.functions._getOrder(order_id).call()
+    def get_order(self, order_id: int) -> int:
+        return self.ethernity_contract.functions._getOrder(order_id).call()
 
-    def approve_order(self, order_id):
-        return self.protocol_contract.functions._approveOrder(order_id).transact()
+    def approve_order(self, order_id: int) -> HexStr:
+        # return self.ethernity_contract.functions._approveOrder(order_id).transact()
+        unicorn_txn = self.ethernity_contract.functions._approveOrder(
+            order_id
+        ).build_transaction(self.__transaction_object)
 
-    def get_result_from_order(self, order_id):
-        return self.protocol_contract.functions._getResultFromOrder(order_id).call()
+        signed_txn = self.provider.eth.account.sign_transaction(
+            unicorn_txn, private_key=self.signer._private_key
+        )
+        self.provider.eth.send_raw_transaction(signed_txn.rawTransaction)
+        return self.provider.to_hex(self.provider.keccak(signed_txn.rawTransaction))
 
-    def get_faucet_tokens(self, account):
-        return self.protocol_contract.functions.faucet().transact({"from": account})
+    def get_result_from_order(self, order_id: int) -> Any:
+        self.ethernity_contract.caller()._getOrder(order_id)
+        return self.ethernity_contract.caller()._getResultFromOrder(order_id)
 
-    def is_node_operator(self, account):
+    def is_node_operator(self, account: str) -> bool:
         try:
-            requests = self.protocol_contract_with_provider.functions._getMyDPRequests(
+            requests = self.ethernity_contract.functions._getMyDPRequests().call(
                 {"from": account}
-            ).call()
+            )
             return len(requests) > 0
         except Exception as ex:
             print(ex)
             return False
 
-    def sign_message(self, message):
-        return self.provider.eth.account.sign_message(encode_defunct(text=message))
+    def sign_message(self, message: str) -> Any:
+        return self.provider.eth.account.sign_message(
+            encode_defunct(text=message), self.signer._private_key
+        )

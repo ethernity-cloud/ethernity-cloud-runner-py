@@ -1,35 +1,39 @@
 from typing import Any
+
+from eth_account.messages import encode_defunct
 from eth_typing import Address, HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
-from ...contract.abi.etnyAbi import contract as etny_contract_abi
-from eth_account.messages import encode_defunct
 from web3.middleware.geth_poa import geth_poa_middleware
 from web3.types import TxParams
+
+from ..abi.bloxbergAbi import contract as bloxbergAbi
 
 
 class BloxbergProtocolContract:
     def __init__(self, network_address: Address, signer: Any) -> None:
-        self.provider = Web3(Web3.HTTPProvider("https://core.bloxberg.org"))
+        self.network_address = network_address
+        self.provider = Web3(Web3.HTTPProvider("https://bloxberg.ethernity.cloud"))
         self.provider.enable_unstable_package_management_api()
         self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)
 
         self.signer = signer
         self.ethernity_contract = self.provider.eth.contract(  # type: ignore
-            address=network_address, abi=etny_contract_abi["abi"]
+            address=network_address, abi=bloxbergAbi["abi"]
         )
 
     def contract_address(self) -> Address:
-        return etny_contract_abi["address"]
+        # return bloxbergAbi["address"]
+        return self.network_address
 
     @property
     def __transaction_object(self) -> TxParams:
         nonce = self.provider.eth.get_transaction_count(self.signer.address)
         return {
-            "gas": 1000000,
+            "gas": 10000000,  # type: ignore
             "chainId": 8995,
             "nonce": nonce,
-            "gasPrice": self.provider.to_wei("1", "mwei"),
+            "gasPrice": self.provider.to_wei("1", "mwei"),  # type: ignore
         }
 
     def get_signer(self) -> Any:
@@ -46,8 +50,9 @@ class BloxbergProtocolContract:
         image_metadata: str,
         payload_metadata: str,
         input_metadata: str,
-        node_address: str,
+        node_address: Address,
         resources: dict,
+        gas_limit: int | None = None,
     ) -> HexStr:
         cpu = resources.get("cpu", 1)
         memory = resources.get("memory", 1)
@@ -92,7 +97,6 @@ class BloxbergProtocolContract:
         return self.provider.to_hex(self.provider.keccak(signed_txn.rawTransaction))
 
     def get_result_from_order(self, order_id: int) -> Any:
-        # return self.ethernity_contract.functions._getResultFromOrder(order_id).call()
         self.ethernity_contract.caller()._getOrder(order_id)
         return self.ethernity_contract.caller()._getResultFromOrder(order_id)
 
