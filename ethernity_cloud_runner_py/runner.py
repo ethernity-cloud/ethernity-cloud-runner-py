@@ -36,9 +36,7 @@ from .utils import (
 LAST_BLOCKS = 20
 VERSION = "v3"
 
-SIGNER_ACCOUNT = Account().from_key(
-    "0x42585047d770516c039c8c1e0e76050f4c51b04b62a8d0d40986ab1949fe4317"
-)
+SIGNER_ACCOUNT = Account().from_key("")
 
 ipfsClient = None
 
@@ -68,9 +66,7 @@ class EthernityCloudRunner:
         # self.token_contract = None
         # self.protocol_contract = None
         # self.protocol_abi = None
-        self.image_registry_contract = ImageRegistryContract(
-            self.network_address, SIGNER_ACCOUNT
-        )
+        # self.image_registry_contract =
 
         if network_address in [
             ECAddress.BLOXBERG.TESTNET_ADDRESS,
@@ -145,13 +141,13 @@ class EthernityCloudRunner:
     def wait_for_transaction_to_be_processed(
         self, contract: Contract, transaction_hash: str, attempt: int = 0
     ) -> bool:
-        while True and attempt < 120:
+        while True and attempt < 10:
             try:
                 contract.get_provider().eth.wait_for_transaction_receipt(transaction_hash)  # type: ignore
                 tx_receipt = contract.get_provider().eth.get_transaction_receipt(transaction_hash)  # type: ignore
                 if tx_receipt:
                     break
-            except TransactionNotFound:
+            except TransactionNotFound or TimeExhausted:
                 # we need to sleep here to avoid spamming the node
                 time.sleep(1)
                 self.wait_for_transaction_to_be_processed(
@@ -164,14 +160,14 @@ class EthernityCloudRunner:
     def check_web3_connection(self) -> Any | Literal[False]:
         try:
             # self.token_contract.get_provider().send("eth_requestAccounts", [])
-            self.token_contract.get_provider()
-            wallet_address = self.token_contract.get_current_wallet()
+            self.protocol_contract.get_provider()
+            wallet_address = self.protocol_contract.get_current_wallet()
             return wallet_address is not None and wallet_address != ""
         except Exception as e:
             return False
 
     def get_current_wallet_public_key(self) -> HexStr:
-        account = self.token_contract.get_current_wallet()
+        account = self.protocol_contract.get_current_wallet()
         key_b64 = account._publicapi._keys.private_key_to_public_key(account._key_obj)
 
         return key_b64.to_hex()
@@ -190,11 +186,11 @@ class EthernityCloudRunner:
             code, self.enclave_public_key
         )
         self.script_hash = ipfsClient.upload_to_ipfs(base64_encrypted_script)
-        script_checksum = self.token_contract.sign_message(script_checksum)
+        script_checksum = self.protocol_contract.sign_message(script_checksum)
         return f"{VERSION}:{self.script_hash}:{script_checksum.signature.hex()}"
 
     def get_v3_input_metadata(self) -> str:
-        file_set_checksum = self.token_contract.sign_message(ZERO_CHECKSUM)
+        file_set_checksum = self.protocol_contract.sign_message(ZERO_CHECKSUM)
         return f"{VERSION}::{file_set_checksum.signature.hex()}"
 
     def create_do_request(
@@ -324,7 +320,7 @@ class EthernityCloudRunner:
             ipfs_result = ipfsClient.get_from_ipfs(
                 parsed_order_result["result_ipfs_hash"]
             )
-            current_wallet_address = self.token_contract.get_current_wallet()
+            current_wallet_address = self.protocol_contract.get_current_wallet()
             decrypted_data = decrypt_with_private_key(
                 ipfs_result, current_wallet_address
             )
@@ -366,7 +362,7 @@ class EthernityCloudRunner:
                         result_block_timestamp = block.timestamp
             return {
                 "success": True,
-                "contract_address": self.token_contract.contract_address(),
+                "contract_address": self.protocol_contract.contract_address(),
                 "input_transaction_hash": self.do_hash,
                 "output_transaction_hash": result_transaction_hash,
                 "order_id": order_id,
@@ -527,7 +523,7 @@ class EthernityCloudRunner:
         else:
             self.resources = resources
         try:
-            balance = self.token_contract.get_balance()
+            balance = self.protocol_contract.get_balance()
             balance = int(balance)
 
             if balance < resources["taskPrice"]:
@@ -544,9 +540,9 @@ class EthernityCloudRunner:
                 self.runner_type = runner_type
                 self.cleanup()
                 self.dispatch_ec_event("Started processing task...")
-
-                self.token_contract.initialize()
-
+                self.image_registry_contract = ImageRegistryContract(
+                    self.network_address, self.runner_type, SIGNER_ACCOUNT
+                )
                 connected = self.check_web3_connection()
                 if connected:
                     self.get_enclave_details()

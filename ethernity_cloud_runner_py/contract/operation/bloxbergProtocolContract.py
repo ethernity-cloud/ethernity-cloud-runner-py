@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any
 
 from eth_account.messages import encode_defunct
@@ -8,6 +9,7 @@ from web3.middleware.geth_poa import geth_poa_middleware
 from web3.types import TxParams
 
 from ..abi.bloxbergAbi import contract as bloxbergAbi
+from ...enums import ECNetworkByChainIdDictionary
 
 
 class BloxbergProtocolContract:
@@ -33,7 +35,7 @@ class BloxbergProtocolContract:
             "gas": 10000000,  # type: ignore
             "chainId": 8995,
             "nonce": nonce,
-            "gasPrice": self.provider.to_wei("1", "mwei"),  # type: ignore
+            "gasPrice": self.provider.to_wei("10", "mwei"),  # type: ignore
         }
 
     def get_signer(self) -> Any:
@@ -44,6 +46,41 @@ class BloxbergProtocolContract:
 
     def get_provider(self) -> Web3:
         return self.provider
+
+    def get_current_wallet(self) -> Any:
+        return self.signer
+
+    def get_balance(self) -> int | Decimal:
+        try:
+            address = self.signer.address
+            balance = self.ethernity_contract.functions.balanceOf(address).call()
+            return Web3.from_wei(balance, "ether")
+        except Exception as e:
+            print(e)
+            return 0
+
+    def check_and_set_allowance(
+        self, protocol_address: Address, amount: str, task_price: str
+    ) -> bool:
+        allowance_amount = Web3.to_wei(amount, "ether")
+        task_price_amount = Web3.to_wei(task_price, "ether")
+        current_wallet_address = self.signer.address
+        allowance = self.ethernity_contract.functions.allowance(
+            current_wallet_address, protocol_address
+        ).call()
+        if allowance < task_price_amount:
+            approve_tx = self.ethernity_contract.functions.approve(
+                protocol_address, allowance_amount
+            ).transact()
+            try:
+                self.provider.eth.wait_for_transaction_receipt(approve_tx)
+                allowance = self.ethernity_contract.functions.allowance(
+                    current_wallet_address, protocol_address
+                ).call()
+            except Exception as e:
+                print(e)
+                return False
+        return True
 
     def add_do_request(
         self,
@@ -111,6 +148,12 @@ class BloxbergProtocolContract:
             return False
 
     def sign_message(self, message: str) -> Any:
+        if isinstance(message, bytes):
+            message = message.decode("utf-8")
         return self.provider.eth.account.sign_message(
             encode_defunct(text=message), self.signer._private_key
         )
+
+    def get_network_name(self) -> Any:
+        network = self.provider.eth.chain_id
+        return ECNetworkByChainIdDictionary[network]
