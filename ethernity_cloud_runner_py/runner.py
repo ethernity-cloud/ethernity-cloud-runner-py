@@ -1,3 +1,4 @@
+import os
 import time
 from datetime import datetime
 from typing import Any, Literal, Union
@@ -19,9 +20,6 @@ from .enums import (
     ECAddress,
     ECError,
     ECEvent,
-    ECNetworkName,
-    ECNetworkName1Dictionary,
-    ECNetworkNameDictionary,
     ECOrderTaskStatus,
     ECStatus,
 )
@@ -33,10 +31,27 @@ from .utils import (
     is_null_or_empty,
 )
 
-LAST_BLOCKS = 20
-VERSION = "v3"
+try:
+    from dotenv import load_dotenv
 
-SIGNER_ACCOUNT = Account().from_key("")
+    load_dotenv(".env" if os.path.exists(".env") else ".env.config")
+except ImportError as e:
+    pass
+
+
+ipfs_address = os.environ.get("IPFS_ADDRESS")
+if not ipfs_address:
+    ipfs_address = "https://ipfs.ethernity.cloud:5001/api/v0"
+ipfs_token = os.environ.get("IPFS_TOKEN", "")
+
+LAST_BLOCKS = 20
+VERSION = os.environ.get("VERSION", "v3")
+
+if len(os.environ.get("ADDRESS_PRIVATE_KEY", "")) < 10:
+    raise Exception("ADDRESS_PRIVATE_KEY is not set in .env file")
+
+
+SIGNER_ACCOUNT = Account().from_key(os.environ.get("ADDRESS_PRIVATE_KEY"))
 
 ipfsClient = None
 
@@ -91,6 +106,8 @@ class EthernityCloudRunner:
             self.protocol_abi = polygonAbi.get("abi")
 
         self.token_contract = self.protocol_contract.ethernity_contract
+
+        self.initialize_storage(ipfs_address, ipfs_token)
 
     def is_mainnet(self) -> bool:
         return self.network_address in [
