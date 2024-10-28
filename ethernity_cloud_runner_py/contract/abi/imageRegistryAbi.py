@@ -107,5 +107,19 @@ contract = {
             "stateMutability": "view",
             "type": "function",
         },
+        {
+            "inputs": [
+                {"internalType": "string", "name": "imageName", "type": "string"},
+                {"internalType": "string", "name": "version", "type": "string"},
+            ],
+            "name": "getLatestImageVersionPublicKey",
+            "outputs": [
+                {"internalType": "string", "name": "", "type": "string"},
+                {"internalType": "string", "name": "", "type": "string"},
+                {"internalType": "string", "name": "", "type": "string"},
+            ],
+            "stateMutability": "view",
+            "type": "function",
+        },
     ],
 }

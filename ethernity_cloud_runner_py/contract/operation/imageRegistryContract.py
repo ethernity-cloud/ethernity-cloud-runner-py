@@ -1,5 +1,5 @@
 from typing import Any
-
+import os
 from eth_typing import Address
 from eth_utils.address import to_checksum_address
 from web3 import Web3
@@ -97,11 +97,24 @@ class ImageRegistryContract:
     def get_provider(self) -> Web3:
         return self.provider
 
-    def get_enclave_details_v3(self, image_name: str, version: str) -> Any:
+    def get_enclave_details_v3(
+        self, image_name: str, version: str, trustedZoneImage: str = ""
+    ) -> Any:
         try:
-            return self.contract.functions.getLatestTrustedZoneImageCertPublicKey(
-                image_name, version
-            ).call()
+            if not trustedZoneImage:
+                return self.contract.functions.getLatestTrustedZoneImageDetails(
+                    image_name, version
+                ).call()
+            else:
+                trustedZonePublicKey = (
+                    self.contract.functions.getLatestTrustedZoneImageCertPublicKey(
+                        trustedZoneImage, "v3"
+                    ).call()[1]
+                )
+                imageDetails = self.contract.functions.getLatestImageVersionPublicKey(
+                    image_name, os.environ.get("VERSION")
+                ).call()
+                return [imageDetails[0], trustedZonePublicKey, imageDetails[2]]
         except Exception as e:
             print(e)
             return None

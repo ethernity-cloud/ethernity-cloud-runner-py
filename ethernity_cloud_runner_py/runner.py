@@ -52,13 +52,13 @@ if not ipfs_address:
 ipfs_token = os.environ.get("IPFS_TOKEN", "")
 
 LAST_BLOCKS = 20
-VERSION = os.environ.get("VERSION", "v3")
+VERSION = "v3"
 NETWORK = os.environ.get("BLOCKCHAIN_NETWORK", None)
 
-if len(os.environ.get("ADDRESS_PRIVATE_KEY", "")) < 10:
-    raise Exception("ADDRESS_PRIVATE_KEY is not set in .env file")
+if len(os.environ.get("PRIVATE_KEY", "")) < 10:
+    raise Exception("PRIVATE_KEY is not set in .env file")
 
-SIGNER_ACCOUNT = Account().from_key(os.environ.get("ADDRESS_PRIVATE_KEY"))
+SIGNER_ACCOUNT = Account().from_key(os.environ.get("PRIVATE_KEY"))
 
 ipfsClient = Any
 
@@ -81,6 +81,7 @@ class EthernityCloudRunner:
         self.enclave_image_ipfs_hash = ""
         self.enclave_public_key = ""
         self.enclave_docker_compose_ipfs_hash = ""
+        self.trustedZoneImage = ""
         # for configurations with contract addresses
         if NETWORK is not None:
             network_address = ECNetworkEnvToEnum.get(
@@ -127,7 +128,7 @@ class EthernityCloudRunner:
 
     def get_enclave_details(self) -> None:
         details = self.image_registry_contract.get_enclave_details_v3(
-            self.runner_type, VERSION
+            self.runner_type, VERSION, self.trustedZoneImage
         )
         if details:
             (
@@ -193,7 +194,7 @@ class EthernityCloudRunner:
     def get_current_wallet_public_key(self) -> HexStr:
         return self.bytes_to_hex(
             PrivateKey.from_seed(
-                self.hex_to_bytes(os.environ.get("ADDRESS_PRIVATE_KEY", ""))
+                self.hex_to_bytes(os.environ.get("PRIVATE_KEY", ""))
             ).public_key._public_key
         )
 
@@ -201,7 +202,7 @@ class EthernityCloudRunner:
         base64_encrypted_challenge = encrypt(challenge_hash, self.enclave_public_key)
         challenge_ipfs_hash = ipfsClient.upload_to_ipfs(base64_encrypted_challenge)
         public_key = self.get_current_wallet_public_key()
-        return f"{VERSION}:{self.enclave_image_ipfs_hash}:{self.runner_type}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
+        return f"{VERSION}:{self.enclave_image_ipfs_hash}:{self.runner_type if not self.trustedZoneImage else self.trustedZoneImage}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
 
     def get_v3_code_metadata(self, code: str) -> str:
         script_checksum = sha256(code)
@@ -346,9 +347,7 @@ class EthernityCloudRunner:
             )
             current_wallet_address = self.protocol_contract.get_current_wallet()
             # decrypted_data = decrypt_with_private_key(
-            decrypted_data = decrypt_nacl(
-                os.environ.get("ADDRESS_PRIVATE_KEY"), ipfs_result
-            )
+            decrypted_data = decrypt_nacl(os.environ.get("PRIVATE_KEY"), ipfs_result)
             if not decrypted_data["success"]:
                 return {
                     "success": False,
@@ -404,7 +403,7 @@ class EthernityCloudRunner:
                 "result": decrypted_data["data"],
             }
         except Exception as ex:
-            # print(ex)
+            print(ex)
             if str(ex) == ECError.PARSE_ERROR:
                 return {
                     "success": False,
@@ -539,6 +538,7 @@ class EthernityCloudRunner:
         code: str,
         node_address: str,
         resources: Union[dict, None] = None,
+        trustedZoneImage: str = "",
     ) -> None:
         if resources is None:
             self.resources = {
@@ -553,6 +553,8 @@ class EthernityCloudRunner:
             resources = self.resources
         else:
             self.resources = resources
+        if trustedZoneImage:
+            self.trustedZoneImage = trustedZoneImage
         try:
             balance = self.protocol_contract.get_balance()
             balance = int(balance)
@@ -572,7 +574,13 @@ class EthernityCloudRunner:
                 self.cleanup()
                 self.dispatch_ec_event("Started processing task...")
                 self.image_registry_contract = ImageRegistryContract(
-                    self.network_address, self.runner_type, SIGNER_ACCOUNT
+                    self.network_address,
+                    (
+                        self.runner_type
+                        if not self.trustedZoneImage
+                        else self.trustedZoneImage
+                    ),
+                    SIGNER_ACCOUNT,
                 )
                 connected = self.check_web3_connection()
                 if connected:

@@ -95,7 +95,7 @@ $ python ethernity_task.py
 make sure to have .env file with the following content:
 
 ```sh
-ADDRESS_PRIVATE_KEY=42....
+PRIVATE_KEY=42....
 ```
 Without it the script will not be able to make blockchain transactions.
 
