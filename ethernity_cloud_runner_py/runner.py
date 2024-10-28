@@ -14,7 +14,11 @@ from .contract.abi.polygonAbi import contract as polygonAbi
 from .contract.operation.bloxbergProtocolContract import BloxbergProtocolContract
 from .contract.operation.imageRegistryContract import ImageRegistryContract
 from .contract.operation.polygonProtocolContract import PolygonProtocolContract
-from .crypto import decrypt_with_private_key, encrypt_with_certificate, sha256
+from binascii import hexlify
+from nacl.public import Box, PrivateKey, PublicKey
+
+# from .crypto import decrypt_with_private_key, encrypt_with_certificate, sha256
+from .crypto import decrypt_nacl, encrypt, sha256
 from .enums import (
     ZERO_CHECKSUM,
     ECAddress,
@@ -22,6 +26,7 @@ from .enums import (
     ECEvent,
     ECOrderTaskStatus,
     ECStatus,
+    ECNetworkEnvToEnum,
 )
 from .ipfs import IPFSClient
 from .utils import (
@@ -29,6 +34,8 @@ from .utils import (
     generate_random_hex_of_size,
     is_address,
     is_null_or_empty,
+    parse_transaction_bytes_ut,
+    generate_wallet,
 )
 
 try:
@@ -39,27 +46,25 @@ except ImportError as e:
     pass
 
 
-ipfs_address = os.environ.get("IPFS_ADDRESS")
+ipfs_address = os.environ.get("IPFS_ADDRESS", "")
 if not ipfs_address:
-    ipfs_address = "https://ipfs.ethernity.cloud:5001/api/v0"
+    ipfs_address = "http://ipfs.ethernity.cloud:5001/api/v0"
 ipfs_token = os.environ.get("IPFS_TOKEN", "")
 
 LAST_BLOCKS = 20
 VERSION = os.environ.get("VERSION", "v3")
+NETWORK = os.environ.get("BLOCKCHAIN_NETWORK", None)
 
 if len(os.environ.get("ADDRESS_PRIVATE_KEY", "")) < 10:
     raise Exception("ADDRESS_PRIVATE_KEY is not set in .env file")
 
-
 SIGNER_ACCOUNT = Account().from_key(os.environ.get("ADDRESS_PRIVATE_KEY"))
 
-ipfsClient = None
+ipfsClient = Any
 
 
 class EthernityCloudRunner:
-    def __init__(
-        self, network_address: Address = ECAddress.BLOXBERG.TESTNET_ADDRESS  # type: ignore
-    ) -> None:
+    def __init__(self, network_address: Address = ECAddress.BLOXBERG.TESTNET_ADDRESS) -> None:  # type: ignore
         self.node_address = ""
         self.challenge_hash = ""
         self.order_number = -1
@@ -72,34 +77,30 @@ class EthernityCloudRunner:
         self.order_placed_timer = None
         self.task_has_been_picked_for_approval = False
         self.get_result_from_order_repeats = 1
-        # self.runner_type = None
         self.network_address = network_address
-        # self.resources: dict | None = None
         self.enclave_image_ipfs_hash = ""
         self.enclave_public_key = ""
         self.enclave_docker_compose_ipfs_hash = ""
-        # self.token_contract = None
-        # self.protocol_contract = None
-        # self.protocol_abi = None
-        # self.image_registry_contract =
+        # for configurations with contract addresses
+        if NETWORK is not None:
+            network_address = ECNetworkEnvToEnum.get(
+                NETWORK.lower(), ECAddress.BLOXBERG.TESTNET_ADDRESS
+            )
 
         if network_address in [
             ECAddress.BLOXBERG.TESTNET_ADDRESS,
             ECAddress.BLOXBERG.MAINNET_ADDRESS,
         ]:
-            # self.token_contract = EtnyContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = BloxbergProtocolContract(
                 network_address, SIGNER_ACCOUNT
             )
             self.protocol_abi = bloxbergAbi.get("abi")
         elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
-            # self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = PolygonProtocolContract(
                 ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT, True  # type: ignore
             )
             self.protocol_abi = polygonAbi.get("abi")
         elif network_address == ECAddress.POLYGON.TESTNET_ADDRESS:
-            # self.token_contract = EcldContract(network_address, SIGNER_ACCOUNT)
             self.protocol_contract = PolygonProtocolContract(
                 ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, SIGNER_ACCOUNT, False  # type: ignore
             )
@@ -166,7 +167,7 @@ class EthernityCloudRunner:
                     break
             except TransactionNotFound or TimeExhausted:
                 # we need to sleep here to avoid spamming the node
-                time.sleep(1)
+                time.sleep(3)
                 self.wait_for_transaction_to_be_processed(
                     contract, transaction_hash, attempt + 1
                 )
@@ -183,25 +184,28 @@ class EthernityCloudRunner:
         except Exception as e:
             return False
 
-    def get_current_wallet_public_key(self) -> HexStr:
-        account = self.protocol_contract.get_current_wallet()
-        key_b64 = account._publicapi._keys.private_key_to_public_key(account._key_obj)
+    def hex_to_bytes(self, hex_str: str) -> bytes:
+        return bytes.fromhex(hex_str[2:] if hex_str[:2] == "0x" else hex_str)
 
-        return key_b64.to_hex()
+    def bytes_to_hex(self, bytes_str: bytes) -> str:
+        return "0x" + hexlify(bytes_str).decode("utf-8")
+
+    def get_current_wallet_public_key(self) -> HexStr:
+        return self.bytes_to_hex(
+            PrivateKey.from_seed(
+                self.hex_to_bytes(os.environ.get("ADDRESS_PRIVATE_KEY", ""))
+            ).public_key._public_key
+        )
 
     def get_v3_image_metadata(self, challenge_hash: str) -> str:
-        base64_encrypted_challenge = encrypt_with_certificate(
-            challenge_hash, self.enclave_public_key
-        )
+        base64_encrypted_challenge = encrypt(challenge_hash, self.enclave_public_key)
         challenge_ipfs_hash = ipfsClient.upload_to_ipfs(base64_encrypted_challenge)
         public_key = self.get_current_wallet_public_key()
         return f"{VERSION}:{self.enclave_image_ipfs_hash}:{self.runner_type}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
 
     def get_v3_code_metadata(self, code: str) -> str:
         script_checksum = sha256(code)
-        base64_encrypted_script = encrypt_with_certificate(
-            code, self.enclave_public_key
-        )
+        base64_encrypted_script = encrypt(code.encode("utf-8"), self.enclave_public_key)
         self.script_hash = ipfsClient.upload_to_ipfs(base64_encrypted_script)
         script_checksum = self.protocol_contract.sign_message(script_checksum)
         return f"{VERSION}:{self.script_hash}:{script_checksum.signature.hex()}"
@@ -259,7 +263,7 @@ class EthernityCloudRunner:
                     raise
                 else:
                     print(
-                        f"{datetime.now()} - Request {self.do_request} created successfuly!",
+                        f"{datetime.now()} - Request {self.do_request} created successfully!",
                         "message",
                     )
                     self.do_hash = transaction_hash
@@ -282,7 +286,7 @@ class EthernityCloudRunner:
                 )
             return False
 
-    def parse_order_result(self, result: str) -> dict[str, str]:
+    def parse_order_result(self, result: str) -> dict[str, Any]:
         try:
             arr = result.split(":")
             t_bytes = arr[1] if arr[1].startswith("0x") else f"0x{arr[1]}"
@@ -296,26 +300,27 @@ class EthernityCloudRunner:
 
     def parse_transaction_bytes(self, bytes: bytes) -> dict[str, str]:
         try:
-            result = parse_transaction_bytes(self.protocol_abi, bytes)
+            result = parse_transaction_bytes_ut(self.protocol_abi, bytes)
             arr = result["result"].split(":")
             return {
                 "version": arr[0],
                 "from": result["from"],
                 "task_code": arr[1],
-                "task_code_string": ECOrderTaskStatus[arr[1]],
+                "task_code_string": ECOrderTaskStatus[int(arr[1])],
                 "checksum": arr[2],
                 "enclave_challenge": arr[3],
             }
-        except Exception:
+        except Exception as ex:
             raise ValueError(ECError.PARSE_ERROR)
 
     def get_result_from_order(self, order_id: int) -> dict[str, Any] | Any:
+        decrypted_data = {}
         try:
             # stuck here
             order_result = self.protocol_contract.get_result_from_order(order_id)
-            self.protocol_contract.ethernity_contract.caller(
-                transaction={"from": SIGNER_ACCOUNT.address}
-            )._getResultFromOrder(order_id)
+            # self.protocol_contract.ethernity_contract.caller(
+            #     transaction={"from": SIGNER_ACCOUNT.address}
+            # )._getResultFromOrder(order_id)
             self.dispatch_ec_event(
                 f"Task with order number {order_id} was successfully processed at {format_date()}."
             )
@@ -323,29 +328,34 @@ class EthernityCloudRunner:
             self.dispatch_ec_event(
                 f"Result IPFS hash: {parsed_order_result['result_ipfs_hash']}"
             )
+
             transaction_result = self.parse_transaction_bytes(
                 parsed_order_result["transaction_bytes"]
             )
             wallet = generate_wallet(
-                self.challenge_hash, transaction_result["enclave_challenge"]
+                self.challenge_hash.decode("utf-8"),  # type: ignore
+                transaction_result["enclave_challenge"],
             )
             if not wallet or wallet != transaction_result["from"]:
                 return {
                     "success": False,
                     "message": "Integrity check failed, signer wallet address is wrong.",
                 }
-            ipfs_result = ipfsClient.get_from_ipfs(
+            ipfs_result = ipfsClient.get_file_content(
                 parsed_order_result["result_ipfs_hash"]
             )
             current_wallet_address = self.protocol_contract.get_current_wallet()
-            decrypted_data = decrypt_with_private_key(
-                ipfs_result, current_wallet_address
+            # decrypted_data = decrypt_with_private_key(
+            decrypted_data = decrypt_nacl(
+                os.environ.get("ADDRESS_PRIVATE_KEY"), ipfs_result
             )
             if not decrypted_data["success"]:
                 return {
                     "success": False,
                     "message": "Could not decrypt the order result.",
                 }
+
+            self.dispatch_ec_event(f"Result value: {decrypted_data['data']}")
             self.dispatch_ec_event(f"Result value: {decrypted_data['data']}")
             ipfs_result_checksum = sha256(decrypted_data["data"])
             if ipfs_result_checksum != transaction_result["checksum"]:
@@ -394,7 +404,7 @@ class EthernityCloudRunner:
                 "result": decrypted_data["data"],
             }
         except Exception as ex:
-            print(ex)
+            # print(ex)
             if str(ex) == ECError.PARSE_ERROR:
                 return {
                     "success": False,
@@ -411,14 +421,14 @@ class EthernityCloudRunner:
 
     def process_task(self, code: str) -> bool:
         # self.listen_for_add_do_request_event()
-        self.challenge_hash = generate_random_hex_of_size(20)
+        self.challenge_hash = generate_random_hex_of_size(20).encode("utf-8")
         image_metadata = self.get_v3_image_metadata(self.challenge_hash)
         code_metadata = self.get_v3_code_metadata(code)
         input_metadata = self.get_v3_input_metadata()
-        do_sent_successfuly = self.create_do_request(
+        do_sent_successfully = self.create_do_request(
             image_metadata, code_metadata, input_metadata, self.node_address, None
         )
-        if do_sent_successfuly:
+        if do_sent_successfully:
             self._wait_for_processor()
             return True
 
@@ -439,6 +449,7 @@ class EthernityCloudRunner:
 
                 if self.get_result_from_order(order):
                     break
+                time.sleep(5)
             else:
                 time.sleep(5)
 
@@ -446,7 +457,8 @@ class EthernityCloudRunner:
         count = self.token_contract.functions._getOrdersCount().call()
         for i in range(count - 1, count - 5, -1):
             order = self.token_contract.caller()._getOrder(i)
-            if order[2] == doreq and order[4] == 0:
+            # if order[2] == doreq and order[4] == 0:
+            if order[2] == doreq:
                 return i
         return None
 
@@ -469,7 +481,9 @@ class EthernityCloudRunner:
                 print("erorr = ", e)
                 raise
             else:
-                print(f"{datetime.now()} - Order {order} approved successfuly!", "info")
+                print(
+                    f"{datetime.now()} - Order {order} approved successfully!", "info"
+                )
                 print(f"{datetime.now()} - TX Hash: {transaction_hash}", "message")
                 break
 

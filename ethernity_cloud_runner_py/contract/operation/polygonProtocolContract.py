@@ -10,7 +10,7 @@ from web3.middleware.geth_poa import geth_poa_middleware
 from web3.types import TxParams
 
 from ..abi.polygonAbi import contract as polygonAbi
-from ...enums import ECNetworkByChainIdDictionary
+from ...enums import ECNetworkByChainIdDictionary, ECNetworkRPCDictionary
 
 
 class PolygonProtocolContract:
@@ -19,11 +19,7 @@ class PolygonProtocolContract:
     ) -> None:
         self.is_main_net = is_main_net
         self.network_address = network_address
-        _rpc_url = (
-            "https://polygon-rpc.com"
-            if is_main_net
-            else "https://rpc-amoy.polygon.technology"
-        )
+        _rpc_url = ECNetworkRPCDictionary[network_address]
         self.provider = Web3(Web3.HTTPProvider(_rpc_url))
         self.provider.enable_unstable_package_management_api()
         self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)

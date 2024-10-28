@@ -8,7 +8,7 @@ from web3.middleware.geth_poa import geth_poa_middleware
 from web3.types import TxParams
 
 from ...contract.abi.imageRegistryAbi import contract
-from ...enums import ECAddress, ECRunner
+from ...enums import ECAddress, ECRunner, ECNetworkRPCDictionary
 
 
 class ImageRegistryContract:
@@ -19,8 +19,8 @@ class ImageRegistryContract:
         signer: Any = None,
     ):
         self.signer = signer
+        self.provider = self.newProvider(ECNetworkRPCDictionary[network_address])
         if network_address == ECAddress.BLOXBERG.TESTNET_ADDRESS:
-            self.provider = self.newProvider("https://bloxberg.ethernity.cloud")
             if runner_type == ECRunner.BLOXBERG.NODENITHY_RUNNER_TESTNET:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
@@ -28,7 +28,7 @@ class ImageRegistryContract:
                     ),
                     abi=contract["abi"],
                 )
-                self.provider.eth.contract()
+                # self.provider.eth.contract()
             elif runner_type == ECRunner.BLOXBERG.PYNITHY_RUNNER_TESTNET:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
@@ -37,7 +37,6 @@ class ImageRegistryContract:
                     abi=contract["abi"],
                 )
         elif network_address == ECAddress.BLOXBERG.MAINNET_ADDRESS:
-            self.provider = self.newProvider("https://bloxberg.ethernity.cloud")
             if runner_type == ECRunner.BLOXBERG.NODENITHY_RUNNER:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
@@ -53,7 +52,6 @@ class ImageRegistryContract:
                     abi=contract["abi"],
                 )
         elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
-            self.provider = self.newProvider("https://polygon-rpc.com")
             if runner_type == ECRunner.POLYGON.NODENITHY_RUNNER:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
@@ -69,7 +67,6 @@ class ImageRegistryContract:
                     abi=contract["abi"],
                 )
         elif network_address == ECAddress.POLYGON.TESTNET_ADDRESS:
-            self.provider = self.newProvider("https://rpc-amoy.polygon.technology")
             if runner_type == ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(

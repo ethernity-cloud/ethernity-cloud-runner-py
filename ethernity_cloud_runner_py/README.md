@@ -58,7 +58,7 @@ from ethernity_cloud_runner_py.utils import delay
 
 
 def execute_task() -> None:
-    ipfs_address = "https://ipfs.ethernity.cloud:5001/api/v0"
+    ipfs_address = "http://ipfs.ethernity.cloud:5001/api/v0"
     code = '___etny_result___("Hello, World!")'
 
     runner = EthernityCloudRunner()

@@ -1,21 +1,24 @@
 from decimal import Decimal
 from typing import Any
-
+import time
 from eth_account.messages import encode_defunct
 from eth_typing import Address, HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
-from web3.middleware.geth_poa import geth_poa_middleware
 from web3.types import TxParams
+from web3.middleware import geth_poa_middleware
 
-from ..abi.bloxbergAbi import contract as bloxbergAbi
-from ...enums import ECNetworkByChainIdDictionary
+from ethernity_cloud_runner_py.contract.abi.bloxbergAbi import contract as bloxbergAbi
+from ethernity_cloud_runner_py.enums import (
+    ECNetworkByChainIdDictionary,
+    ECNetworkRPCDictionary,
+)
 
 
 class BloxbergProtocolContract:
     def __init__(self, network_address: Address, signer: Any) -> None:
         self.network_address = network_address
-        self.provider = Web3(Web3.HTTPProvider("https://bloxberg.ethernity.cloud"))
+        self.provider = Web3(Web3.HTTPProvider(ECNetworkRPCDictionary[network_address]))
         self.provider.enable_unstable_package_management_api()
         self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)
 
@@ -32,10 +35,10 @@ class BloxbergProtocolContract:
     def __transaction_object(self) -> TxParams:
         nonce = self.provider.eth.get_transaction_count(self.signer.address)
         return {
-            "gas": 10000000,  # type: ignore
+            "gas": 1000000,  # type: ignore
             "chainId": 8995,
             "nonce": nonce,
-            "gasPrice": self.provider.to_wei("10", "mwei"),  # type: ignore
+            "gasPrice": self.provider.to_wei("1", "mwei"),  # type: ignore
         }
 
     def get_signer(self) -> Any:
@@ -134,7 +137,15 @@ class BloxbergProtocolContract:
         return self.provider.to_hex(self.provider.keccak(signed_txn.rawTransaction))
 
     def get_result_from_order(self, order_id: int) -> Any:
-        self.ethernity_contract.caller()._getOrder(order_id)
+        i = 0
+        status = self.ethernity_contract.caller()._getOrder(order_id)[4]
+        while status == 1:
+            print(
+                f'{"*" if i % 2 == 0 else "#"} Waiting for transaction to be processed...'
+            )
+            i += 1
+            time.sleep(5)
+            status = self.ethernity_contract.caller()._getOrder(order_id)[4]
         return self.ethernity_contract.caller()._getResultFromOrder(order_id)
 
     def is_node_operator(self, account: str) -> bool:

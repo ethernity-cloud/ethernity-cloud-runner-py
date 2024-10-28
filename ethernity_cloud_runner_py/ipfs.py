@@ -3,7 +3,7 @@ import requests  # type: ignore
 
 class IPFSClient:
     def __init__(
-        self, api_url: str = "https://ipfs.ethernity.cloud:5001/api/v0", token: str = ""
+        self, api_url: str = "http://ipfs.ethernity.cloud:5001/api/v0", token: str = ""
     ) -> None:
         self.api_url = api_url
         self.headers = {}
@@ -68,8 +68,9 @@ class IPFSClient:
                 self.download_file(ipfs_hash, download_path, attempt + 1)
 
     def get_file_content(self, ipfs_hash: str, attempt: int = 0) -> str | None:
-        gateway_url = f"https://ipfs.io/ipfs/{ipfs_hash}"
-        response = requests.get(url=gateway_url, timeout=60, headers=self.headers)
+        url = self.api_url
+        gateway_url = f"{url}/cat?arg={ipfs_hash}"
+        response = requests.post(url=gateway_url, timeout=60, headers=self.headers)
 
         if response.status_code == 200:
             # TODO: use a get encoding function to determine the encoding

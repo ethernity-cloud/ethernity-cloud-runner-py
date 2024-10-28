@@ -15,15 +15,16 @@ class ECEvent(Enum):
     TASK_COMPLETED: str = "ecTaskCompleted"
 
 
-class ECOrderTaskStatus(Enum):
-    SUCCESS: int = 0
-    SYSTEM_ERROR: int = 1
-    KEY_ERROR: int = 2
-    SYNTAX_WARNING: int = 3
-    BASE_EXCEPTION: int = 4
-    PAYLOAD_NOT_DEFINED: int = 5
-    PAYLOAD_CHECKSUM_ERROR: int = 6
-    INPUT_CHECKSUM_ERROR: int = 7
+ECOrderTaskStatus = {
+    0: "SUCCESS",
+    1: "SYSTEM_ERROR",
+    2: "KEY_ERROR",
+    3: "SYNTAX_WARNING",
+    4: "BASE_EXCEPTION",
+    5: "PAYLOAD_NOT_DEFINED",
+    6: "PAYLOAD_CHECKSUM_ERROR",
+    7: "INPUT_CHECKSUM_ERROR",
+}
 
 
 class ECOrderTaskStatusCode(Enum):
@@ -118,6 +119,20 @@ ECNetworkName1Dictionary = {
     ECAddress.BLOXBERG.TESTNET_ADDRESS: "BLOXBERG",
     ECAddress.POLYGON.TESTNET_ADDRESS: "MUMBAI",
     ECAddress.POLYGON.MAINNET_ADDRESS: "POLYGON",
+}
+
+ECNetworkRPCDictionary = {
+    ECAddress.BLOXBERG.MAINNET_ADDRESS: "https://core.bloxberg.org",
+    ECAddress.BLOXBERG.TESTNET_ADDRESS: "https://core.bloxberg.org",
+    ECAddress.POLYGON.TESTNET_ADDRESS: "https://rpc-mumbai.matic.today",
+    ECAddress.POLYGON.MAINNET_ADDRESS: "https://rpc-mainnet.maticvigil.com",
+}
+
+ECNetworkEnvToEnum = {
+    "bloxberg_mainnet": ECAddress.BLOXBERG.MAINNET_ADDRESS,
+    "bloxberg_testnet": ECAddress.BLOXBERG.TESTNET_ADDRESS,
+    "polygon_testnet": ECAddress.POLYGON.TESTNET_ADDRESS,
+    "polygon_mainnet": ECAddress.POLYGON.MAINNET_ADDRESS,
 }
 
 ZERO_CHECKSUM = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
