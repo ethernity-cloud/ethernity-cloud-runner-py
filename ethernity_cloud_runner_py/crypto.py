@@ -200,7 +200,7 @@ def encrypt_nacl(public_key: str, data: bytes) -> str:
 #     return hex(point.x) + hex(point.y % 2)[2:]
 
 
-def sha256(value: str, as_hex: bool = False) -> str | bytes:
+def sha256(value: str, as_hex: bool = False) -> bytes:
     sha = hashlib.sha256(value.encode()).hexdigest()
     return sha if as_hex else sha.encode()
 

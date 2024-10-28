@@ -10,7 +10,7 @@ class IPFSClient:
         if token:
             self.headers = {"authorization": token}
 
-    def upload_file(self, file_path: str) -> str | None:
+    def upload_file(self, file_path: str) -> None:
         add_url = f"{self.api_url}/add"
 
         with open(file_path, "rb") as file:
@@ -31,7 +31,7 @@ class IPFSClient:
             print(response.text)
             return None
 
-    def upload_to_ipfs(self, data: str) -> str | None:
+    def upload_to_ipfs(self, data: str) -> None:
         add_url = f"{self.api_url}/add"
         files = {"file": data}
         response = requests.post(add_url, files=files, headers=self.headers)
@@ -67,7 +67,7 @@ class IPFSClient:
             if attempt < 6:
                 self.download_file(ipfs_hash, download_path, attempt + 1)
 
-    def get_file_content(self, ipfs_hash: str, attempt: int = 0) -> str | None:
+    def get_file_content(self, ipfs_hash: str, attempt: int = 0) -> None:
         url = self.api_url
         gateway_url = f"{url}/cat?arg={ipfs_hash}"
         response = requests.post(url=gateway_url, timeout=60, headers=self.headers)

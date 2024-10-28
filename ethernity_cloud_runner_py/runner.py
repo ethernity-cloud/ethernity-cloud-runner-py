@@ -145,7 +145,7 @@ class EthernityCloudRunner:
 
     def get_reason(
         self, contract: Contract, tx_hash: str
-    ) -> Any | Literal["Transaction hash not found"]:
+    ) -> Literal["Transaction hash not found"]:
         tx = contract.get_provider().get_transaction(tx_hash)  # type: ignore
         if not tx:
             print("tx not found")
@@ -175,7 +175,7 @@ class EthernityCloudRunner:
         print(tx_receipt)
         return not (not tx_receipt and tx_receipt.status == 0)
 
-    def check_web3_connection(self) -> Any | Literal[False]:
+    def check_web3_connection(self) -> Literal[False]:
         try:
             # self.token_contract.get_provider().send("eth_requestAccounts", [])
             self.protocol_contract.get_provider()
@@ -220,8 +220,8 @@ class EthernityCloudRunner:
         code_metadata: str,
         input_metadata: str,
         node_address: Address,
-        gas_limit: int | None = None,
-    ) -> Any | bool:
+        gas_limit: None = None,
+    ) -> bool:
         try:
             __provider = self.protocol_contract.get_provider()
             self.dispatch_ec_event(
@@ -313,7 +313,7 @@ class EthernityCloudRunner:
         except Exception as ex:
             raise ValueError(ECError.PARSE_ERROR)
 
-    def get_result_from_order(self, order_id: int) -> dict[str, Any] | Any:
+    def get_result_from_order(self, order_id: int) -> Any:
         decrypted_data = {}
         try:
             # stuck here

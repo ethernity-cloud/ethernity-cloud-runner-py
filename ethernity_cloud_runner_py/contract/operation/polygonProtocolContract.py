@@ -54,7 +54,7 @@ class PolygonProtocolContract:
     def get_current_wallet(self) -> Any:
         return self.signer
 
-    def get_balance(self) -> int | Decimal:
+    def get_balance(self) -> int:
         try:
             address = self.signer.address
             balance = self.ethernity_contract.functions.balanceOf(address).call()
@@ -103,7 +103,7 @@ class PolygonProtocolContract:
         input_metadata: str,
         node_address: Address,
         resources: dict,
-        gas_limit: int | None = None,
+        gas_limit: None = None,
     ) -> HexStr:
         cpu = resources.get("cpu", 1)
         memory = resources.get("memory", 1)

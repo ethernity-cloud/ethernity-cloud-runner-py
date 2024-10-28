@@ -8,10 +8,12 @@
 
 ### Installation
 
-To begin developing with the Ethernity Cloud Runner, you need to set up your environment by installing the required packages using pip:
+To begin developing with the Ethernity Cloud Runner, you need to set up your environment:
 
 ```console
-$ pip install web3 ipfshttpclient
+$ python -m 'venv' venv
+$ source venv/bin/activate
+$ pip install ethernity-cloud-runner-py-dev
 ```
 
 This command will install the necessary dependencies for the Ethernity Cloud Runner package. With the packages installed, you're ready to start utilizing the Ethernity Cloud Runner functionality and explore its capabilities for your application development.
@@ -46,36 +48,37 @@ To execute a new task using the Ethernity Cloud Runner, follow the straightforwa
 
 ```python
 # ethernity_task.py
-
 import os
 import sys
 
-sys.path.append(os.getcwd() + "/ethernity_cloud_runner_py")
-
-from ethernity_cloud_runner_py.runner import EthernityCloudRunner
-from ethernity_cloud_runner_py.enums import ECEvent, ECStatus
-from ethernity_cloud_runner_py.utils import delay
+from ethernity_cloud_runner_py.runner import EthernityCloudRunner  # type: ignore
 
 
 def execute_task() -> None:
     ipfs_address = "http://ipfs.ethernity.cloud:5001/api/v0"
-    code = '___etny_result___("Hello, World!")'
+
+    code = '___etny_result___("Hello, Python World!")'
 
     runner = EthernityCloudRunner()
     runner.initialize_storage(ipfs_address)
 
     resources = {
-        "taskPrice": 10,
+        "taskPrice": 8,
         "cpu": 1,
         "memory": 1,
-        "storage": 40,
+        "storage": 1,
         "bandwidth": 1,
         "duration": 1,
         "validators": 1,
     }
     # this will execute a new task using Python template and will run the code provided above
     # the code will run on the TESTNET network
-    runner.run("etny-pynithy-testnet", code, "", resources)
+    runner.run(
+        "etny-pynithy-testnet",
+        code,
+        "",
+        resources,
+    )
 
 
 if __name__ == "__main__":
@@ -88,6 +91,13 @@ Save the above script as `ethernity_task.py` and run it from the command line:
 ```sh
 $ python ethernity_task.py
 ```
+
+make sure to have .env file with the following content:
+
+```sh
+ADDRESS_PRIVATE_KEY=42....
+```
+Without it the script will not be able to make blockchain transactions.
 
 This script will initialize the `EthernityCloudRunner`, set up the necessary event listeners, and execute a task using the provided code. The results and progress of the task execution will be printed to the console.
 
