@@ -4,7 +4,7 @@
   </a>
 </p>
 
-<h3 align="center">The Python implementation of the Ethernity CLOUD protocol</h3>
+<h3 align="center">The Python implementation of the Ethernity CLOUD runner protocol</h3>
 
 ### Installation
 
@@ -13,7 +13,7 @@ To begin developing with the Ethernity Cloud Runner, you need to set up your env
 ```console
 $ python -m 'venv' venv
 $ source venv/bin/activate
-$ pip install ethernity-cloud-runner-py-dev
+$ pip install ethernity-cloud-runner-py
 ```
 
 This command will install the necessary dependencies for the Ethernity Cloud Runner package. With the packages installed, you're ready to start utilizing the Ethernity Cloud Runner functionality and explore its capabilities for your application development.
