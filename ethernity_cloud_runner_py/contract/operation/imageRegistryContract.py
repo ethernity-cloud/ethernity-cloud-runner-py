@@ -101,8 +101,8 @@ class ImageRegistryContract:
         self, image_name: str, version: str, trustedZoneImage: str = ""
     ) -> Any:
         try:
-            if not trustedZoneImage:
-                return self.contract.functions.getLatestTrustedZoneImageDetails(
+            if not trustedZoneImage or image_name == trustedZoneImage:
+                return self.contract.functions.getLatestTrustedZoneImageCertPublicKey(
                     image_name, version
                 ).call()
             else:

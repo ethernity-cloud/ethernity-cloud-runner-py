@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="ethernity-cloud-runner-py-dev",
-    version="0.0.7",
+    name="ethernity-cloud-runner-py",
+    version="0.0.9",
     url="https://github.com/ethernity-cloud/ethernity-cloud-runner-py",
     author="Ethernity Cloud Team",
     author_email="alexlga@gmail.com",

@@ -73,11 +73,18 @@ class PolygonProtocolContract:
             current_wallet_address, protocol_address
         ).call()
         if allowance < task_price_amount:
-            approve_tx = self.ethernity_contract.functions.approve(
+            tx = self.ethernity_contract.functions.approve(
                 protocol_address, allowance_amount
-            ).transact()
+            ).build_transaction(self.__transaction_object)
+            signed_tx = self.provider.eth.account.sign_transaction(
+                tx, private_key=self.signer._private_key
+            )
+            self.provider.eth.send_raw_transaction(signed_tx.rawTransaction)
+            recept = self.provider.to_hex(
+                self.provider.keccak(signed_tx.rawTransaction)
+            )
             try:
-                self.provider.eth.wait_for_transaction_receipt(approve_tx)
+                self.provider.eth.wait_for_transaction_receipt(recept)
                 allowance = self.ethernity_contract.functions.allowance(
                     current_wallet_address, protocol_address
                 ).call()
