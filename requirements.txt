@@ -1,0 +1,9 @@
+web3
+ipfshttpclient
+python-dotenv
+tinyec
+cryptography
+requests
+pyasn1
+pynacl
+coincurve
