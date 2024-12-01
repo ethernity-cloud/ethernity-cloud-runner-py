@@ -3,7 +3,7 @@ import requests  # type: ignore
 
 class IPFSClient:
     def __init__(
-        self, api_url: str = "http://ipfs.ethernity.cloud:5001/api/v0", token: str = ""
+        self, api_url: str = "https://ipfs.ethernity.cloud/api/v0", token: str = ""
     ) -> None:
         self.api_url = api_url
         self.headers = {}
