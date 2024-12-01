@@ -139,7 +139,7 @@ class EthernityCloudRunner:
 
     def get_enclave_details(self) -> bool:
         details = self.image_registry_contract.get_enclave_details_v3(
-            self.runner_type, VERSION, self.trustedZoneImage
+            self.securelock_enclave, VERSION, self.trustedZoneImage
         )
         if details:
             (
@@ -220,7 +220,7 @@ class EthernityCloudRunner:
                 f"Uploaded challenge to IPFS: {challenge_ipfs_hash}"
             )
         public_key = self.get_current_wallet_public_key()
-        return f"{VERSION}:{self.enclave_image_ipfs_hash}:{self.runner_type if not self.trustedZoneImage else self.trustedZoneImage}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
+        return f"{VERSION}:{self.enclave_image_ipfs_hash}:{self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
 
     def get_v3_code_metadata(self, code: str) -> str:
         script_checksum = sha256(code)
@@ -291,7 +291,7 @@ class EthernityCloudRunner:
                         f"{transaction_hash} confirmed!"
                     )
                     self.log_append(
-                        f"Request {self.do_request} created successfully!"
+                        f"Request {self.do_request} was created successfully!"
                     )
                     self.do_hash = transaction_hash
                     break
@@ -384,7 +384,7 @@ class EthernityCloudRunner:
                 parsed_order_result["result_ipfs_hash"]
             )
             self.log_append(
-                f"Validating proof result..."
+                f"Validating proof..."
             )
             current_wallet_address = self.protocol_contract.get_current_wallet()
             # decrypted_data = decrypt_with_private_key(
@@ -443,7 +443,7 @@ class EthernityCloudRunner:
                 "input_transaction_hash": self.do_hash,
                 "output_transaction_hash": result_transaction_hash,
                 "order_id": order_id,
-                "image_hash": f"{self.enclave_image_ipfs_hash}:{self.runner_type}",
+                "image_hash": f"{self.enclave_image_ipfs_hash}:{self.securelock_enclave}",
                 "script_hash": self.script_hash,
                 "file_set_hash": self.file_set_hash,
                 "public_timestamp": block_timestamp,
@@ -496,7 +496,7 @@ class EthernityCloudRunner:
             try:
                 if self.find_order(self.do_request):
                     self.log_append(
-                        f"Connected !"
+                        f"Connected!"
                     )
                     break
             except Exception as e:
@@ -619,9 +619,10 @@ class EthernityCloudRunner:
     def run(
         self,
         resources: Union[dict, None],
-        runner_type: str,
+        securelock_enclave: str,
         code: str,
         node_address: str = "",
+        trustedzone_enclave: str = "etny-pynithy-testnet",
     ) -> None:
         if resources is None:
             resources = {
@@ -652,7 +653,7 @@ class EthernityCloudRunner:
         # Start task thread
         self.task_thread = threading.Thread(
             target=self._process_events,
-            args=(runner_type, code, node_address, resources),
+            args=(securelock_enclave, code, node_address, resources),
             daemon=True
         )
         self.task_thread.start()
@@ -669,7 +670,7 @@ class EthernityCloudRunner:
         for event in events:
             self.event_queue.put(event)
 
-    def _process_events(self, runner_type, code, node_address, resources):
+    def _process_events(self, securelock_enclave, code, node_address, resources):
         """Process events from the queue."""
         try:
             while not self.event_queue.empty():
@@ -705,15 +706,15 @@ class EthernityCloudRunner:
                         self.log_append(error_message, ECLog.ERROR)
                         self.processed_events.append(event)
                         return
-                    self.log_append("Checking image registry task...")
+                    self.log_append("Checking image registry...")
 
-                    self.runner_type = runner_type
+                    self.securelock_enclave = securelock_enclave
                     self.cleanup()
    
                     self.image_registry_contract = ImageRegistryContract(
                         self.network_address,
                         (
-                            self.runner_type
+                            self.securelock_enclave
                             if not self.trustedZoneImage
                             else self.trustedZoneImage
                         ),
