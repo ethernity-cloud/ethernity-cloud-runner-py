@@ -62,7 +62,7 @@ class BloxbergProtocolContract:
             print(e)
             return 0
 
-def check_and_set_allowance(
+    def check_and_set_allowance(
         self, protocol_address: Address, amount: str, task_price: str
     ) -> bool:
         allowance_amount = Web3.to_wei(amount, "ether")
@@ -141,16 +141,11 @@ def check_and_set_allowance(
         self.provider.eth.send_raw_transaction(signed_txn.rawTransaction)
         return self.provider.to_hex(self.provider.keccak(signed_txn.rawTransaction))
 
+
+    def get_status_from_order(self, order_id: int) -> Any:
+        return self.ethernity_contract.caller()._getOrder(order_id)[4]
+    
     def get_result_from_order(self, order_id: int) -> Any:
-        i = 0
-        status = self.ethernity_contract.caller()._getOrder(order_id)[4]
-        while status == 1:
-            print(
-                f'{"*" if i % 2 == 0 else "#"} Waiting for transaction to be processed...'
-            )
-            i += 1
-            time.sleep(5)
-            status = self.ethernity_contract.caller()._getOrder(order_id)[4]
         return self.ethernity_contract.caller()._getResultFromOrder(order_id)
 
     def is_node_operator(self, account: str) -> bool:

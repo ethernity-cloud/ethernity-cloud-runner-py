@@ -3,7 +3,7 @@ import requests  # type: ignore
 
 class IPFSClient:
     def __init__(
-        self, api_url: str = "http://ipfs.ethernity.cloud:5001/api/v0", token: str = ""
+        self, api_url: str = "https://ipfs.ethernity.cloud/api/v0", token: str = ""
     ) -> None:
         self.api_url = api_url
         self.headers = {}
@@ -40,10 +40,8 @@ class IPFSClient:
             try:
                 response_data = response.json()
                 ipfs_hash = response_data["Hash"]
-                print(f"Successfully uploaded to IPFS. Hash: {ipfs_hash}")
                 return ipfs_hash
             except Exception as e:
-                print(f"Failed to upload to IPFS. Error: {e}")
                 return None
         else:
             print(f"Failed to upload to IPFS. Status code: {response.status_code}")

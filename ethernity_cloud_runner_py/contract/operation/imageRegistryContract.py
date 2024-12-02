@@ -15,13 +15,13 @@ class ImageRegistryContract:
     def __init__(
         self,
         network_address: Address = ECAddress.BLOXBERG.TESTNET_ADDRESS,  # type: ignore
-        runner_type: str = ECRunner.BLOXBERG.NODENITHY_RUNNER,
+        runner_type: str = ECRunner.BLOXBERG["PYNITHY_RUNNER"],
         signer: Any = None,
     ):
         self.signer = signer
         self.provider = self.newProvider(ECNetworkRPCDictionary[network_address])
         if network_address == ECAddress.BLOXBERG.TESTNET_ADDRESS:
-            if runner_type == ECRunner.BLOXBERG.NODENITHY_RUNNER_TESTNET:
+            if runner_type == ECRunner.BLOXBERG["NODENITHY_RUNNER_TESTNET"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.TESTNET_ADDRESS
@@ -29,7 +29,7 @@ class ImageRegistryContract:
                     abi=contract["abi"],
                 )
                 # self.provider.eth.contract()
-            elif runner_type == ECRunner.BLOXBERG.PYNITHY_RUNNER_TESTNET:
+            elif runner_type == ECRunner.BLOXBERG["PYNITHY_RUNNER_TESTNET"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS
@@ -37,14 +37,14 @@ class ImageRegistryContract:
                     abi=contract["abi"],
                 )
         elif network_address == ECAddress.BLOXBERG.MAINNET_ADDRESS:
-            if runner_type == ECRunner.BLOXBERG.NODENITHY_RUNNER:
+            if runner_type == ECRunner.BLOXBERG["NODENITHY_RUNNER"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS
                     ),
                     abi=contract["abi"],
                 )
-            elif runner_type == ECRunner.BLOXBERG.PYNITHY_RUNNER:
+            elif runner_type == ECRunner.BLOXBERG["PYNITHY_RUNNER"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS
@@ -52,14 +52,14 @@ class ImageRegistryContract:
                     abi=contract["abi"],
                 )
         elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
-            if runner_type == ECRunner.POLYGON.NODENITHY_RUNNER:
+            if runner_type == ECRunner.POLYGON["NODENITHY_RUNNER"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS
                     ),
                     abi=contract["abi"],
                 )
-            elif runner_type == ECRunner.POLYGON.PYNITHY_RUNNER:
+            elif runner_type == ECRunner.POLYGON["PYNITHY_RUNNER"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS
@@ -67,14 +67,14 @@ class ImageRegistryContract:
                     abi=contract["abi"],
                 )
         elif network_address == ECAddress.POLYGON.TESTNET_ADDRESS:
-            if runner_type == ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET:
+            if runner_type == ECRunner.POLYGON["NODENITHY_RUNNER_TESTNET"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.TESTNET_ADDRESS
                     ),
                     abi=contract["abi"],
                 )
-            elif runner_type == ECRunner.POLYGON.PYNITHY_RUNNER_TESTNET:
+            elif runner_type == ECRunner.POLYGON["PYNITHY_RUNNER_TESTNET"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS

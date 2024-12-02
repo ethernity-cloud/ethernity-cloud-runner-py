@@ -1,18 +1,18 @@
 from enum import Enum
-
+from enum import IntEnum
 
 class ECStatus(Enum):
-    ERROR: str = "error"
-    SUCCESS: str = "success"
-    DEFAULT: str = ""
+    ERROR: str = "Error"
+    SUCCESS: str = "Success"
+    RUNNING: str = "Running"
 
 
 class ECEvent(Enum):
-    TASK_CREATED: str = "ecTaskCreated"
-    TASK_ORDER_PLACED: str = "ecTaskOrderPlaced"
-    TASK_NOT_PROCESSED: str = "ecTaskNotProcessed"
-    TASK_PROGRESS: str = "ecTaskProgress"
-    TASK_COMPLETED: str = "ecTaskCompleted"
+    INIT: str = "Task initialized"
+    CREATED: str = "Task created"
+    ORDER_PLACED: str = "Order placed"
+    IN_PROGRESS: str = "In Progress"
+    FINISHED: str = "Finished"
 
 
 ECOrderTaskStatus = {
@@ -57,17 +57,21 @@ class ECNetwork:
 
 
 class ECRunner:
-    class BLOXBERG:
-        PYNITHY_RUNNER_TESTNET = "etny-pynithy-testnet"
-        NODENITHY_RUNNER_TESTNET = "etny-nodenithy-testnet"
-        PYNITHY_RUNNER = "etny-pynithy"
-        NODENITHY_RUNNER = "etny-nodenithy"
-
-    class POLYGON:
-        PYNITHY_RUNNER_TESTNET = "ecld-pynithy-mumbai"
-        NODENITHY_RUNNER_TESTNET = "ecld-nodenithy"
-        PYNITHY_RUNNER = "ecld-pynithy"
-        NODENITHY_RUNNER = "ecld-nodenithy"
+    BLOXBERG = {
+        "PYNITHY_RUNNER_TESTNET": "etny-pynithy-testnet",
+        "NODENITHY_RUNNER_TESTNET": "etny-nodenithy-testnet",
+        "PYNITHY_RUNNER": "etny-pynithy",
+        "NODENITHY_RUNNER": "etny-nodenithy"
+    }
+    POLYGON = {
+        "PYNITHY_RUNNER_TESTNET": "ecld-pynithy-mumbai",
+        "NODENITHY_RUNNER_TESTNET": "ecld-nodenithy",
+        "PYNITHY_RUNNER": "ecld-pynithy",
+        "NODENITHY_RUNNER": "ecld-nodenithy"
+    }
+    
+    def __getitem__(self, key):
+        return getattr(self, key)
 
 
 class ECAddress:
@@ -141,3 +145,9 @@ ZERO_CHECKSUM = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85
 class ECError(Enum):
     PARSE_ERROR = "EtnyParseError"
     IPFS_DOWNLOAD_ERROR = "ECIPFSDownloadError"
+
+class ECLog(IntEnum):
+    ERROR = 1
+    WARNING = 2
+    INFO = 3
+    DEBUG = 4
