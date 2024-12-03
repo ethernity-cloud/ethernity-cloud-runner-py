@@ -25,7 +25,11 @@ class PolygonProtocolContract:
         self.max_priority_fee_per_gas = 35
         _rpc_url = ECNetworkRPCDictionary[token_address]
         self.provider = Web3(Web3.HTTPProvider(_rpc_url))
+<<<<<<< HEAD
 
+=======
+        #self.provider.enable_unstable_package_management_api()
+>>>>>>> edda9da (v0.2.0)
         self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
         self.signer = signer
@@ -86,6 +90,19 @@ class PolygonProtocolContract:
             current_wallet_address, self.protocol_address
         ).call()
         if allowance < task_price_amount:
+<<<<<<< HEAD
+=======
+            tx = self.ethernity_contract.functions.approve(
+                protocol_address, allowance_amount
+            ).build_transaction(self.__transaction_object)
+            signed_tx = self.provider.eth.account.sign_transaction(
+                tx, private_key=self.signer._private_key
+            )
+            self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
+            recept = self.provider.to_hex(
+                self.provider.keccak(signed_tx.raw_transaction)
+            )
+>>>>>>> edda9da (v0.2.0)
             try:
                 tx = self.token_contract.functions.approve(
                     self.protocol_address, int(task_price_amount)
@@ -155,7 +172,10 @@ class PolygonProtocolContract:
         signed_tx = self.provider.eth.account.sign_transaction(
             tx, private_key=self.signer._private_key
         )
+<<<<<<< HEAD
 
+=======
+>>>>>>> edda9da (v0.2.0)
         self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
         return self.provider.to_hex(self.provider.keccak(signed_tx.raw_transaction))
 
