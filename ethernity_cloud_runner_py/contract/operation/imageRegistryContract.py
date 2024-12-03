@@ -4,7 +4,7 @@ from eth_typing import Address
 from eth_utils.address import to_checksum_address
 from web3 import Web3
 from web3.contract.contract import Contract
-from web3.middleware.geth_poa import geth_poa_middleware
+from web3.middleware import ExtraDataToPOAMiddleware
 from web3.types import TxParams
 
 from ...contract.abi.imageRegistryAbi import contract
@@ -84,8 +84,8 @@ class ImageRegistryContract:
 
     def newProvider(self, url: str) -> Web3:
         _w3 = Web3(Web3.HTTPProvider(url))
-        _w3.enable_unstable_package_management_api()
-        _w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        #_w3.enable_unstable_package_management_api()
+        _w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         return _w3
 
     def get_signer(self) -> Any:

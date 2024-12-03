@@ -328,7 +328,7 @@ class EthernityCloudRunner:
                 "result_ipfs_hash": arr[2],
             }
         except Exception:
-            raise ValueError(ECError.PARSE_ERROR)
+            raise ValueError(ECError.PARSE_ERROR.value)
 
     def parse_transaction_bytes(self, bytes: bytes) -> dict[str, str]:
         try:
@@ -343,7 +343,7 @@ class EthernityCloudRunner:
                 "enclave_challenge": arr[3],
             }
         except Exception as ex:
-            raise ValueError(ECError.PARSE_ERROR)
+            raise ValueError(ECError.PARSE_ERROR.value)
 
     def get_result_from_order(self, order_id: int) -> Any:
         decrypted_data = {}
@@ -453,7 +453,7 @@ class EthernityCloudRunner:
                 "result_timestamp": result_block_timestamp,
                 "value": decrypted_data["data"],
             }
-        except Exception as e:
+        except ValueError as e:
             self.log_append(
                 f"{e}", ECLog.ERROR
             )
