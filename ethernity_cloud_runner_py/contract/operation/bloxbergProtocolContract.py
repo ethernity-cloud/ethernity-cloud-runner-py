@@ -6,7 +6,7 @@ from eth_typing import Address, HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
 from web3.types import TxParams
-from web3.middleware import geth_poa_middleware
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from ethernity_cloud_runner_py.contract.abi.bloxbergAbi import contract as bloxbergAbi
 from ethernity_cloud_runner_py.enums import (
@@ -19,8 +19,8 @@ class BloxbergProtocolContract:
     def __init__(self, network_address: Address, signer: Any) -> None:
         self.network_address = network_address
         self.provider = Web3(Web3.HTTPProvider(ECNetworkRPCDictionary[network_address]))
-        self.provider.enable_unstable_package_management_api()
-        self.provider.middleware_onion.inject(geth_poa_middleware, layer=0)
+        #self.provider.enable_unstable_package_management_api()
+        self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
         self.signer = signer
         self.ethernity_contract = self.provider.eth.contract(  # type: ignore
@@ -78,8 +78,8 @@ class BloxbergProtocolContract:
             signed_tx = self.provider.eth.account.sign_transaction(
                 tx, private_key=self.signer._private_key
             )
-            self.provider.eth.send_raw_transaction(signed_tx.rawTransaction)
-            recept = self.provider.to_hex(self.provider.keccak(signed_tx.rawTransaction))
+            self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
+            recept = self.provider.to_hex(self.provider.keccak(signed_tx.raw_transaction))
             try:
                 self.provider.eth.wait_for_transaction_receipt(recept)
                 allowance = self.ethernity_contract.functions.allowance(
@@ -123,8 +123,8 @@ class BloxbergProtocolContract:
         signed_tx = self.provider.eth.account.sign_transaction(
             tx, private_key=self.signer._private_key
         )
-        self.provider.eth.send_raw_transaction(signed_tx.rawTransaction)
-        return self.provider.to_hex(self.provider.keccak(signed_tx.rawTransaction))
+        self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
+        return self.provider.to_hex(self.provider.keccak(signed_tx.raw_transaction))
 
     def get_order(self, order_id: int) -> int:
         return self.ethernity_contract.functions._getOrder(order_id).call()
@@ -138,8 +138,8 @@ class BloxbergProtocolContract:
         signed_txn = self.provider.eth.account.sign_transaction(
             unicorn_txn, private_key=self.signer._private_key
         )
-        self.provider.eth.send_raw_transaction(signed_txn.rawTransaction)
-        return self.provider.to_hex(self.provider.keccak(signed_txn.rawTransaction))
+        self.provider.eth.send_raw_transaction(signed_txn.raw_transaction)
+        return self.provider.to_hex(self.provider.keccak(signed_txn.raw_transaction))
 
 
     def get_status_from_order(self, order_id: int) -> Any:

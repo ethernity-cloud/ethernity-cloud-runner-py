@@ -71,10 +71,9 @@ def decrypt_nacl(private_key: str, encrypted_data_hex: str):
     """
     try:
         # Convert recipient's private key from hex to PrivateKey object
-        recipient_private_key = PrivateKey.from_seed(bytes.fromhex(private_key))
-
+        recipient_private_key = PrivateKey.from_seed(hex_to_bytes(private_key))
         # Convert the encrypted data from hex to bytes
-        encrypted_data = bytes.fromhex(encrypted_data_hex)
+        encrypted_data = hex_to_bytes(encrypted_data_hex)
 
         # Extract the ephemeral public key (first 32 bytes)
         emph_public_key_bytes = encrypted_data[:32]

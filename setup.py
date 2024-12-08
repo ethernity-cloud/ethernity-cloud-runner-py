@@ -13,7 +13,7 @@ print(this_directory);
 
 setup(
     name="ethernity-cloud-runner-py",
-    version="0.1.2",
+    version="0.2.1",
     url="https://github.com/ethernity-cloud/ethernity-cloud-runner-py",
     author="Ethernity Cloud Team",
     author_email="contact@ethernity.cloud",
@@ -22,8 +22,8 @@ setup(
     long_description_content_type="text/markdown",
     packages=find_packages("."),
     install_requires=[
-        "web3==6.19.0",
-        "eth-typing==4.3.0",
+        "web3==7.6.0",
+        "eth-typing",
         "ipfshttpclient",
         "python-dotenv",
         "tinyec",
@@ -32,5 +32,6 @@ setup(
         "pyasn1",
         "pynacl",
         "coincurve",
+        "ckzg==2.0.1"
     ],
 )
