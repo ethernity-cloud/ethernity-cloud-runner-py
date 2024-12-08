@@ -98,21 +98,21 @@ class ImageRegistryContract:
         return self.provider
 
     def get_enclave_details_v3(
-        self, image_name: str, version: str, trustedZoneImage: str = ""
+        self, secureLockImage: str, secureLockVersion: str, trustedZoneImage: str = "", trustedZoneVersion: str = ""
     ) -> Any:
         try:
-            if not trustedZoneImage or image_name == trustedZoneImage:
+            if not trustedZoneImage or secureLockImage == trustedZoneImage:
                 return self.contract.functions.getLatestTrustedZoneImageCertPublicKey(
-                    image_name, version
+                    secureLockImage, trustedZoneVersion
                 ).call()
             else:
                 trustedZonePublicKey = (
                     self.contract.functions.getLatestTrustedZoneImageCertPublicKey(
-                        trustedZoneImage, "v3"
+                        trustedZoneImage, trustedZoneVersion
                     ).call()[1]
                 )
                 imageDetails = self.contract.functions.getLatestImageVersionPublicKey(
-                    image_name, os.environ.get("VERSION")
+                    secureLockImage, secureLockVersion
                 ).call()
                 return [imageDetails[0], trustedZonePublicKey, imageDetails[2]]
         except Exception as e:

@@ -44,10 +44,11 @@ from .utils import (
 )
 
 LAST_BLOCKS = 20
-VERSION = "v3"
+TRUSTEDZONE_VERSION = "v3"
 
 class EthernityCloudRunner:
     def __init__(self, network_address: Address = ECAddress.BLOXBERG.TESTNET_ADDRESS) -> None:  # type: ignore
+        self.private_key = ""
         self.node_address = ""
         self.challenge_hash = ""
         self.do_hash = None
@@ -84,6 +85,7 @@ class EthernityCloudRunner:
         self.trustedZoneImage = ECRunner()[network.upper()]["PYNITHY_RUNNER_"+type.upper()]
         
     def set_private_key(self, private_key) -> None:
+        self.private_key = private_key
         self.signer = Account.from_key(private_key)
 
     def connect(self) -> None:
@@ -139,7 +141,7 @@ class EthernityCloudRunner:
 
     def get_enclave_details(self) -> bool:
         details = self.image_registry_contract.get_enclave_details_v3(
-            self.securelock_enclave, VERSION, self.trustedZoneImage
+            self.securelock_enclave, self.securelock_version, self.trustedZoneImage, TRUSTEDZONE_VERSION
         )
         if details:
             (
@@ -208,7 +210,7 @@ class EthernityCloudRunner:
     def get_current_wallet_public_key(self) -> HexStr:
         return self.bytes_to_hex(
             PrivateKey.from_seed(
-                self.hex_to_bytes(os.environ.get("PRIVATE_KEY", ""))
+                self.hex_to_bytes(self.private_key)
             ).public_key._public_key
         )
 
@@ -220,7 +222,7 @@ class EthernityCloudRunner:
                 f"Uploaded challenge to IPFS: {challenge_ipfs_hash}"
             )
         public_key = self.get_current_wallet_public_key()
-        return f"{VERSION}:{self.enclave_image_ipfs_hash}:{self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
+        return f"{TRUSTEDZONE_VERSION}:{self.enclave_image_ipfs_hash}:{self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
 
     def get_v3_code_metadata(self, code: str) -> str:
         script_checksum = sha256(code)
@@ -231,11 +233,11 @@ class EthernityCloudRunner:
                 f"Uploaded encrypted code to IPFS: {self.script_hash}"
             )
         script_checksum = self.protocol_contract.sign_message(script_checksum)
-        return f"{VERSION}:{self.script_hash}:{script_checksum.signature.hex()}"
+        return f"{TRUSTEDZONE_VERSION}:{self.script_hash}:{script_checksum.signature.hex()}"
 
     def get_v3_input_metadata(self) -> str:
         file_set_checksum = self.protocol_contract.sign_message(ZERO_CHECKSUM)
-        return f"{VERSION}::{file_set_checksum.signature.hex()}"
+        return f"{TRUSTEDZONE_VERSION}::{file_set_checksum.signature.hex()}"
 
     def create_do_request(
         self,
@@ -387,8 +389,8 @@ class EthernityCloudRunner:
                 f"Validating proof..."
             )
             current_wallet_address = self.protocol_contract.get_current_wallet()
-            # decrypted_data = decrypt_with_private_key(
-            decrypted_data = decrypt_nacl(os.environ.get("PRIVATE_KEY"), ipfs_result)
+
+            decrypted_data = decrypt_nacl(self.private_key, ipfs_result)
             if not decrypted_data["success"]:
                 return {
                     "success": False,
@@ -592,8 +594,6 @@ class EthernityCloudRunner:
 
     def cleanup(self) -> None:
         self.reset()
-        contract = self.protocol_contract.get_contract()
-        # contract.remove_all_listeners()
 
     def is_node_operator_address(self, node_address: str) -> bool:
         if is_null_or_empty(node_address):
@@ -620,6 +620,7 @@ class EthernityCloudRunner:
         self,
         resources: Union[dict, None],
         securelock_enclave: str,
+        securelock_version: str,
         code: str,
         node_address: str = "",
         trustedzone_enclave: str = "etny-pynithy-testnet",
@@ -653,7 +654,7 @@ class EthernityCloudRunner:
         # Start task thread
         self.task_thread = threading.Thread(
             target=self._process_events,
-            args=(securelock_enclave, code, node_address, resources),
+            args=(securelock_enclave, securelock_version, code, node_address, resources),
             daemon=True
         )
         self.task_thread.start()
@@ -670,7 +671,7 @@ class EthernityCloudRunner:
         for event in events:
             self.event_queue.put(event)
 
-    def _process_events(self, securelock_enclave, code, node_address, resources):
+    def _process_events(self, securelock_enclave, securelock_version, code, node_address, resources):
         """Process events from the queue."""
         try:
             while not self.event_queue.empty():
@@ -709,6 +710,7 @@ class EthernityCloudRunner:
                     self.log_append("Checking image registry...")
 
                     self.securelock_enclave = securelock_enclave
+                    self.securelock_version = securelock_version
                     self.cleanup()
    
                     self.image_registry_contract = ImageRegistryContract(
