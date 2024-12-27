@@ -41,7 +41,7 @@ class PolygonProtocolContract:
 
     def get_protocol_address(self) -> Address:
         return self.protocol_address
-    
+
     def __transaction_object(self, gas) -> TxParams:
         nonce = self.provider.eth.get_transaction_count(self.signer.address)
         max_fee_per_gas = self.provider.to_wei(self.max_fee_per_gas, 'gwei')
@@ -94,7 +94,7 @@ class PolygonProtocolContract:
                 signed_tx = self.provider.eth.account.sign_transaction(
                     tx, private_key=self.signer._private_key
                 )
-                
+
                 self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
 
                 receipt = self.provider.to_hex(
@@ -129,7 +129,7 @@ class PolygonProtocolContract:
         resources: dict,
         gas_limit: None = None,
     ) -> HexStr:
-        
+
         cpu = resources.get("cpu", 1)
         memory = resources.get("memory", 1)
         storage = resources.get("storage", 40)
@@ -180,7 +180,7 @@ class PolygonProtocolContract:
 
     def get_status_from_order(self, order_id: int) -> Any:
         return self.protocol_contract.caller()._getOrder(order_id)[4]
-    
+
     def is_node_operator(self, account: str) -> bool:
         try:
             requests = self.protocol_contract.functions._getMyDPRequests().call(

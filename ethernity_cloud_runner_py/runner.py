@@ -379,7 +379,7 @@ class EthernityCloudRunner:
                 try:
                     while self.contract.get_status_from_order(order_id) == 1:
                         time.sleep(1)
-                
+
                     order_result = self.contract.get_result_from_order(order_id)
 
                     self.log_append(
@@ -406,7 +406,7 @@ class EthernityCloudRunner:
                 self.log_append(f"The tokens associated with the task will be refunded after automatic result validation", ECLog.ERROR)
                 self.log_append(f"Please try again.", ECLog.ERROR)
                 return False
-            
+
 
             self.log_append(f"Verifying ZK proof")
 
@@ -419,10 +419,10 @@ class EthernityCloudRunner:
                 self.log_append(f"The tokens associated with the task will be refunded after automatic result validation.",  ECLog.ERROR)
                 self.log_append(f"Please try running the task again", ECLog.ERROR)
                 return False
-            
+
             self.log_append(f"Verification succesful!")
             self.log_append(f"The result is signed by: {wallet}")
-            
+
             while True:
                 try:
                     time.sleep(1)
@@ -435,7 +435,6 @@ class EthernityCloudRunner:
                 except Exception as e:
                     self.log_append(f"Error downloading IPFS result: {e}", ECLog.WARNING)
                     self.log_append(f"Retrying")
-            
 
             self.log_append(f"Decrypting result")
 
@@ -521,7 +520,7 @@ class EthernityCloudRunner:
                 self.progress = ECEvent.FINISHED
                 self.status = ECStatus.ERROR
                 return False
-            
+
             self.get_result_from_order_repeats += 1
             return self.get_result_from_order(order_id)
 
@@ -545,7 +544,7 @@ class EthernityCloudRunner:
         self.log_append(
             f"Waiting for Ethernity CLOUD network..."
         )
-        
+
         while True:
             try:
                 if self.find_order(self.do_request):
