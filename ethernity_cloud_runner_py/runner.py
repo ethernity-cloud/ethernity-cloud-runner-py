@@ -542,7 +542,7 @@ class EthernityCloudRunner:
         self.log_append(
             f"Waiting for Ethernity CLOUD network..."
         )
-        
+
         while True:
             try:
                 if self.find_order(self.do_request):
