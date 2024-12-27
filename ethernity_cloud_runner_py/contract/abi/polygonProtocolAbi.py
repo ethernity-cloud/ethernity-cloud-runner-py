@@ -2,7 +2,7 @@ import os
 
 contract = {
     "address": os.getenv(
-        "ECLD_CONTRACT_ADDRESS", "0x439945BE73fD86fcC172179021991E96Beff3Cc4"
+        "PROTOCOL_ADDRESS", "0x439945BE73fD86fcC172179021991E96Beff3Cc4"
     ),
     "abi": [
         {

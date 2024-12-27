@@ -9,44 +9,58 @@ from web3.contract.contract import Contract
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.types import TxParams
 
-from ..abi.polygonAbi import contract as polygonAbi
+from ..abi.polygonProtocolAbi import contract as polygonAbi
+from ..abi.ECLDAbi import contract as ECLDAbi
 from ...enums import ECNetworkByChainIdDictionary, ECNetworkRPCDictionary
 
 
 class PolygonProtocolContract:
     def __init__(
-        self, network_address: Address, signer: Any, is_main_net: bool = False
+        self, token_address: Address, protocol_address: Address, signer: Any, chain_id: int = 8559
     ) -> None:
-        self.is_main_net = is_main_net
-        self.network_address = network_address
-        _rpc_url = ECNetworkRPCDictionary[network_address]
+        self.chain_id = chain_id
+        self.token_address = token_address
+        self.protocol_address = protocol_address
+        self.max_fee_per_gas = 1000
+        self.max_priority_fee_per_gas = 35
+        _rpc_url = ECNetworkRPCDictionary[token_address]
         self.provider = Web3(Web3.HTTPProvider(_rpc_url))
-        #self.provider.enable_unstable_package_management_api()
+
         self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
         self.signer = signer
-        self.ethernity_contract = self.provider.eth.contract(
-            address=network_address, abi=polygonAbi["abi"]
+        self.protocol_contract = self.provider.eth.contract(
+            address=protocol_address, abi=polygonAbi["abi"]
+        )
+        self.token_contract = self.provider.eth.contract(
+            address=token_address, abi=ECLDAbi["abi"]
         )
 
-    def contract_address(self) -> Address:
-        return self.network_address
+    def get_token_address(self) -> Address:
+        return self.token_address
 
-    @property
-    def __transaction_object(self) -> TxParams:
+    def get_protocol_address(self) -> Address:
+        return self.protocol_address
+    
+    def __transaction_object(self, gas) -> TxParams:
         nonce = self.provider.eth.get_transaction_count(self.signer.address)
+        max_fee_per_gas = self.provider.to_wei(self.max_fee_per_gas, 'gwei')
+        max_priority_fee_per_gas = self.provider.to_wei(self.max_priority_fee_per_gas, 'gwei')
+
         return {
-            "gas": 40500500010 if self.is_main_net else 1300000010,  # type: ignore
-            "chainId": 137 if self.is_main_net else 80002,
+            "from": self.signer.address,
+            "chainId": self.chain_id,
             "nonce": nonce,
-            "gasPrice": self.provider.to_wei("1", "mwei"),  # type: ignore
+            "gas": gas,
+            "maxFeePerGas" : max_fee_per_gas,
+            "maxPriorityFeePerGas": max_priority_fee_per_gas,
         }
 
     def get_signer(self) -> Any:
         return self.signer
 
     def get_contract(self) -> Contract:
-        return self.ethernity_contract
+        return self.protocol_contract
 
     def get_provider(self) -> Web3:
         return self.provider
@@ -57,39 +71,42 @@ class PolygonProtocolContract:
     def get_balance(self) -> int:
         try:
             address = self.signer.address
-            balance = self.ethernity_contract.functions.balanceOf(address).call()
+            balance = self.token_contract.functions.balanceOf(address).call()
             return Web3.from_wei(balance, "ether")
         except Exception as e:
             print(e)
             return 0
 
     def check_and_set_allowance(
-        self, protocol_address: Address, amount: str, task_price: str
+        self, task_price: str
     ) -> bool:
-        allowance_amount = Web3.to_wei(amount, "ether")
         task_price_amount = Web3.to_wei(task_price, "ether")
         current_wallet_address = self.signer.address
-        allowance = self.ethernity_contract.functions.allowance(
-            current_wallet_address, protocol_address
+        allowance = self.token_contract.functions.allowance(
+            current_wallet_address, self.protocol_address
         ).call()
         if allowance < task_price_amount:
-            tx = self.ethernity_contract.functions.approve(
-                protocol_address, allowance_amount
-            ).build_transaction(self.__transaction_object)
-            signed_tx = self.provider.eth.account.sign_transaction(
-                tx, private_key=self.signer._private_key
-            )
-            self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
-            recept = self.provider.to_hex(
-                self.provider.keccak(signed_tx.raw_transaction)
-            )
             try:
-                self.provider.eth.wait_for_transaction_receipt(recept)
-                allowance = self.ethernity_contract.functions.allowance(
-                    current_wallet_address, protocol_address
+                tx = self.token_contract.functions.approve(
+                    self.protocol_address, int(task_price_amount)
+                ).build_transaction(self.__transaction_object(100000))
+
+                signed_tx = self.provider.eth.account.sign_transaction(
+                    tx, private_key=self.signer._private_key
+                )
+                
+                self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+                receipt = self.provider.to_hex(
+                    self.provider.keccak(signed_tx.raw_transaction)
+                )
+
+                self.provider.eth.wait_for_transaction_receipt(receipt)
+
+                allowance = self.protocol_contract.functions.allowance(
+                    current_wallet_address, self.protocol_address
                 ).call()
             except Exception as e:
-                print(e)
                 return False
         return True
 
@@ -112,14 +129,16 @@ class PolygonProtocolContract:
         resources: dict,
         gas_limit: None = None,
     ) -> HexStr:
+        
         cpu = resources.get("cpu", 1)
         memory = resources.get("memory", 1)
         storage = resources.get("storage", 40)
         bandwidth = resources.get("bandwidth", 1)
         duration = resources.get("duration", 1)
         validators = resources.get("validators", 1)
-        task_price = resources.get("task_price", 10)
-        tx = self.ethernity_contract.functions._addDORequest(
+        task_price = resources.get("taskPrice", 10)
+
+        tx = self.protocol_contract.functions._addDORequest(
             cpu,
             memory,
             storage,
@@ -131,22 +150,23 @@ class PolygonProtocolContract:
             payload_metadata,
             input_metadata,
             node_address,
-        ).build_transaction(self.__transaction_object)
+        ).build_transaction(self.__transaction_object(1000000))
 
         signed_tx = self.provider.eth.account.sign_transaction(
             tx, private_key=self.signer._private_key
         )
+
         self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
         return self.provider.to_hex(self.provider.keccak(signed_tx.raw_transaction))
 
     def get_order(self, order_id: int) -> int:
-        return self.ethernity_contract.functions._getOrder(order_id).call()
+        return self.protocol_contract.functions._getOrder(order_id).call()
 
     def approve_order(self, order_id: int) -> HexStr:
-        # return self.ethernity_contract.functions._approveOrder(order_id).transact()
-        unicorn_txn = self.ethernity_contract.functions._approveOrder(
+        # return self.protocol_contract.functions._approveOrder(order_id).transact()
+        unicorn_txn = self.protocol_contract.functions._approveOrder(
             order_id
-        ).build_transaction(self.__transaction_object)
+        ).build_transaction(self.__transaction_object(100000))
 
         signed_txn = self.provider.eth.account.sign_transaction(
             unicorn_txn, private_key=self.signer._private_key
@@ -155,12 +175,15 @@ class PolygonProtocolContract:
         return self.provider.to_hex(self.provider.keccak(signed_txn.raw_transaction))
 
     def get_result_from_order(self, order_id: int) -> Any:
-        self.ethernity_contract.caller()._getOrder(order_id)
-        return self.ethernity_contract.caller()._getResultFromOrder(order_id)
+        self.protocol_contract.caller()._getOrder(order_id)
+        return self.protocol_contract.caller()._getResultFromOrder(order_id)
 
+    def get_status_from_order(self, order_id: int) -> Any:
+        return self.protocol_contract.caller()._getOrder(order_id)[4]
+    
     def is_node_operator(self, account: str) -> bool:
         try:
-            requests = self.ethernity_contract.functions._getMyDPRequests().call(
+            requests = self.protocol_contract.functions._getMyDPRequests().call(
                 {"from": account}
             )
             return len(requests) > 0

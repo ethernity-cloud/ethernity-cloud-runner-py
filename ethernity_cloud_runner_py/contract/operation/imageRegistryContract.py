@@ -15,7 +15,7 @@ class ImageRegistryContract:
     def __init__(
         self,
         network_address: Address = ECAddress.BLOXBERG.TESTNET_ADDRESS,  # type: ignore
-        runner_type: str = ECRunner.BLOXBERG["PYNITHY_RUNNER"],
+        runner_type: str = ECRunner.BLOXBERG["PYNITHY_RUNNER_TESTNET"],
         signer: Any = None,
     ):
         self.signer = signer
@@ -37,14 +37,14 @@ class ImageRegistryContract:
                     abi=contract["abi"],
                 )
         elif network_address == ECAddress.BLOXBERG.MAINNET_ADDRESS:
-            if runner_type == ECRunner.BLOXBERG["NODENITHY_RUNNER"]:
+            if runner_type == ECRunner.BLOXBERG["NODENITHY_RUNNER_MAINNET"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS
                     ),
                     abi=contract["abi"],
                 )
-            elif runner_type == ECRunner.BLOXBERG["PYNITHY_RUNNER"]:
+            elif runner_type == ECRunner.BLOXBERG["PYNITHY_RUNNER_MAINNET"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS
@@ -52,14 +52,14 @@ class ImageRegistryContract:
                     abi=contract["abi"],
                 )
         elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
-            if runner_type == ECRunner.POLYGON["NODENITHY_RUNNER"]:
+            if runner_type == ECRunner.POLYGON["NODENITHY_RUNNER_MAINNET"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS
                     ),
                     abi=contract["abi"],
                 )
-            elif runner_type == ECRunner.POLYGON["PYNITHY_RUNNER"]:
+            elif runner_type == ECRunner.POLYGON["PYNITHY_RUNNER_MAINNET"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
                         ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS

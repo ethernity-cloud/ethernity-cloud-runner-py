@@ -45,7 +45,6 @@ class IPFSClient:
                 return None
         else:
             print(f"Failed to upload to IPFS. Status code: {response.status_code}")
-            print(response.text)
             return None
 
     def download_file(
@@ -74,9 +73,6 @@ class IPFSClient:
             # TODO: use a get encoding function to determine the encoding
             return response.content.decode("utf-8")
         else:
-            print(
-                f"Failed to get content from IPFS. Attempt {attempt}. Status code: {response.status_code}. Response text: {response.text}.\n{'Trying again...' if attempt < 6 else ''}"
-            )
             if attempt < 6:
                 self.get_file_content(ipfs_hash, attempt + 1)
 

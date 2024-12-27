@@ -73,7 +73,7 @@ class BloxbergProtocolContract:
         ).call()
         if allowance < task_price_amount:
             tx = self.ethernity_contract.functions.approve(
-                protocol_address, allowance_amount
+                protocol_address, int(task_price_amount)
             ).build_transaction(self.__transaction_object)
             signed_tx = self.provider.eth.account.sign_transaction(
                 tx, private_key=self.signer._private_key
