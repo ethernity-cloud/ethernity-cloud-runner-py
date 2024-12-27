@@ -60,14 +60,14 @@ class ECRunner:
     BLOXBERG = {
         "PYNITHY_RUNNER_TESTNET": "etny-pynithy-testnet",
         "NODENITHY_RUNNER_TESTNET": "etny-nodenithy-testnet",
-        "PYNITHY_RUNNER": "etny-pynithy",
-        "NODENITHY_RUNNER": "etny-nodenithy"
+        "PYNITHY_RUNNER_MAINNET": "etny-pynithy",
+        "NODENITHY_RUNNER_MAINNET": "etny-nodenithy"
     }
     POLYGON = {
         "PYNITHY_RUNNER_TESTNET": "ecld-pynithy-mumbai",
         "NODENITHY_RUNNER_TESTNET": "ecld-nodenithy",
-        "PYNITHY_RUNNER": "ecld-pynithy",
-        "NODENITHY_RUNNER": "ecld-nodenithy"
+        "PYNITHY_RUNNER_MAINNET": "ecld-pynithy",
+        "NODENITHY_RUNNER_MAINNET": "ecld-nodenithy"
     }
     
     def __getitem__(self, key):
@@ -126,10 +126,10 @@ ECNetworkName1Dictionary = {
 }
 
 ECNetworkRPCDictionary = {
-    ECAddress.BLOXBERG.MAINNET_ADDRESS: "https://core.bloxberg.org",
-    ECAddress.BLOXBERG.TESTNET_ADDRESS: "https://core.bloxberg.org",
+    ECAddress.BLOXBERG.MAINNET_ADDRESS: "https://bloxberg.ethernity.cloud",
+    ECAddress.BLOXBERG.TESTNET_ADDRESS: "https://bloxberg.ethernity.cloud",
     ECAddress.POLYGON.TESTNET_ADDRESS: "https://rpc-mumbai.matic.today",
-    ECAddress.POLYGON.MAINNET_ADDRESS: "https://rpc-mainnet.maticvigil.com",
+    ECAddress.POLYGON.MAINNET_ADDRESS: "https://polygon-rpc.com",
 }
 
 ECNetworkEnvToEnum = {
@@ -143,8 +143,8 @@ ZERO_CHECKSUM = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85
 
 
 class ECError(Enum):
-    PARSE_ERROR = "EtnyParseError"
-    IPFS_DOWNLOAD_ERROR = "ECIPFSDownloadError"
+    PARSE_ERROR = "The result is not a valid v3 result"
+    IPFS_DOWNLOAD_ERROR = "Unable to download results, will keep trying until the download is complete."
 
 class ECLog(IntEnum):
     ERROR = 1
