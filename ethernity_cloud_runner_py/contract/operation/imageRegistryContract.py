@@ -66,18 +66,18 @@ class ImageRegistryContract:
                     ),
                     abi=contract["abi"],
                 )
-        elif network_address == ECAddress.POLYGON.TESTNET_ADDRESS:
-            if runner_type == ECRunner.POLYGON["NODENITHY_RUNNER_TESTNET"]:
+        elif network_address == ECAddress.POLYGON.AMOY_ADDRESS:
+            if runner_type == ECRunner.POLYGON["NODENITHY_RUNNER_AMOY"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
-                        ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.TESTNET_ADDRESS
+                        ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.AMOY_ADDRESS
                     ),
                     abi=contract["abi"],
                 )
-            elif runner_type == ECRunner.POLYGON["PYNITHY_RUNNER_TESTNET"]:
+            elif runner_type == ECRunner.POLYGON["PYNITHY_RUNNER_AMOY"]:
                 self.contract = self.provider.eth.contract(
                     address=to_checksum_address(
-                        ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS
+                        ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.AMOY_ADDRESS
                     ),
                     abi=contract["abi"],
                 )

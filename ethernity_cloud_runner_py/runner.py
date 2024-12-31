@@ -118,9 +118,9 @@ class EthernityCloudRunner:
             self.token_contract = self.contract.token_contract
             self.protocol_contract = self.contract.protocol_contract
 
-        elif network_address == ECAddress.POLYGON.TESTNET_ADDRESS:
+        elif network_address == ECAddress.POLYGON.AMOY_ADDRESS:
             self.contract = PolygonProtocolContract(
-                ECAddress.POLYGON.TESTNET_ADDRESS, ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, self.signer, self.chain_id  # type: ignore
+                ECAddress.POLYGON.AMOY_ADDRESS, ECAddress.POLYGON.AMOY_PROTOCOL_ADDRESS, self.signer, self.chain_id  # type: ignore
             )
             self.protocol_abi = polygonAbi.get("abi")
             self.token_contract = self.contract.token_contract
@@ -161,7 +161,6 @@ class EthernityCloudRunner:
                 self.enclave_docker_compose_ipfs_hash,
             ) = details
 
-            print(self.enclave_public_key)
             self.log_append(
                 f"ENCLAVE_IMAGE_IPFS_HASH: {self.enclave_image_ipfs_hash}"
             )
@@ -794,7 +793,7 @@ class EthernityCloudRunner:
 
                         if self.network_address in [
                             ECAddress.POLYGON.MAINNET_ADDRESS,
-                            ECAddress.POLYGON.TESTNET_ADDRESS,
+                            ECAddress.POLYGON.AMOY_ADDRESS,
                         ]:
                             self.log_append(
                                 "Checking allowance on the current wallet..."

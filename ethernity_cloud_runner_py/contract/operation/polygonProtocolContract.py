@@ -21,7 +21,7 @@ class PolygonProtocolContract:
         self.chain_id = chain_id
         self.token_address = token_address
         self.protocol_address = protocol_address
-        self.max_fee_per_gas = 1000
+        self.max_fee_per_gas = 200
         self.max_priority_fee_per_gas = 35
         _rpc_url = ECNetworkRPCDictionary[token_address]
         self.provider = Web3(Web3.HTTPProvider(_rpc_url))
