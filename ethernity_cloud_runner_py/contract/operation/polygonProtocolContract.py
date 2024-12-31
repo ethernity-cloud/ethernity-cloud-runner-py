@@ -94,7 +94,7 @@ class PolygonProtocolContract:
                 signed_tx = self.provider.eth.account.sign_transaction(
                     tx, private_key=self.signer._private_key
                 )
-
+                
                 self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
 
                 receipt = self.provider.to_hex(
@@ -129,7 +129,7 @@ class PolygonProtocolContract:
         resources: dict,
         gas_limit: None = None,
     ) -> HexStr:
-
+      
         cpu = resources.get("cpu", 1)
         memory = resources.get("memory", 1)
         storage = resources.get("storage", 40)

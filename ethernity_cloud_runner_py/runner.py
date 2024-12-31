@@ -406,7 +406,6 @@ class EthernityCloudRunner:
                 self.log_append(f"Please try again.", ECLog.ERROR)
                 return False
 
-
             self.log_append(f"Verifying ZK proof")
 
             wallet = generate_wallet(
@@ -543,7 +542,7 @@ class EthernityCloudRunner:
         self.log_append(
             f"Waiting for Ethernity CLOUD network..."
         )
-
+        
         while True:
             try:
                 if self.find_order(self.do_request):
