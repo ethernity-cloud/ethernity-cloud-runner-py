@@ -40,10 +40,10 @@ class ECOrderTaskStatusCode(Enum):
 
 ECNetworkByChainId = {
     "BLOXBERG": {"TESTNET": 8995, "MAINNET": 8995},
-    "POLYGON": {"TESTNET": 80001, "MAINNET": 137},
+    "POLYGON": {"AMOY": 80002, "MAINNET": 137},
 }
 
-ECNetworkByChainIdDictionary = {8995: "bloxberg", 80001: "maticmum", 137: "matic"}
+ECNetworkByChainIdDictionary = {8995: "bloxberg", 80002: "amoy", 137: "matic"}
 
 
 class ECNetwork:
@@ -64,8 +64,8 @@ class ECRunner:
         "NODENITHY_RUNNER_MAINNET": "etny-nodenithy"
     }
     POLYGON = {
-        "PYNITHY_RUNNER_TESTNET": "ecld-pynithy-mumbai",
-        "NODENITHY_RUNNER_TESTNET": "ecld-nodenithy",
+        "PYNITHY_RUNNER_AMOY": "ecld-pynithy-amoy",
+        "NODENITHY_RUNNER_AMOY": "ecld-nodenithy-amoy",
         "PYNITHY_RUNNER_MAINNET": "ecld-pynithy",
         "NODENITHY_RUNNER_MAINNET": "ecld-nodenithy"
     }
@@ -89,24 +89,24 @@ class ECAddress:
                 MAINNET_ADDRESS = "0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31"
 
     class POLYGON:
-        TESTNET_ADDRESS = "0xfb450e40f590F1B5A119a4B82E6F3579D6742a00"
-        TESTNET_PROTOCOL_ADDRESS = "0x4274b1188ABCfa0d864aFdeD86bF9545B020dCDf"
+        AMOY_ADDRESS = "0x9927809B61122B2af3f3b3A3303875e0687b8eE3"
+        AMOY_PROTOCOL_ADDRESS = "0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3"
         MAINNET_ADDRESS = "0xc6920888988cAcEeA7ACCA0c96f2D65b05eE22Ba"
         MAINNET_PROTOCOL_ADDRESS = "0x439945BE73fD86fcC172179021991E96Beff3Cc4"
 
         class IMAGE_REGISTRY:
             class PYNITHY:
-                TESTNET_ADDRESS = "0xF7F4eEb3d9a64387F4AcEb6d521b948E6E2fB049"
+                AMOY_ADDRESS = "0xeFA33c3976f31961285Ae4f5D10188616C912728"
                 MAINNET_ADDRESS = "0x689f3806874d3c8A973f419a4eB24e6fBA7E830F"
 
             class NODENITHY:
-                TESTNET_ADDRESS = "0xF7F4eEb3d9a64387F4AcEb6d521b948E6E2fB049"
+                AMOY_ADDRESS = "0xeFA33c3976f31961285Ae4f5D10188616C912728"
                 MAINNET_ADDRESS = "0x689f3806874d3c8A973f419a4eB24e6fBA7E830F"
 
 
 class ECNetworkName(Enum):
     BLOXBERG = "bloxberg"
-    MUMBAI = "maticmum"
+    MUMBAI = "amoy"
     POLYGON = "matic"
     OTHER = "other"
 
@@ -114,28 +114,28 @@ class ECNetworkName(Enum):
 ECNetworkNameDictionary = {
     ECAddress.BLOXBERG.MAINNET_ADDRESS: "bloxberg",
     ECAddress.BLOXBERG.TESTNET_ADDRESS: "bloxberg",
-    ECAddress.POLYGON.TESTNET_ADDRESS: "maticmum",
+    ECAddress.POLYGON.AMOY_ADDRESS: "amoy",
     ECAddress.POLYGON.MAINNET_ADDRESS: "matic",
 }
 
 ECNetworkName1Dictionary = {
     ECAddress.BLOXBERG.MAINNET_ADDRESS: "BLOXBERG",
     ECAddress.BLOXBERG.TESTNET_ADDRESS: "BLOXBERG",
-    ECAddress.POLYGON.TESTNET_ADDRESS: "MUMBAI",
+    ECAddress.POLYGON.AMOY_ADDRESS: "AMOY",
     ECAddress.POLYGON.MAINNET_ADDRESS: "POLYGON",
 }
 
 ECNetworkRPCDictionary = {
     ECAddress.BLOXBERG.MAINNET_ADDRESS: "https://bloxberg.ethernity.cloud",
     ECAddress.BLOXBERG.TESTNET_ADDRESS: "https://bloxberg.ethernity.cloud",
-    ECAddress.POLYGON.TESTNET_ADDRESS: "https://rpc-mumbai.matic.today",
+    ECAddress.POLYGON.AMOY_ADDRESS: "https://rpc.ankr.com/polygon_amoy",
     ECAddress.POLYGON.MAINNET_ADDRESS: "https://polygon-rpc.com",
 }
 
 ECNetworkEnvToEnum = {
     "bloxberg_mainnet": ECAddress.BLOXBERG.MAINNET_ADDRESS,
     "bloxberg_testnet": ECAddress.BLOXBERG.TESTNET_ADDRESS,
-    "polygon_testnet": ECAddress.POLYGON.TESTNET_ADDRESS,
+    "polygon_amoy": ECAddress.POLYGON.AMOY_ADDRESS,
     "polygon_mainnet": ECAddress.POLYGON.MAINNET_ADDRESS,
 }
 

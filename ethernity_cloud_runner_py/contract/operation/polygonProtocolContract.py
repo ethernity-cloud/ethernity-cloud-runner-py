@@ -21,7 +21,7 @@ class PolygonProtocolContract:
         self.chain_id = chain_id
         self.token_address = token_address
         self.protocol_address = protocol_address
-        self.max_fee_per_gas = 1000
+        self.max_fee_per_gas = 200
         self.max_priority_fee_per_gas = 35
         _rpc_url = ECNetworkRPCDictionary[token_address]
         self.provider = Web3(Web3.HTTPProvider(_rpc_url))
@@ -41,7 +41,7 @@ class PolygonProtocolContract:
 
     def get_protocol_address(self) -> Address:
         return self.protocol_address
-    
+
     def __transaction_object(self, gas) -> TxParams:
         nonce = self.provider.eth.get_transaction_count(self.signer.address)
         max_fee_per_gas = self.provider.to_wei(self.max_fee_per_gas, 'gwei')
@@ -129,7 +129,7 @@ class PolygonProtocolContract:
         resources: dict,
         gas_limit: None = None,
     ) -> HexStr:
-        
+      
         cpu = resources.get("cpu", 1)
         memory = resources.get("memory", 1)
         storage = resources.get("storage", 40)
@@ -180,7 +180,7 @@ class PolygonProtocolContract:
 
     def get_status_from_order(self, order_id: int) -> Any:
         return self.protocol_contract.caller()._getOrder(order_id)[4]
-    
+
     def is_node_operator(self, account: str) -> bool:
         try:
             requests = self.protocol_contract.functions._getMyDPRequests().call(
