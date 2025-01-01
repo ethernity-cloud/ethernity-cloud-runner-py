@@ -103,12 +103,12 @@ class EthernityCloudRunner:
             ECAddress.BLOXBERG.TESTNET_ADDRESS,
             ECAddress.BLOXBERG.MAINNET_ADDRESS,
         ]:
-            self.protocol = BloxbergProtocolContract(
+            self.contract = BloxbergProtocolContract(
                 network_address, self.signer
             )
             self.protocol_abi = bloxbergAbi.get("abi")
-            self.token_contract = self.contract.token_contract
-            self.protocol_contract = self.contract.protocol_contract
+            self.token_contract = self.contract.ethernity_contract
+            self.protocol_contract = self.contract.ethernity_contract
 
         elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
             self.contract = PolygonProtocolContract(
