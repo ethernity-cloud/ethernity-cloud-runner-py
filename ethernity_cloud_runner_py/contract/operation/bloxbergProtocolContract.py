@@ -46,6 +46,9 @@ class BloxbergProtocolContract:
 
     def get_contract(self) -> Contract:
         return self.ethernity_contract
+    
+    def get_protocol_address(self) -> Address:
+        return self.network_address
 
     def get_provider(self) -> Web3:
         return self.provider
