@@ -15,10 +15,8 @@ from web3.exceptions import TimeExhausted, TransactionNotFound
 from .contract.abi.bloxbergAbi import contract as bloxbergAbi
 from .contract.abi.polygonProtocolAbi import contract as polygonAbi
 from .contract.abi.ECLDAbi import contract as ECLDAbi
-from .contract.operation.bloxbergProtocolContract import BloxbergProtocolContract
 from .contract.operation.imageRegistryContract import ImageRegistryContract
-from .contract.operation.polygonProtocolContract import PolygonProtocolContract
-from .enums import ECNetworkByChainId
+from .contract.operation.protocolContract import protocolContract
 from binascii import hexlify
 from nacl.public import Box, PrivateKey, PublicKey
 
@@ -26,14 +24,12 @@ from nacl.public import Box, PrivateKey, PublicKey
 from .crypto import decrypt_nacl, encrypt, sha256
 from .enums import (
     ZERO_CHECKSUM,
-    ECAddress,
+    ECNetwork,
     ECError,
     ECEvent,
     ECOrderTaskStatus,
     ECStatus,
-    ECNetworkEnvToEnum,
     ECLog,
-    ECRunner,
 )
 from .ipfs import IPFSClient
 from .utils import (
@@ -49,7 +45,14 @@ LAST_BLOCKS = 20
 TRUSTEDZONE_VERSION = "v3"
 
 class EthernityCloudRunner:
-    def __init__(self, network_address: Address = ECAddress.BLOXBERG.TESTNET_ADDRESS) -> None:  # type: ignore
+    def __init__(self, network_name="BLOXBERG", network_type="TESTNET") -> None:  # type: ignore
+
+        # Access the network class (e.g., ECNetwork.BLOXBERG)
+        network_class = getattr(ECNetwork, network_name.upper())
+        
+        # Access the network type class within the network class (e.g., ECNetwork.BLOXBERG.TESTNET)
+        self.network_config = getattr(network_class, network_type.upper())
+
         self.private_key = ""
         self.node_address = ""
         self.challenge_hash = ""
@@ -64,12 +67,10 @@ class EthernityCloudRunner:
         self.order_placed_timer = None
         self.task_has_been_picked_for_approval = False
         self.get_result_from_order_repeats = 1
-        self.network_address = network_address
         self.enclave_image_ipfs_hash = ""
         self.enclave_public_key = ""
         self.enclave_docker_compose_ipfs_hash = ""
-        self.trustedZoneImage = ""
-        
+
         self.event_queue = Queue()  # Queue to store events
         self.processed_events: List[str] = []  # List to store processed events
         self.task_thread = None
@@ -81,59 +82,43 @@ class EthernityCloudRunner:
         self.result = None
         self.log_level = ECLog.ERROR
         self.running = False
-        self.network = "Bloxberg_Testnet"
+        self.network_name = network_name.upper()
+        self.network_type = network_type.upper()
+        self.trustedZoneImage = self.network_config.TRUSTEDZONE_IMAGE
 
-    def set_network(self, network, type) -> None:
-        self.network = network.lower()+ "_" + type.lower()
-        self.trustedZoneImage = ECRunner()[network.upper()]["PYNITHY_RUNNER_"+type.upper()]
-        self.network_address = getattr(getattr(ECAddress, network.upper(), None), f"{type.upper()}_ADDRESS", None)
-        self.chain_id = ECNetworkByChainId[network.upper()][type.upper()]
+
+
+    def set_network(self, network_name, network_type) -> None:
+        self.network_name = network_name.upper()
+        self.network_type = network_type.upper()
+
+        # Access the network class (e.g., ECNetwork.BLOXBERG)
+        network_class = getattr(ECNetwork, network_name.upper())
+        
+        # Access the network type class within the network class (e.g., ECNetwork.BLOXBERG.TESTNET)
+        self.network_config = getattr(network_class, network_type.upper())
+
+        self.trustedZoneImage = self.network_config.TRUSTEDZONE_IMAGE
         
     def set_private_key(self, private_key) -> None:
         self.private_key = private_key
         self.signer = Account.from_key(private_key)
 
     def connect(self) -> None:
-        # for configurations with contract addresses
-        network_address = ECNetworkEnvToEnum.get(
-            self.network.lower(), ECAddress.BLOXBERG.TESTNET_ADDRESS
+
+        self.contract = protocolContract(
+                self.signer, self.network_name, self.network_type
         )
 
-        if network_address in [
-            ECAddress.BLOXBERG.TESTNET_ADDRESS,
-            ECAddress.BLOXBERG.MAINNET_ADDRESS,
-        ]:
-            self.contract = BloxbergProtocolContract(
-                network_address, self.signer
-            )
-            self.protocol_abi = bloxbergAbi.get("abi")
-            self.token_contract = self.contract.ethernity_contract
-            self.protocol_contract = self.contract.ethernity_contract
-
-        elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
-            self.contract = PolygonProtocolContract(
-                ECAddress.POLYGON.MAINNET_ADDRESS, ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS, self.signer, self.chain_id  # type: ignore
-            )
-            self.protocol_abi = polygonAbi.get("abi")
-            self.token_contract = self.contract.token_contract
-            self.protocol_contract = self.contract.protocol_contract
-
-        elif network_address == ECAddress.POLYGON.AMOY_ADDRESS:
-            self.contract = PolygonProtocolContract(
-                ECAddress.POLYGON.AMOY_ADDRESS, ECAddress.POLYGON.AMOY_PROTOCOL_ADDRESS, self.signer, self.chain_id  # type: ignore
-            )
-            self.protocol_abi = polygonAbi.get("abi")
-            self.token_contract = self.contract.token_contract
-            self.protocol_contract = self.contract.protocol_contract
+        self.protocol_abi = polygonAbi.get("abi")
+        self.token_contract = self.contract.token_contract
+        self.protocol_contract = self.contract.protocol_contract
 
     def set_log_level(self, level):
         self.log_level = ECLog[level.upper()]
 
     def is_mainnet(self) -> bool:
-        return self.network_address in [
-            ECAddress.BLOXBERG.MAINNET_ADDRESS,
-            ECAddress.POLYGON.MAINNET_ADDRESS,
-        ]
+        return self.network_type  in "MAINNET"
 
     def log_append(
         self,
@@ -438,13 +423,13 @@ class EthernityCloudRunner:
 
             decrypted_data = decrypt_nacl(self.private_key, ipfs_result)
             if not decrypted_data["success"]:
-                self.log_append(f"Could not decrypt the order result.", ECLog.ERROR)
+                self.log_append(f"Could not decrypt the task result.", ECLog.ERROR)
 
 
             self.log_append(f"Result value: {decrypted_data['data']}",ECLog.DEBUG)
             ipfs_result_checksum = sha256(decrypted_data["data"],True)
             if ipfs_result_checksum != transaction_result["checksum"]:
-                self.log_append(f"Integrity check failed, checksum of the order result is wrong. {ipfs_result_checksum} != {transaction_result['checksum']}", ECLog.ERROR)
+                self.log_append(f"Integrity check failed, checksum of the task result is wrong. {ipfs_result_checksum} != {transaction_result['checksum']}", ECLog.ERROR)
                 return False
             
             result_transaction_hash = ""
@@ -762,19 +747,17 @@ class EthernityCloudRunner:
                         self.log_append(error_message, ECLog.ERROR)
                         self.processed_events.append(event)
                         return
-                    self.log_append("Checking image registry...")
 
                     self.securelock_enclave = securelock_enclave
                     self.securelock_version = securelock_version
                     self.cleanup()
+
+                    image_to_check = self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage
    
+                    self.log_append(f"Checking image {image_to_check} in registry...")
                     self.image_registry_contract = ImageRegistryContract(
-                        self.network_address,
-                        (
-                            self.securelock_enclave
-                            if not self.trustedZoneImage
-                            else self.trustedZoneImage
-                        ),
+                        self.network_name,
+                        self.network_type,
                         self.signer,
                     )
 
@@ -784,31 +767,61 @@ class EthernityCloudRunner:
                         if not self.get_enclave_details():
                             self.progress = ECEvent.FINISHED
                             self.status = ECStatus.ERROR
-                            error_message = "Unable to find enclave in registry"
+                            error_message = "Unable to find enclave in registry, make sure the runner runs on the right network, check set_network() method"
                             self.last_error = error_message
                             self.log_append(error_message, ECLog.ERROR)
                             self.processed_events.append(event)
                             return
 
-                        if self.network_address in [
-                            ECAddress.POLYGON.MAINNET_ADDRESS,
-                            ECAddress.POLYGON.AMOY_ADDRESS,
-                        ]:
+                        if self.network_name not in "BLOXBERG":
                             self.log_append(
                                 "Checking allowance on the current wallet..."
                             )
+                            transaction_hash = None
                             while True:
                                 try:
-                                    passed_allowance = self.contract.check_and_set_allowance(
-                                        str(self.price),
-                                    )
-                                    if passed_allowance == True:
+                                    allowance = self.token_contract.functions.allowance(
+                                        self.signer.address, self.contract.get_protocol_address()
+                                    ).call()
+                                    if allowance < self.price:
+                                        self.log_append(f"Approving allowance for {self.price} {self.network_config.TOKEN_NAME}")
+                                        transaction_hash = self.contract.set_allowance(
+                                            self.price
+                                        )
                                         break
+                                    break
                                 except Exception as e:
-                                    self.log_append(f"Unable to set allowance on current wallet: {e}", ECLog.WARNING)
+                                    self.log_append(f"Unable to check or set allowance on current wallet: {e}", ECLog.WARNING)
                                     self.log_append(f"Retrying...", ECLog.WARNING)
+                            
+                            if transaction_hash is not None:
+                                for i in range(100):
+                                    try:
+                                    
+                                        self.log_append(
+                                                f"{transaction_hash} is pending..."
+                                        )
+                                        receipt = self.contract.get_provider().eth.wait_for_transaction_receipt(
+                                            transaction_hash
+                                        )
+                                        if receipt.status == 1:
+                                            self.log_append(
+                                                f"{transaction_hash} confirmed!"
+                                            )
+                                            break
+                                    except KeyError:
+                                        time.sleep(1)
+                                        continue
+                                    except TimeExhausted:
+                                        raise
+                                    except Exception as e:
+                                        self.log_append(
+                                            f"{e}", ECLog.WARNING
+                                        )
+                                    time.sleep(1)
+                                self.log_append(f"Allowance approved")
 
-                            self.log_append("Allowance checking completed.")
+                            self.log_append("Allowance check completed.")
                         if not self.create_task(code):
                             self.progress = ECEvent.FINISHED
                             self.status = ECStatus.ERROR

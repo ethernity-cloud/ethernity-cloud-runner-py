@@ -37,107 +37,134 @@ class ECOrderTaskStatusCode(Enum):
     PAYLOAD_CHECKSUM_ERROR = "PAYLOAD_CHECKSUM_ERROR"
     INPUT_CHECKSUM_ERROR = "INPUT_CHECKSUM_ERROR"
 
-
-ECNetworkByChainId = {
-    "BLOXBERG": {"TESTNET": 8995, "MAINNET": 8995},
-    "POLYGON": {"AMOY": 80002, "MAINNET": 137},
-}
-
-ECNetworkByChainIdDictionary = {8995: "bloxberg", 80002: "amoy", 137: "matic"}
-
-
 class ECNetwork:
     class BLOXBERG:
-        TESTNET = "Bloxberg TESTNET"
-        MAINNET = "Bloxberg MAINNET"
+
+        class TESTNET:
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31'
+            PROTOCOL_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
+            TOKEN_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
+            HEARTBEAT_CONTRACT_ADDRESS='0x9B105aefF69Cd26050798d575db17ffc2eAC4E4d'
+            TOKEN_NAME='tETNY'
+            RPC_URL='https://bloxberg.ethernity.cloud'
+            RPC_DELAY=0
+            CHAIN_ID=8995
+            MIDDLEWARE='POA'
+            BLOCK_TIME=5
+            MINIMUM_GAS_AT_START=100000000000
+            GAS_PRICE_MEASURE='wei'
+            EIP1559=False
+            GAS_PRICE=2000000
+            GAS_LIMIT=2000000
+            MAX_FEE_PER_GAS=0
+            MAX_PRIORITY_FEE_PER_GAS=0
+            TASK_EXECUTION_PRICE_DEFAULT=1
+            INTEGRATION_TEST_IMAGE='etny-pynithy-testnet'
+            TRUSTEDZONE_IMAGE='etny-pynithy-testnet'
+            REWARD_TYPE=1
+            NETWORK_FEE=5
+            ENCLAVE_FEE=10
+
+        class MAINNET:
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31'
+            PROTOCOL_ADDRESS='0x549A6E06BB2084100148D50F51CF77a3436C3Ae7'
+            TOKEN_ADDRESS='0x549A6E06BB2084100148D50F51CF77a3436C3Ae7'
+            HEARTBEAT_CONTRACT_ADDRESS='0x5c190f7253930C473822AcDED40B2eF1936B4075'
+            TOKEN_NAME='ETNY'
+            RPC_URL='https://bloxberg.ethernity.cloud'
+            RPC_DELAY=200
+            CHAIN_ID=8995
+            MIDDLEWARE='POA'
+            BLOCK_TIME=5
+            MINIMUM_GAS_AT_START=100000000000
+            GAS_PRICE_MEASURE='wei'
+            EIP1559=False
+            GAS_PRICE=2000000
+            GAS_LIMIT=2000000
+            MAX_FEE_PER_GAS=0
+            MAX_PRIORITY_FEE_PER_GAS=0
+            TASK_EXECUTION_PRICE_DEFAULT=1
+            INTEGRATION_TEST_IMAGE='etny-pynithy'
+            TRUSTEDZONE_IMAGE='etny-pynithy'
+            REWARD_TYPE=1
+            NETWORK_FEE=5
+            ENCLAVE_FEE=10
 
     class POLYGON:
-        TESTNET = "Polygon TESTNET"
-        MAINNET = "Polygon MAINNET"
+        class MAINNET:
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x689f3806874d3c8A973f419a4eB24e6fBA7E830F'
+            PROTOCOL_ADDRESS='0x439945BE73fD86fcC172179021991E96Beff3Cc4'
+            TOKEN_ADDRESS='0xc6920888988cAcEeA7ACCA0c96f2D65b05eE22Ba'
+            HEARTBEAT_CONTRACT_ADDRESS='0x2baddae93fdb8fae61a60587b789f27bf407406f'
+            TOKEN_NAME='ECLD'
+            RPC_URL='https://polygon-bor-rpc.publicnode.com'
+            RPC_DELAY=10
+            CHAIN_ID=137
+            MIDDLEWARE='POA'
+            BLOCK_TIME=2
+            MINIMUM_GAS_AT_START=100000000000000000
+            GAS_PRICE_MEASURE='gwei'
+            EIP1559=True
+            GAS_PRICE=0
+            GAS_LIMIT=0
+            MAX_FEE_PER_GAS=200
+            MAX_PRIORITY_FEE_PER_GAS=32
+            TASK_EXECUTION_PRICE_DEFAULT=1
+            INTEGRATION_TEST_IMAGE='ecld-pynithy'
+            TRUSTEDZONE_IMAGE='ecld-pynithy'
+            REWARD_TYPE=1
+            NETWORK_FEE=5
+            ENCLAVE_FEE=10
+        class AMOY:
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0xeFA33c3976f31961285Ae4f5D10188616C912728'
+            PROTOCOL_ADDRESS='0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3'
+            TOKEN_ADDRESS='0x9927809B61122B2af3f3b3A3303875e0687b8eE3'
+            HEARTBEAT_CONTRACT_ADDRESS='0x2E27677fb67531eb09134fE331C27899f87ADe10'
+            TOKEN_NAME='tECLD'
+            RPC_URL='https://rpc.ankr.com/polygon_amoy'
+            RPC_DELAY=200
+            CHAIN_ID=80002
+            MIDDLEWARE='POA'
+            BLOCK_TIME=2
+            MINIMUM_GAS_AT_START=100000000000000000
+            GAS_PRICE_MEASURE='gwei'
+            EIP1559=True
+            GAS_PRICE=0
+            GAS_LIMIT=0
+            MAX_FEE_PER_GAS=64
+            MAX_PRIORITY_FEE_PER_GAS=32
+            TASK_EXECUTION_PRICE_DEFAULT=1
+            INTEGRATION_TEST_IMAGE='ecld-pynithy-amoy'
+            TRUSTEDZONE_IMAGE='ecld-pynithy-amoy'
+            REWARD_TYPE=1
+            NETWORK_FEE=5
+            ENCLAVE_FEE=10
 
-
-class ECRunner:
-    BLOXBERG = {
-        "PYNITHY_RUNNER_TESTNET": "etny-pynithy-testnet",
-        "NODENITHY_RUNNER_TESTNET": "etny-nodenithy-testnet",
-        "PYNITHY_RUNNER_MAINNET": "etny-pynithy",
-        "NODENITHY_RUNNER_MAINNET": "etny-nodenithy"
-    }
-    POLYGON = {
-        "PYNITHY_RUNNER_AMOY": "ecld-pynithy-amoy",
-        "NODENITHY_RUNNER_AMOY": "ecld-nodenithy-amoy",
-        "PYNITHY_RUNNER_MAINNET": "ecld-pynithy",
-        "NODENITHY_RUNNER_MAINNET": "ecld-nodenithy"
-    }
-    
-    def __getitem__(self, key):
-        return getattr(self, key)
-
-
-class ECAddress:
-    class BLOXBERG:
-        TESTNET_ADDRESS = "0x02882F03097fE8cD31afbdFbB5D72a498B41112c"
-        MAINNET_ADDRESS = "0x549A6E06BB2084100148D50F51CF77a3436C3Ae7"
-
-        class IMAGE_REGISTRY:
-            class PYNITHY:
-                TESTNET_ADDRESS = "0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31"
-                MAINNET_ADDRESS = "0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31"
-
-            class NODENITHY:
-                TESTNET_ADDRESS = "0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31"
-                MAINNET_ADDRESS = "0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31"
-
-    class POLYGON:
-        AMOY_ADDRESS = "0x9927809B61122B2af3f3b3A3303875e0687b8eE3"
-        AMOY_PROTOCOL_ADDRESS = "0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3"
-        MAINNET_ADDRESS = "0xc6920888988cAcEeA7ACCA0c96f2D65b05eE22Ba"
-        MAINNET_PROTOCOL_ADDRESS = "0x439945BE73fD86fcC172179021991E96Beff3Cc4"
-
-        class IMAGE_REGISTRY:
-            class PYNITHY:
-                AMOY_ADDRESS = "0xeFA33c3976f31961285Ae4f5D10188616C912728"
-                MAINNET_ADDRESS = "0x689f3806874d3c8A973f419a4eB24e6fBA7E830F"
-
-            class NODENITHY:
-                AMOY_ADDRESS = "0xeFA33c3976f31961285Ae4f5D10188616C912728"
-                MAINNET_ADDRESS = "0x689f3806874d3c8A973f419a4eB24e6fBA7E830F"
-
-
-class ECNetworkName(Enum):
-    BLOXBERG = "bloxberg"
-    MUMBAI = "amoy"
-    POLYGON = "matic"
-    OTHER = "other"
-
-
-ECNetworkNameDictionary = {
-    ECAddress.BLOXBERG.MAINNET_ADDRESS: "bloxberg",
-    ECAddress.BLOXBERG.TESTNET_ADDRESS: "bloxberg",
-    ECAddress.POLYGON.AMOY_ADDRESS: "amoy",
-    ECAddress.POLYGON.MAINNET_ADDRESS: "matic",
-}
-
-ECNetworkName1Dictionary = {
-    ECAddress.BLOXBERG.MAINNET_ADDRESS: "BLOXBERG",
-    ECAddress.BLOXBERG.TESTNET_ADDRESS: "BLOXBERG",
-    ECAddress.POLYGON.AMOY_ADDRESS: "AMOY",
-    ECAddress.POLYGON.MAINNET_ADDRESS: "POLYGON",
-}
-
-ECNetworkRPCDictionary = {
-    ECAddress.BLOXBERG.MAINNET_ADDRESS: "https://bloxberg.ethernity.cloud",
-    ECAddress.BLOXBERG.TESTNET_ADDRESS: "https://bloxberg.ethernity.cloud",
-    ECAddress.POLYGON.AMOY_ADDRESS: "https://rpc.ankr.com/polygon_amoy",
-    ECAddress.POLYGON.MAINNET_ADDRESS: "https://polygon-rpc.com",
-}
-
-ECNetworkEnvToEnum = {
-    "bloxberg_mainnet": ECAddress.BLOXBERG.MAINNET_ADDRESS,
-    "bloxberg_testnet": ECAddress.BLOXBERG.TESTNET_ADDRESS,
-    "polygon_amoy": ECAddress.POLYGON.AMOY_ADDRESS,
-    "polygon_mainnet": ECAddress.POLYGON.MAINNET_ADDRESS,
-}
+    class IOTEX:
+        class TESTNET:
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0xa7467A6391816be9367a1cC52E0ef0c15FfE3cCC'
+            PROTOCOL_ADDRESS='0xD56385A97413Ed80E28B1b54A193b98F2C49c975'
+            TOKEN_ADDRESS='0x95Aa17fCFaAB75e8ed7d7DF218045795dCeB9c50'
+            HEARTBEAT_CONTRACT_ADDRESS='0x379456B819f61eF775B0Fd80Cf1DbE47399eB6F7'
+            TOKEN_NAME='tECLD'
+            RPC_URL='https://babel-api.testnet.iotex.io'
+            RPC_DELAY=200
+            CHAIN_ID=4690
+            MIDDLEWARE=None
+            BLOCK_TIME=5
+            MINIMUM_GAS_AT_START=5000000000000000000
+            GAS_PRICE_MEASURE='gwei'
+            EIP1559=True
+            GAS_PRICE=0
+            GAS_LIMIT=0
+            MAX_FEE_PER_GAS=1500
+            MAX_PRIORITY_FEE_PER_GAS=1
+            TASK_EXECUTION_PRICE_DEFAULT=1
+            INTEGRATION_TEST_IMAGE='ecld-pynithy-iotex-testnet'
+            TRUSTEDZONE_IMAGE='ecld-pynithy-iotex-testnet'
+            REWARD_TYPE=2
+            NETWORK_FEE=5
+            ENCLAVE_FEE=10
 
 ZERO_CHECKSUM = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
