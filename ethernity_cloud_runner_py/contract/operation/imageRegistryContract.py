@@ -8,85 +8,35 @@ from web3.middleware import ExtraDataToPOAMiddleware
 from web3.types import TxParams
 
 from ...contract.abi.imageRegistryAbi import contract
-from ...enums import ECAddress, ECRunner, ECNetworkRPCDictionary
-
+from ...enums import ECNetwork
 
 class ImageRegistryContract:
     def __init__(
         self,
-        network_address: Address = ECAddress.BLOXBERG.TESTNET_ADDRESS,  # type: ignore
-        runner_type: str = ECRunner.BLOXBERG["PYNITHY_RUNNER_TESTNET"],
+        network_name = "BOXBERG", 
+        network_type = "TESTNET",
         signer: Any = None,
     ):
         self.signer = signer
-        self.provider = self.newProvider(ECNetworkRPCDictionary[network_address])
-        if network_address == ECAddress.BLOXBERG.TESTNET_ADDRESS:
-            if runner_type == ECRunner.BLOXBERG["NODENITHY_RUNNER_TESTNET"]:
-                self.contract = self.provider.eth.contract(
-                    address=to_checksum_address(
-                        ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.TESTNET_ADDRESS
-                    ),
-                    abi=contract["abi"],
-                )
-                # self.provider.eth.contract()
-            elif runner_type == ECRunner.BLOXBERG["PYNITHY_RUNNER_TESTNET"]:
-                self.contract = self.provider.eth.contract(
-                    address=to_checksum_address(
-                        ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS
-                    ),
-                    abi=contract["abi"],
-                )
-        elif network_address == ECAddress.BLOXBERG.MAINNET_ADDRESS:
-            if runner_type == ECRunner.BLOXBERG["NODENITHY_RUNNER_MAINNET"]:
-                self.contract = self.provider.eth.contract(
-                    address=to_checksum_address(
-                        ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS
-                    ),
-                    abi=contract["abi"],
-                )
-            elif runner_type == ECRunner.BLOXBERG["PYNITHY_RUNNER_MAINNET"]:
-                self.contract = self.provider.eth.contract(
-                    address=to_checksum_address(
-                        ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS
-                    ),
-                    abi=contract["abi"],
-                )
-        elif network_address == ECAddress.POLYGON.MAINNET_ADDRESS:
-            if runner_type == ECRunner.POLYGON["NODENITHY_RUNNER_MAINNET"]:
-                self.contract = self.provider.eth.contract(
-                    address=to_checksum_address(
-                        ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS
-                    ),
-                    abi=contract["abi"],
-                )
-            elif runner_type == ECRunner.POLYGON["PYNITHY_RUNNER_MAINNET"]:
-                self.contract = self.provider.eth.contract(
-                    address=to_checksum_address(
-                        ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS
-                    ),
-                    abi=contract["abi"],
-                )
-        elif network_address == ECAddress.POLYGON.AMOY_ADDRESS:
-            if runner_type == ECRunner.POLYGON["NODENITHY_RUNNER_AMOY"]:
-                self.contract = self.provider.eth.contract(
-                    address=to_checksum_address(
-                        ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.AMOY_ADDRESS
-                    ),
-                    abi=contract["abi"],
-                )
-            elif runner_type == ECRunner.POLYGON["PYNITHY_RUNNER_AMOY"]:
-                self.contract = self.provider.eth.contract(
-                    address=to_checksum_address(
-                        ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.AMOY_ADDRESS
-                    ),
-                    abi=contract["abi"],
-                )
+        
+        
+        # Access the network class (e.g., ECNetwork.BLOXBERG)
+        network_class = getattr(ECNetwork, network_name.upper())
+        
+        # Access the network type class within the network class (e.g., ECNetwork.BLOXBERG.TESTNET)
+        self.network_config = getattr(network_class, network_type.upper())
 
-    def newProvider(self, url: str) -> Web3:
-        _w3 = Web3(Web3.HTTPProvider(url))
-        #_w3.enable_unstable_package_management_api()
-        _w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-        return _w3
+        self.provider = Web3(Web3.HTTPProvider(self.network_config.RPC_URL))
+
+        if self.network_config.MIDDLEWARE == "POA":
+            self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            
+        self.contract = self.provider.eth.contract(
+            address=to_checksum_address(
+                self.network_config.IMAGE_REGISTRY_CONTRACT_ADDRESS
+            ),
+            abi=contract["abi"],
+        )
 
     def get_signer(self) -> Any:
         return self.signer
