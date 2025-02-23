@@ -166,6 +166,32 @@ class ECNetwork:
             NETWORK_FEE=5
             ENCLAVE_FEE=10
 
+    class ETHEREUM:
+        class SEPOLIA:
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x55e0ad455Be85162b71a790f00Fc305680E3CE53'
+            PROTOCOL_ADDRESS='0x29D3eC870565B6A1510232bd950A8Bc8336f0EB2'
+            TOKEN_ADDRESS='0x95Aa17fCFaAB75e8ed7d7DF218045795dCeB9c50'
+            HEARTBEAT_CONTRACT_ADDRESS='0x6D7F920958dfb9a13729723C1007b04eB7950E58'
+            TOKEN_NAME='tECLD'
+            RPC_URL='https://ethereum-sepolia-rpc.publicnode.com'
+            RPC_DELAY=200
+            CHAIN_ID=11155111
+            MIDDLEWARE=None
+            BLOCK_TIME=30
+            MINIMUM_GAS_AT_START=200000000000000000
+            GAS_PRICE_MEASURE='gwei'
+            EIP1559=True
+            GAS_PRICE=0
+            GAS_LIMIT=0
+            MAX_FEE_PER_GAS=15
+            MAX_PRIORITY_FEE_PER_GAS=1
+            TASK_EXECUTION_PRICE_DEFAULT=1
+            INTEGRATION_TEST_IMAGE='ecld-pynithy-ethereum-sepolia'
+            TRUSTEDZONE_IMAGE='ecld-pynithy-ethereum-sepolia'
+            REWARD_TYPE=2
+            NETWORK_FEE=5
+            ENCLAVE_FEE=10
+
 ZERO_CHECKSUM = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
