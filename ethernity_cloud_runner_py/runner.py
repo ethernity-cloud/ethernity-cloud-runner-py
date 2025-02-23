@@ -229,12 +229,12 @@ class EthernityCloudRunner:
             self.log_append(
                 f"Uploaded encrypted code to IPFS: {self.script_hash}"
             )
-        script_checksum = self.contract.sign_message(script_checksum)
-        return f"{TRUSTEDZONE_VERSION}:{self.script_hash}:{script_checksum.signature.hex()}"
+        script_checksum = self.protocol_contract.sign_message(script_checksum)
+        return f"{VERSION}:{self.script_hash}:{script_checksum.signature.hex()}"
 
     def get_v3_input_metadata(self) -> str:
-        file_set_checksum = self.contract.sign_message(ZERO_CHECKSUM)
-        return f"{TRUSTEDZONE_VERSION}::{file_set_checksum.signature.hex()}"
+        file_set_checksum = self.protocol_contract.sign_message(ZERO_CHECKSUM)
+        return f"{VERSION}::{file_set_checksum.signature.hex()}"
 
     def create_do_request(
         self,
