@@ -16,6 +16,7 @@ class ImageRegistryContract:
         network_name = "BOXBERG", 
         network_type = "TESTNET",
         signer: Any = None,
+        request_kwargs=None
     ):
         self.signer = signer
         
@@ -26,7 +27,7 @@ class ImageRegistryContract:
         # Access the network type class within the network class (e.g., ECNetwork.BLOXBERG.TESTNET)
         self.network_config = getattr(network_class, network_type.upper())
 
-        self.provider = Web3(Web3.HTTPProvider(self.network_config.RPC_URL))
+        self.provider = Web3(Web3.HTTPProvider(self.network_config.RPC_URL,request_kwargs=request_kwargs or {'timeout': 10}))
 
         if self.network_config.MIDDLEWARE == "POA":
             self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
