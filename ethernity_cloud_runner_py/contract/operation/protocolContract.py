@@ -16,7 +16,7 @@ from ...enums import ECNetwork
 
 class protocolContract:
     def __init__(
-        self, signer: Any, network_name="BLOXBERG", network_type="TESTNET"
+        self, signer: Any, network_name="BLOXBERG", network_type="TESTNET", request_kwargs=None
     ) -> None:
         
         # Access the network class (e.g., ECNetwork.BLOXBERG)
@@ -31,7 +31,7 @@ class protocolContract:
         self.max_fee_per_gas = self.network_config.MAX_FEE_PER_GAS
         self.max_priority_fee_per_gas = self.network_config.MAX_PRIORITY_FEE_PER_GAS
         _rpc_url = self.network_config.RPC_URL
-        self.provider = Web3(Web3.HTTPProvider(_rpc_url))
+        self.provider = Web3(Web3.HTTPProvider(_rpc_url,request_kwargs=request_kwargs or {'timeout': 10}))
 
         if self.network_config.MIDDLEWARE == "POA":
             self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
@@ -123,6 +123,24 @@ class protocolContract:
         
         return True
 
+    def faucet(
+        self
+    ) -> bool:
+        try:
+            tx = self.token_contract.functions.faucet().build_transaction(self.__transaction_object(100000))
+
+            signed_tx = self.provider.eth.account.sign_transaction(
+                tx, private_key=self.signer._private_key
+            )
+
+            self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+            return self.provider.to_hex(self.provider.keccak(signed_tx.raw_transaction))
+        except Exception as e:
+            raise Exception(f"Unable to use the faucet: {e}")
+
+        return True
+
     def get_eip1559_gas_options(self) -> dict[str, int]:
         max_fee_per_gas = int(os.getenv("MAX_FEE_PER_GAS", 0)) * 10**9
         max_priority_fee_per_gas = int(os.getenv("MAX_PRIORITY_FEE_PER_GAS", 0)) * 10**9
@@ -203,7 +221,6 @@ class protocolContract:
         except Exception as ex:
             print(ex)
             return False
-
     def sign_message(self, message: str) -> Any:
         if isinstance(message, bytes):
             message = message.decode("utf-8")
