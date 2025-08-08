@@ -9,6 +9,7 @@ from eth_typing import Address, HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
 from web3.exceptions import TimeExhausted, TransactionNotFound, Web3RPCError
+from .errors import install_web3_friendly_prefix_filter, raw_rpc_error_message, raw_rpc_error_code
 from .contract.abi.bloxbergAbi import contract as bloxbergAbi
 from .contract.abi.polygonProtocolAbi import contract as polygonAbi
 from .contract.abi.ECLDAbi import contract as ECLDAbi
@@ -37,23 +38,20 @@ from .utils import (
 )
 import logging
 import random
-
 LAST_BLOCKS = 20
 TRUSTEDZONE_VERSION = "v3"
-
 class EthernityCloudRunner:
     def __init__(self, network_name="BLOXBERG", network_type="TESTNET") -> None:
+        install_web3_friendly_prefix_filter(suppress_codes=(-32000, -32010))
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.ERROR)  # Default to ERROR; set via set_log_level
-
         network_class = getattr(ECNetwork, network_name.upper(), None)
         if network_class is None:
             raise ValueError(f"Invalid network name: {network_name}")
-        
+
         self.network_config = getattr(network_class, network_type.upper(), None)
         if self.network_config is None:
             raise ValueError(f"Invalid network type: {network_type} for network {network_name}")
-
         self.private_key: str = ""
         self.signer: Optional[Account] = None
         self.node_address: str = ""
@@ -95,7 +93,6 @@ class EthernityCloudRunner:
         self.resources: Optional[Dict[str, int]] = None
         self.price: int = 0
         self.securelock_version: Optional[str] = None
-
     def set_network(self, network_name: str, network_type: str) -> None:
         """Set the network configuration."""
         self.network_name = network_name.upper()
@@ -107,14 +104,12 @@ class EthernityCloudRunner:
         if self.network_config is None:
             raise ValueError(f"Invalid network type: {network_type} for network {network_name}")
         self.trustedZoneImage = self.network_config.TRUSTEDZONE_IMAGE
-
     def set_private_key(self, private_key: str) -> None:
         """Set the private key and derive signer."""
         if not private_key.startswith("0x") or len(private_key) != 66:
             raise ValueError("Invalid private key format. Must be 64 hex chars prefixed with 0x.")
         self.private_key = private_key
         self.signer = Account.from_key(private_key)
-
     def connect(self) -> None:
         """Connect to the protocol contract."""
         if self.signer is None:
@@ -128,16 +123,13 @@ class EthernityCloudRunner:
         provider = self.contract.get_provider()
         if not provider.is_connected():
             raise ConnectionError("Failed to connect to Web3 provider.")
-
     def set_log_level(self, level: str) -> None:
         """Set the logging level."""
         self.log_level = ECLog[level.upper()]
         self.logger.setLevel(self.log_level.value)  # Assuming ECLog has int values compatible with logging levels
-
     def is_mainnet(self) -> bool:
         """Check if the current network is mainnet."""
         return self.network_type == "MAINNET"
-
     def get_enclave_details(self) -> bool:
         """Fetch enclave details from the registry."""
         if not self.is_running():
@@ -162,9 +154,8 @@ class EthernityCloudRunner:
                 return True
             return False
         except Web3RPCError as e:
-            self.logger.error(f"Error fetching enclave details: {e}")
+            self.logger.error(f"Error fetching enclave details: {raw_rpc_error_message(e)}")
             return False
-
     def get_reason(self, contract: Contract, tx_hash: str) -> str:
         """Get the revert reason for a failed transaction."""
         try:
@@ -180,7 +171,6 @@ class EthernityCloudRunner:
         except Exception as e:
             self.logger.error(f"Error getting transaction reason: {e}")
             return "Unknown error"
-
     def poll_transaction(self, tx_hash: str, max_attempts: int = 10) -> Optional[Dict]:
         """Poll for transaction receipt with backoff."""
         provider = self.contract.get_provider().eth if self.contract else None
@@ -191,18 +181,21 @@ class EthernityCloudRunner:
         backoff_factor = 1.5
         self.logger.info(f"Submitting transaction {tx_hash}")
         for attempt in range(max_attempts):
-            try:
-                receipt = provider.get_transaction_receipt(tx_hash)
-                if receipt:
-                    return receipt
-            except TransactionNotFound:
-                pass
-            self.logger.debug(f"Transaction {tx_hash} still processing, check attempt {attempt + 1}/{max_attempts}")
+            if self.is_running():
+                try:
+                    receipt = provider.get_transaction_receipt(tx_hash)
+                    if receipt:
+                        return receipt
+                except TransactionNotFound:
+                    pass
+                self.logger.debug(f"Transaction {tx_hash} still processing, check attempt {attempt + 1}/{max_attempts}")
+            else:
+                self.logger.info("Transaction processing was cancelled")
+                return None
             time.sleep(current_delay)
             current_delay = min(current_delay * backoff_factor, 60)  # Max 60s
         self.logger.error(f"Max attempts ({max_attempts}) reached for transaction {tx_hash}.")
         return None
-
     def wait_for_transaction_to_be_processed(self, contract: Contract, transaction_hash: str, max_attempts: int = 10) -> bool:
         """Wait for transaction to be mined and check status."""
         receipt = self.poll_transaction(transaction_hash, max_attempts)
@@ -212,7 +205,6 @@ class EthernityCloudRunner:
             reason = self.get_reason(contract, transaction_hash)
             self.logger.error(f"Transaction failed: {reason}")
         return False
-
     def check_web3_connection(self) -> bool:
         """Check if Web3 is connected and wallet is set."""
         try:
@@ -222,22 +214,18 @@ class EthernityCloudRunner:
             wallet_address = self.contract.get_current_wallet()
             return bool(wallet_address)
         except Web3RPCError as e:
-            self.logger.error(f"Web3 connection check failed: {e}")
+            self.logger.error(f"Web3 connection check failed: {raw_rpc_error_message(e)}")
             return False
-
     def hex_to_bytes(self, hex_str: str) -> bytes:
         """Convert hex string to bytes."""
         return bytes.fromhex(hex_str[2:] if hex_str.startswith("0x") else hex_str)
-
     def bytes_to_hex(self, bytes_str: bytes) -> str:
         """Convert bytes to hex string."""
         return "0x" + hexlify(bytes_str).decode("utf-8")
-
     def get_current_wallet_public_key(self) -> HexStr:
         """Get public key from private key."""
         priv_key = PrivateKey.from_seed(self.hex_to_bytes(self.private_key)).public_key._public_key
         return self.bytes_to_hex(priv_key)
-
     def get_v3_image_metadata(self, challenge_hash: bytes) -> str:
         """Generate v3 image metadata."""
         if not self.ipfs_client:
@@ -249,7 +237,6 @@ class EthernityCloudRunner:
         self.logger.info(f"Uploaded challenge to IPFS: {challenge_ipfs_hash}")
         public_key = self.get_current_wallet_public_key()
         return f"{TRUSTEDZONE_VERSION}:{self.enclave_image_ipfs_hash}:{self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
-
     def get_v3_code_metadata(self, code: str) -> str:
         """Generate v3 code metadata."""
         if not self.ipfs_client:
@@ -262,17 +249,19 @@ class EthernityCloudRunner:
         self.logger.info(f"Uploaded encrypted code to IPFS: {self.script_hash}")
         signed_checksum = self.contract.sign_message(script_checksum)
         return f"{TRUSTEDZONE_VERSION}:{self.script_hash}:{signed_checksum.signature.hex()}"
-
     def get_v3_input_metadata(self) -> str:
         """Generate v3 input metadata."""
         file_set_checksum = self.contract.sign_message(ZERO_CHECKSUM)
         return f"{TRUSTEDZONE_VERSION}::{file_set_checksum.signature.hex()}"
-
     def create_do_request(self, image_metadata: str, code_metadata: str, input_metadata: str, node_address: Address) -> bool:
         """Create a DO request on the contract."""
         if not self.contract:
             raise RuntimeError("Contract not initialized.")
         self.logger.info("Submitting transaction for DO request")
+        if node_address:
+            node_address = Web3.to_checksum_address(node_address)
+        else:
+            node_address = '0x0000000000000000000000000000000000000000'
         def send_tx():
             return self.contract.add_do_request(image_metadata, code_metadata, input_metadata, node_address, self.resources)
         transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2)
@@ -290,7 +279,6 @@ class EthernityCloudRunner:
         self.logger.info(f"{transaction_hash} confirmed!")
         self.logger.info(f"Request {self.do_request} was created successfully!")
         return True
-
     def parse_order_result(self, result: str) -> Dict[str, Any]:
         """Parse order result string."""
         try:
@@ -303,7 +291,6 @@ class EthernityCloudRunner:
             }
         except IndexError as e:
             raise ValueError(ECError.PARSE_ERROR.value) from e
-
     def parse_transaction_bytes(self, bytes_str: bytes) -> Dict[str, str]:
         """Parse transaction bytes."""
         try:
@@ -319,7 +306,6 @@ class EthernityCloudRunner:
             }
         except (IndexError, ValueError) as e:
             raise ValueError(ECError.PARSE_ERROR.value) from e
-
     def get_result_from_order(self, order_id: int) -> Optional[Dict[str, Any]]:
         """Get and verify result from order."""
         decrypted_data: Dict[str, Any] = {}
@@ -329,7 +315,11 @@ class EthernityCloudRunner:
         while self.is_running() and status != 2:
             time.sleep(self.block_time)
             status = self.contract.get_status_from_order(order_id)
+        if not self.is_running():
+            self.logger.info(f"Task {order_id} was cancelled")
+            return None
         self.logger.info(f"Task {order_id} was successfully processed.")
+        order_result = self.retry_operation(lambda: self.contract.get_result_from_order(order_id), max_retries)
         try:
             parsed_order_result = self.parse_order_result(order_result)
             self.logger.info(f"Checking result hash: {parsed_order_result['result_ipfs_hash']}")
@@ -381,9 +371,9 @@ class EthernityCloudRunner:
             "result_timestamp": 0,
             "value": decrypted_data["data"],
         }
-
     def create_task(self, code: str) -> bool:
         """Create a new task."""
+        do_sent_successfully = False
         self.challenge_hash = generate_random_hex_of_size(20).encode("utf-8")
         image_metadata = self.get_v3_image_metadata(self.challenge_hash)
         code_metadata = self.get_v3_code_metadata(code)
@@ -393,7 +383,6 @@ class EthernityCloudRunner:
             image_metadata, code_metadata, input_metadata, self.node_address
         )
         return do_sent_successfully
-
     def attach_task(self, order_id: int) -> Optional[Dict[str, Any]]:
         """Attach to an existing task."""
         self.order_id = order_id
@@ -401,7 +390,6 @@ class EthernityCloudRunner:
         self.do_request = self.order[2]  # Assuming request_id is at index 2
         result = self.get_result_from_order(self.order_id)
         return result if result else None
-
     def check_order_for_task(self) -> bool:
         """Check for order creation with backoff."""
         self.logger.info("Waiting for Ethernity CLOUD network...")
@@ -419,8 +407,8 @@ class EthernityCloudRunner:
                 current_delay = initial_delay
                 time.sleep(self.block_time)
             except Web3RPCError as e:
-                error_code = e.code if hasattr(e, 'code') else 'Unknown'
-                error_msg = e.message if hasattr(e, 'message') else str(e)
+                error_code = raw_rpc_error_code(e)
+                error_msg = raw_rpc_error_message(e)
                 self.logger.error(f"Web3RPCError: Code {error_code} - {error_msg}. Retrying after {current_delay} seconds...")
                 time.sleep(current_delay)
                 retry_count += 1
@@ -431,7 +419,6 @@ class EthernityCloudRunner:
                 retry_count += 1
                 current_delay = min(initial_delay * (backoff_factor ** retry_count), max_delay)
         return False
-
     def approve_task(self) -> bool:
         """Approve the task."""
         self.logger.info(f"Approving task {self.order_id}...")
@@ -442,17 +429,15 @@ class EthernityCloudRunner:
                 if self.approve_order():
                     return True
             except Web3RPCError as e:
-                self.logger.error(f"Approval failed: {e}")
+                self.logger.error(f"Approval failed: {raw_rpc_error_message(e)}")
             time.sleep(self.block_time)
             retry_count += 1
         self.logger.error(f"Max attempts ({max_attempts}) reached for task approval.")
         return False
-
     def process_task(self) -> Optional[Dict[str, Any]]:
         """Process the task and get result."""
         result = self.get_result_from_order(self.order_id)
         return result if result else None
-
     def find_order(self, doreq: int) -> bool:
         """Find the order by request ID."""
         count = self.protocol_contract.functions._getOrdersCount().call()
@@ -463,14 +448,17 @@ class EthernityCloudRunner:
                 self.order_id = i
                 return True
         return False
-
     def approve_order(self) -> bool:
         """Approve the order."""
         if self.node_address != "":
             self.logger.info(f"Transaction is delegated to {self.node_address}, skipping approval")
             return True
-        transaction_hash = self.contract.approve_order(self.order_id)
-        receipt = self.poll_transaction(transaction_hash, max_attempts=100)
+
+        def send_tx():
+            return self.contract.approve_order(self.order_id)
+
+        transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2)
+        receipt = self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100)
         if receipt and receipt['status'] == 1:
             self.node_address = self.contract.get_order(self.order_id)[1]
             self.logger.info(f"{transaction_hash} confirmed!")
@@ -478,7 +466,6 @@ class EthernityCloudRunner:
             return True
         self.logger.error(f"Approval failed for transaction {transaction_hash}.")
         return False
-
     def reset(self) -> None:
         """Reset state variables."""
         self.order = None
@@ -490,11 +477,9 @@ class EthernityCloudRunner:
         self.file_set_hash = ""
         self.get_result_from_order_repeats = 1
         self.task_has_been_picked_for_approval = False
-
     def cleanup(self) -> None:
         """Cleanup resources."""
         self.reset()
-
     def is_node_operator_address(self, node_address: str) -> bool:
         """Check if address is a node operator."""
         if is_null_or_empty(node_address):
@@ -506,11 +491,9 @@ class EthernityCloudRunner:
         if not is_node:
             self.logger.error("The target address is not a valid node operator address")
         return is_node
-
     def set_storage_ipfs(self, ipfs_address: str, token: str = "") -> None:
         """Set IPFS client."""
         self.ipfs_client = IPFSClient(ipfs_address, token)
-
     def retry_operation(self, func: callable, max_retries: int = 10, delay: Optional[int] = None, backoff_factor: float = 1.5) -> Any:
         """Retry a function with exponential backoff."""
         delay = delay or self.block_time
@@ -525,7 +508,6 @@ class EthernityCloudRunner:
                 time.sleep(current_delay)
                 current_delay = min(current_delay * backoff_factor, 60)
         raise RuntimeError("Max retries exceeded")
-
     def run(
         self,
         resources: Optional[Dict[str, int]],
@@ -562,7 +544,6 @@ class EthernityCloudRunner:
             daemon=True
         )
         self.task_thread.start()
-
     def _populate_event_queue(self) -> None:
         """Populate the event queue with predefined events."""
         events = [
@@ -574,7 +555,6 @@ class EthernityCloudRunner:
         ]
         for event in events:
             self.event_queue.put(event)
-
     def _process_events(self, securelock_enclave: str, securelock_version: str, code: str, node_address: str, resources: Dict[str, int]) -> None:
         """Process events in the queue."""
         try:
@@ -620,7 +600,7 @@ class EthernityCloudRunner:
                 elif event == ECEvent.CREATED:
                     self.progress = event
                     if not self.check_order_for_task():
-                        raise ValueError("Could not any available operator matching this task request.")
+                        raise ValueError("Could not find any available operator matching this task request.")
                 elif event == ECEvent.ORDER_PLACED:
                     self.progress = event
                     if not self.approve_task():
@@ -643,7 +623,6 @@ class EthernityCloudRunner:
             self.logger.error(f"Error: {self.last_error}")
         finally:
             self.running = False
-
     def get_state(self) -> Dict[str, Any]:
         """Retrieve the current task status."""
         remaining_events = list(self.event_queue.queue)
@@ -655,15 +634,12 @@ class EthernityCloudRunner:
             "processed_events": self.processed_events,
             "remaining_events": [e.name for e in remaining_events],
         }
-
     def is_running(self) -> bool:
         """Check if a task is currently running."""
         return self.running
-
     def get_result(self) -> Optional[Any]:
         """Retrieve the result of the task."""
         return self.result
-
     def close(self) -> None:
         """Close resources and stop the runner."""
         self.running = False
@@ -687,7 +663,7 @@ class EthernityCloudRunner:
                     pass
         if self.task_thread and self.task_thread.is_alive():
             self.logger.info("Stopping task thread...")
-            self.task_thread.join(timeout=5.0)
+            self.task_thread.join(timeout=self.block_time * 2)
             if self.task_thread.is_alive():
                 self.logger.error("Task thread did not terminate; potential stuck loop.")
                 self.status = ECStatus.ERROR
