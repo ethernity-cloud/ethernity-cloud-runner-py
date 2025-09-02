@@ -93,8 +93,6 @@ class protocolContract:
                     tx, private_key=self.signer._private_key
                 )
 
-                print(f"tx: {options['nonce']} {signed_tx.hash.hex()}")
-
                 # Suppress Web3's friendly prefix for this call only
                 with suppress_web3_friendly_prefix():
                     tx_hash = self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)

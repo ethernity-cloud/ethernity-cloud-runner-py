@@ -9,7 +9,7 @@ from eth_typing import Address, HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
 from web3.exceptions import TimeExhausted, TransactionNotFound, Web3RPCError
-from .errors import install_web3_friendly_prefix_filter, raw_rpc_error_message, raw_rpc_error_code
+from .errors import install_web3_friendly_prefix_filter, raw_rpc_error_message
 from .contract.abi.bloxbergAbi import contract as bloxbergAbi
 from .contract.abi.polygonProtocolAbi import contract as polygonAbi
 from .contract.abi.ECLDAbi import contract as ECLDAbi
@@ -407,8 +407,8 @@ class EthernityCloudRunner:
                 current_delay = initial_delay
                 time.sleep(self.block_time)
             except Web3RPCError as e:
-                error_code = raw_rpc_error_code(e)
-                error_msg = raw_rpc_error_message(e)
+                error_code = e.code if hasattr(e, 'code') else 'Unknown'
+                error_msg = raw_rpc_error_message(e) if hasattr(e, 'message') else str(e)
                 self.logger.error(f"Web3RPCError: Code {error_code} - {error_msg}. Retrying after {current_delay} seconds...")
                 time.sleep(current_delay)
                 retry_count += 1

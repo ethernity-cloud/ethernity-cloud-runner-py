@@ -64,17 +64,21 @@ class IPFSClient:
             if attempt < 6:
                 self.download_file(ipfs_hash, download_path, attempt + 1)
 
-    def get_file_content(self, ipfs_hash: str, attempt: int = 0) -> None:
+    def get_file_content(self, ipfs_hash: str) -> None:
+        gateway_url = f"https://ipfs.io/ipfs/{ipfs_hash}"
+        response = requests.get(url=gateway_url, timeout=30, headers=self.headers)
+        
+        if response.status_code == 200:
+            # TODO: use a get encoding function to determine the encoding
+            return response.content.decode("utf-8")
+    
         url = self.api_url
         gateway_url = f"{url}/cat?arg={ipfs_hash}"
-        response = requests.post(url=gateway_url, timeout=60, headers=self.headers)
+        response = requests.post(url=gateway_url, timeout=30, headers=self.headers)
 
         if response.status_code == 200:
             # TODO: use a get encoding function to determine the encoding
             return response.content.decode("utf-8")
-        else:
-            if attempt < 6:
-                self.get_file_content(ipfs_hash, attempt + 1)
 
         return None
 
