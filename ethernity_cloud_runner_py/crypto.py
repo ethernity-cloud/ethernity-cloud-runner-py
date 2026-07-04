@@ -4,6 +4,7 @@ import codecs
 import hashlib
 import json
 import secrets
+from typing import Union
 from base64 import a85decode, a85encode
 from typing import Any
 
