@@ -13,7 +13,7 @@ print(this_directory);
 
 setup(
     name="ethernity-cloud-runner-py",
-    version="0.3.3",
+    version="0.3.5",
     url="https://github.com/ethernity-cloud/ethernity-cloud-runner-py",
     author="Ethernity Cloud Team",
     author_email="contact@ethernity.cloud",
