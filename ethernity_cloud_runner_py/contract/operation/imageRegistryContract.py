@@ -51,19 +51,26 @@ class ImageRegistryContract:
     def get_enclave_details_v3(
         self, secureLockImage: str, secureLockVersion: str, trustedZoneImage: str = "", trustedZoneVersion: str = ""
     ) -> Any:
+        # The registry stores each image's "latest" pointer under the PROTOCOL
+        # version, which for v3 images is the literal "v3" -- NOT the enclave/
+        # template version a caller might pass (e.g. "21"). Query with "v3" so a
+        # wrong secureLockVersion/trustedZoneVersion argument can't make us look
+        # up the image under the wrong key and resolve a stale/missing enclave.
+        # This matches the JS runner, which hardcodes 'v3' for these calls.
+        PROTOCOL_VERSION = "v3"
         try:
             if not trustedZoneImage or secureLockImage == trustedZoneImage:
                 return self.contract.functions.getLatestTrustedZoneImageCertPublicKey(
-                    secureLockImage, trustedZoneVersion
+                    secureLockImage, PROTOCOL_VERSION
                 ).call()
             else:
                 trustedZonePublicKey = (
                     self.contract.functions.getLatestTrustedZoneImageCertPublicKey(
-                        trustedZoneImage, trustedZoneVersion
+                        trustedZoneImage, PROTOCOL_VERSION
                     ).call()[1]
                 )
                 imageDetails = self.contract.functions.getLatestImageVersionPublicKey(
-                    secureLockImage, secureLockVersion
+                    secureLockImage, PROTOCOL_VERSION
                 ).call()
                 return [imageDetails[0], trustedZonePublicKey, imageDetails[2]]
         except Exception as e:
