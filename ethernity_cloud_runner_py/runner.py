@@ -247,12 +247,15 @@ class EthernityCloudRunner:
         if self.script_hash is None:
             raise ValueError("Failed to upload encrypted code to IPFS.")
         self.logger.info(f"Uploaded encrypted code to IPFS: {self.script_hash}")
-        signed_checksum = self.contract.sign_message(script_checksum)
-        return f"{TRUSTEDZONE_VERSION}:{self.script_hash}:{signed_checksum.signature.hex()}"
+        # v4 request: emit the plain sha256 checksum (not a signature). The
+        # DO-request is authenticated on-chain by the owner (tx sender), so the
+        # enclave only needs the plain checksum to verify the payload content.
+        return f"{TRUSTEDZONE_VERSION}:{self.script_hash}:{script_checksum}"
     def get_v3_input_metadata(self) -> str:
         """Generate v3 input metadata."""
-        file_set_checksum = self.contract.sign_message(ZERO_CHECKSUM)
-        return f"{TRUSTEDZONE_VERSION}::{file_set_checksum.signature.hex()}"
+        # v4 request: emit the plain ZERO_CHECKSUM for empty input (not a
+        # signature). Matches the JS runner and the v4-only enclave validation.
+        return f"{TRUSTEDZONE_VERSION}::{ZERO_CHECKSUM}"
     def create_do_request(self, image_metadata: str, code_metadata: str, input_metadata: str, node_address: Address) -> bool:
         """Create a DO request on the contract."""
         if not self.contract:
