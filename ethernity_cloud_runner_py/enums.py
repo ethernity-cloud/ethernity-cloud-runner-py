@@ -25,7 +25,28 @@ ECOrderTaskStatus = {
     6: "PAYLOAD_CHECKSUM_ERROR",
     7: "INPUT_CHECKSUM_ERROR",
     8: "EXECVE",
+    # Extended diagnostics emitted by newer trustedzone builds. 21+ are
+    # customer-side outcomes; 40-49 are operator-side infrastructure failures
+    # (securelock never ran / produced unusable output) and are the codes the
+    # runner treats as retriable with a fresh DO request.
+    21: "EXECUTION_TIMEOUT",
+    40: "SECURELOCK_NOT_STARTED",
+    41: "SECURELOCK_NO_RESULT",
+    42: "SECURELOCK_MALFORMED",
+    43: "SIGNATURE_ERROR",
+    44: "STORAGE_ERROR",
+    45: "INTERNAL_ERROR",
 }
+
+# Task codes attributed to the node operator rather than the submitted code.
+# The escrow for such orders is refunded by the validator, so resubmitting the
+# same task as a new DO request is safe and is what the runner's retry does.
+OPERATOR_FAULT_CODES = range(40, 50)
+
+
+def task_status_name(code: int) -> str:
+    """Name for a task code, tolerant of codes newer than this runner."""
+    return ECOrderTaskStatus.get(code, f"UNKNOWN_{code}")
 
 
 class ECOrderTaskStatusCode(Enum):

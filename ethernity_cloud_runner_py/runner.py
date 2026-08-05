@@ -26,6 +26,8 @@ from .enums import (
     ECOrderTaskStatus,
     ECStatus,
     ECLog,
+    OPERATOR_FAULT_CODES,
+    task_status_name,
 )
 from .ipfs import IPFSClient
 from .utils import (
@@ -40,6 +42,19 @@ import logging
 import random
 LAST_BLOCKS = 20
 TRUSTEDZONE_VERSION = "v3"
+
+
+class OperatorFaultError(Exception):
+    """A failure attributed to the node operator, not the submitted task.
+
+    Raised when the order times out with no on-chain result, when the
+    operator's result is unparseable/unverifiable, or when the task code is in
+    the operator-fault range (40-49). Because the DO request cannot be reused
+    once an order was placed against it (the contract flips it to BOOKED with
+    no reset path), the runner retries by submitting a NEW DO request; the
+    escrow of the failed order is refunded by the validator."""
+
+
 class EthernityCloudRunner:
     def __init__(self, network_name="BLOXBERG", network_type="TESTNET") -> None:
         install_web3_friendly_prefix_filter(suppress_codes=(-32000, -32010))
@@ -299,23 +314,43 @@ class EthernityCloudRunner:
         try:
             result = parse_transaction_bytes_ut(self.protocol_abi, bytes_str)
             arr = result["result"].split(":")
+            task_code_int = int(arr[1])
             return {
                 "version": arr[0],
                 "from": result["from"],
                 "task_code": arr[1],
-                "task_code_string": ECOrderTaskStatus[int(arr[1])],
+                "task_code_int": task_code_int,
+                "task_code_string": task_status_name(task_code_int),
                 "checksum": arr[2],
                 "enclave_challenge": arr[3],
             }
         except (IndexError, ValueError) as e:
             raise ValueError(ECError.PARSE_ERROR.value) from e
     def get_result_from_order(self, order_id: int) -> Optional[Dict[str, Any]]:
-        """Get and verify result from order."""
+        """Get and verify result from order.
+
+        On failure this returns None and, when the failure is attributable to
+        the node operator (timeout, unusable output, operator-fault task code),
+        records the reason in self._fault so the caller can retry with a new
+        DO request."""
         decrypted_data: Dict[str, Any] = {}
         max_retries = 10
+        self._fault = None
         self.logger.info(f"Operator {self.order[1]} is processing task {order_id}")
+        # An honest node holds an order at most its duration plus the node
+        # agent's own result wait (~62 min); past that the operator is hung or
+        # offline and the order will never leave PROCESSING on its own.
+        duration_hours = (getattr(self, "resources", None) or {}).get("duration", 1)
+        deadline = time.time() + duration_hours * 3600 + 900
         status = self.contract.get_status_from_order(order_id)
         while self.is_running() and status != 2:
+            if time.time() > deadline:
+                self._fault = (
+                    f"order {order_id} was not completed within its duration "
+                    f"(operator hung or offline)"
+                )
+                self.logger.error(self._fault)
+                return None
             time.sleep(self.block_time)
             status = self.contract.get_status_from_order(order_id)
         if not self.is_running():
@@ -331,6 +366,16 @@ class EthernityCloudRunner:
             self.logger.error(f"Error parsing: {e}")
             self.logger.error("Could not parse. The operator result is invalid, indicating a failure")
             self.logger.error("Tokens will be refunded after validation. Please try again.")
+            self._fault = f"order {order_id}: operator result could not be parsed"
+            return None
+        task_code_int = transaction_result.get("task_code_int")
+        if task_code_int in OPERATOR_FAULT_CODES:
+            self._fault = (
+                f"order {order_id} failed on the operator side: "
+                f"{transaction_result['task_code_string']} ({task_code_int})"
+            )
+            self.logger.error(self._fault)
+            self.logger.error("Tokens will be refunded after validation.")
             return None
         self.logger.info("Verifying ZK proof")
         if self.challenge_hash:
@@ -338,6 +383,7 @@ class EthernityCloudRunner:
             if not wallet or wallet != transaction_result["from"]:
                 self.logger.error("Integrity check failed, signer wallet address is wrong")
                 self.logger.error("Tokens will be refunded after validation. Please try again.")
+                self._fault = f"order {order_id}: result signer verification failed"
                 return None
             self.logger.info("Verification successful!")
         self.logger.info(f"The result is signed by: {transaction_result['from']}")
@@ -347,16 +393,21 @@ class EthernityCloudRunner:
         )
         if ipfs_result is None:
             self.logger.error("Failed to download IPFS result after retries.")
+            self._fault = f"order {order_id}: result could not be downloaded from IPFS"
             return None
         self.logger.info("Decrypting result")
         decrypted_data = decrypt_nacl(self.private_key, ipfs_result)
         if not decrypted_data["success"]:
+            # Not marked as an operator fault: the most common cause is a wrong
+            # client key, and auto-resubmitting would spend gas on every attempt
+            # without changing the outcome.
             self.logger.error("Could not decrypt the task result.")
             return None
         self.logger.debug(f"Result value: {decrypted_data['data']}")
         ipfs_result_checksum = sha256(decrypted_data["data"], True)
         if ipfs_result_checksum != transaction_result["checksum"]:
             self.logger.error(f"Integrity check failed: {ipfs_result_checksum} != {transaction_result['checksum']}")
+            self._fault = f"order {order_id}: result checksum verification failed"
             return None
         return {
             "success": True,
@@ -370,6 +421,7 @@ class EthernityCloudRunner:
             "public_timestamp": 0,
             "result_hash": parsed_order_result["result_ipfs_hash"],
             "result_task_code": transaction_result["task_code_string"],
+            "result_task_code_int": transaction_result["task_code_int"],
             "result_value": ipfs_result,
             "result_timestamp": 0,
             "value": decrypted_data["data"],
@@ -519,8 +571,19 @@ class EthernityCloudRunner:
         code: str,
         node_address: str = "",
         trustedzone_enclave: str = "etny-pynithy-testnet",
+        max_retries: int = 2,
+        retry_delay: int = 30,
     ) -> None:
-        """Run the task."""
+        """Run the task.
+
+        max_retries: how many times to resubmit the task as a NEW DO request
+        when it fails on the operator side (order timeout, unusable operator
+        output, or an operator-fault task code 40-49). Failures caused by the
+        submitted code itself are final results and are never retried.
+        retry_delay: seconds to wait between resubmissions."""
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self._fault = None
         if resources is None:
             resources = {
                 "taskPrice": 10,
@@ -559,73 +622,102 @@ class EthernityCloudRunner:
         for event in events:
             self.event_queue.put(event)
     def _process_events(self, securelock_enclave: str, securelock_version: str, code: str, node_address: str, resources: Dict[str, int]) -> None:
-        """Process events in the queue."""
+        """Process events, resubmitting on operator-side failures."""
+        attempt = 0
         try:
-            while not self.event_queue.empty() and self.is_running():
-                event = self.event_queue.get()
-                if event == ECEvent.INIT:
-                    self.progress = ECEvent.INIT
-                    self.logger.info("Checking wallet balance...")
-                    balance = int(self.contract.get_balance())
-                    if balance < self.price:
-                        if self.network_type != "MAINNET":
-                            self.logger.info("Insufficient wallet balance, using testnet faucet...")
-                            self.contract.faucet()
-                        else:
-                            raise ValueError(f"Insufficient wallet balance. Required: {self.price}, Available: {balance}")
-                    self.logger.info("Verifying node address...")
-                    self.node_address = node_address
-                    if not self.is_node_operator_address(node_address):
-                        raise ValueError("Node address verification failed.")
-                    self.securelock_enclave = securelock_enclave
-                    self.securelock_version = securelock_version
-                    self.cleanup()
-                    image_to_check = self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage
-                    self.logger.info(f"Checking image {image_to_check} in registry...")
-                    self.image_registry_contract = ImageRegistryContract(self.network_name, self.network_type, self.signer)
-                    if not self.check_web3_connection():
-                        raise ConnectionError("Web3 connection failed.")
-                    if not self.get_enclave_details():
-                        raise ValueError("Unable to find enclave in registry")
-                    if self.network_name != "BLOXBERG":
-                        self.logger.info("Checking allowance on the current wallet...")
-                        allowance = self.token_contract.functions.allowance(self.signer.address, self.contract.get_protocol_address()).call()
-                        if allowance < self.price:
-                            self.logger.info(f"Approving allowance for {self.price} {self.network_config.TOKEN_NAME}")
-                            transaction_hash = self.contract.set_allowance(self.price)
-                            receipt = self.poll_transaction(transaction_hash, max_attempts=100)
-                            if not receipt or receipt['status'] != 1:
-                                raise ValueError("Allowance approval failed.")
-                            self.logger.info("Allowance approved")
-                        self.logger.info("Allowance check completed.")
-                    if not self.create_task(code):
-                        raise ValueError("Unable to create a DO request")
-                elif event == ECEvent.CREATED:
-                    self.progress = event
-                    if not self.check_order_for_task():
-                        raise ValueError("Could not find any available operator matching this task request.")
-                elif event == ECEvent.ORDER_PLACED:
-                    self.progress = event
-                    if not self.approve_task():
-                        raise ValueError("Task approval failed.")
-                elif event == ECEvent.IN_PROGRESS:
-                    self.progress = event
-                    result = self.process_task()
-                    if not result:
-                        raise ValueError("Task processing failed.")
-                    self.result = result
-                elif event == ECEvent.FINISHED:
+            while True:
+                try:
+                    self._run_attempt(securelock_enclave, securelock_version, code, node_address, resources)
+                    return
+                except OperatorFaultError as e:
+                    attempt += 1
+                    if attempt > getattr(self, "max_retries", 2):
+                        self.progress = ECEvent.FINISHED
+                        self.status = ECStatus.ERROR
+                        self.last_error = f"Failed on the operator side after {attempt} attempt(s): {e}"
+                        self.logger.error(self.last_error)
+                        return
+                    delay = getattr(self, "retry_delay", 30)
+                    self.logger.warning(
+                        f"Operator-side failure: {e}. Resubmitting as a new request "
+                        f"(retry {attempt}/{getattr(self, 'max_retries', 2)}) in {delay}s..."
+                    )
+                    time.sleep(delay)
+                    with self.event_queue.mutex:
+                        self.event_queue.queue.clear()
+                    self._populate_event_queue()
+                except Exception as e:
                     self.progress = ECEvent.FINISHED
-                    self.status = ECStatus.SUCCESS
-                    self.logger.info("Task completed successfully.")
-                self.processed_events.append(event.name)
-        except Exception as e:
-            self.progress = ECEvent.FINISHED
-            self.status = ECStatus.ERROR
-            self.last_error = str(e)
-            self.logger.error(f"Error: {self.last_error}")
+                    self.status = ECStatus.ERROR
+                    self.last_error = str(e)
+                    self.logger.error(f"Error: {self.last_error}")
+                    return
         finally:
             self.running = False
+
+    def _run_attempt(self, securelock_enclave: str, securelock_version: str, code: str, node_address: str, resources: Dict[str, int]) -> None:
+        """One full submission attempt: INIT through FINISHED."""
+        while not self.event_queue.empty() and self.is_running():
+            event = self.event_queue.get()
+            if event == ECEvent.INIT:
+                self.progress = ECEvent.INIT
+                self.logger.info("Checking wallet balance...")
+                balance = int(self.contract.get_balance())
+                if balance < self.price:
+                    if self.network_type != "MAINNET":
+                        self.logger.info("Insufficient wallet balance, using testnet faucet...")
+                        self.contract.faucet()
+                    else:
+                        raise ValueError(f"Insufficient wallet balance. Required: {self.price}, Available: {balance}")
+                self.logger.info("Verifying node address...")
+                self.node_address = node_address
+                if not self.is_node_operator_address(node_address):
+                    raise ValueError("Node address verification failed.")
+                self.securelock_enclave = securelock_enclave
+                self.securelock_version = securelock_version
+                self.cleanup()
+                image_to_check = self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage
+                self.logger.info(f"Checking image {image_to_check} in registry...")
+                self.image_registry_contract = ImageRegistryContract(self.network_name, self.network_type, self.signer)
+                if not self.check_web3_connection():
+                    raise ConnectionError("Web3 connection failed.")
+                if not self.get_enclave_details():
+                    raise ValueError("Unable to find enclave in registry")
+                if self.network_name != "BLOXBERG":
+                    self.logger.info("Checking allowance on the current wallet...")
+                    allowance = self.token_contract.functions.allowance(self.signer.address, self.contract.get_protocol_address()).call()
+                    if allowance < self.price:
+                        self.logger.info(f"Approving allowance for {self.price} {self.network_config.TOKEN_NAME}")
+                        transaction_hash = self.contract.set_allowance(self.price)
+                        receipt = self.poll_transaction(transaction_hash, max_attempts=100)
+                        if not receipt or receipt['status'] != 1:
+                            raise ValueError("Allowance approval failed.")
+                        self.logger.info("Allowance approved")
+                    self.logger.info("Allowance check completed.")
+                if not self.create_task(code):
+                    raise ValueError("Unable to create a DO request")
+            elif event == ECEvent.CREATED:
+                self.progress = event
+                if not self.check_order_for_task():
+                    raise ValueError("Could not find any available operator matching this task request.")
+            elif event == ECEvent.ORDER_PLACED:
+                self.progress = event
+                if not self.approve_task():
+                    raise ValueError("Task approval failed.")
+            elif event == ECEvent.IN_PROGRESS:
+                self.progress = event
+                result = self.process_task()
+                if not result:
+                    fault = getattr(self, "_fault", None)
+                    if fault:
+                        raise OperatorFaultError(fault)
+                    raise ValueError("Task processing failed.")
+                self.result = result
+            elif event == ECEvent.FINISHED:
+                self.progress = ECEvent.FINISHED
+                self.status = ECStatus.SUCCESS
+                self.logger.info("Task completed successfully.")
+            self.processed_events.append(event.name)
     def get_state(self) -> Dict[str, Any]:
         """Retrieve the current task status."""
         remaining_events = list(self.event_queue.queue)
