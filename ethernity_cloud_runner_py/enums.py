@@ -25,12 +25,25 @@ ECOrderTaskStatus = {
     6: "PAYLOAD_CHECKSUM_ERROR",
     7: "INPUT_CHECKSUM_ERROR",
     8: "EXECVE",
-    # Extended diagnostics emitted by newer trustedzone builds. 21+ are
-    # customer-side outcomes; 40-49 are operator-side infrastructure failures
-    # (securelock never ran / produced unusable output) and are the codes the
-    # runner treats as retriable with a fresh DO request.
-    21: "EXECUTION_TIMEOUT",
+    # Extended diagnostics emitted by newer enclave builds (canonical registry:
+    # the trustedzone extended enum). 20-33 are customer-side outcomes; 40-49
+    # are operator-side infrastructure failures (securelock never ran /
+    # produced unusable output) and are the codes the runner treats as
+    # retriable with a fresh DO request.
+    20: "SIGNATURE_ERROR",
+    21: "SYNTAX_ERROR",
+    22: "MEMORY_ERROR",
+    23: "NAME_ERROR",
+    24: "TYPE_ERROR",
+    25: "VALUE_ERROR",
+    26: "INDEX_ERROR",
+    27: "ATTRIBUTE_ERROR",
     28: "IMPORT_ERROR",  # serverless backend failed to import inside the enclave
+    29: "OS_ERROR",
+    30: "ZERO_DIVISION_ERROR",
+    31: "RUNTIME_ERROR",
+    32: "CONFIG_ERROR",  # required enclave config value empty in the sealed image
+    33: "EXECUTION_TIMEOUT",
     40: "SECURELOCK_NOT_STARTED",
     41: "SECURELOCK_NO_RESULT",
     42: "SECURELOCK_MALFORMED",
