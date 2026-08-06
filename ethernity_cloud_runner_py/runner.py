@@ -60,13 +60,24 @@ class EthernityCloudRunner:
         install_web3_friendly_prefix_filter(suppress_codes=(-32000, -32010))
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.ERROR)  # Default to ERROR; set via set_log_level
-        network_class = getattr(ECNetwork, network_name.upper(), None)
-        if network_class is None:
-            raise ValueError(f"Invalid network name: {network_name}")
+        # LOCAL mode: run tasks against the SDK's local test API (`ecld-test
+        # serve`) instead of the blockchain. Same runner surface — run(),
+        # get_state(), get_result() — no wallet, no gas, no SGX. The endpoint
+        # can be overridden with ECLD_LOCAL_ENDPOINT.
+        self.local_mode = network_name.upper() == "LOCAL"
+        if self.local_mode:
+            self.local_endpoint = os.environ.get(
+                "ECLD_LOCAL_ENDPOINT", "http://127.0.0.1:8745"
+            ).rstrip("/")
+            self.network_config = None
+        else:
+            network_class = getattr(ECNetwork, network_name.upper(), None)
+            if network_class is None:
+                raise ValueError(f"Invalid network name: {network_name}")
 
-        self.network_config = getattr(network_class, network_type.upper(), None)
-        if self.network_config is None:
-            raise ValueError(f"Invalid network type: {network_type} for network {network_name}")
+            self.network_config = getattr(network_class, network_type.upper(), None)
+            if self.network_config is None:
+                raise ValueError(f"Invalid network type: {network_type} for network {network_name}")
         self.private_key: str = ""
         self.signer: Optional[Account] = None
         self.node_address: str = ""
@@ -97,8 +108,8 @@ class EthernityCloudRunner:
         self.running: bool = False
         self.network_name: str = network_name.upper()
         self.network_type: str = network_type.upper()
-        self.trustedZoneImage: str = self.network_config.TRUSTEDZONE_IMAGE
-        self.block_time: int = self.network_config.BLOCK_TIME
+        self.trustedZoneImage: str = "local" if self.local_mode else self.network_config.TRUSTEDZONE_IMAGE
+        self.block_time: int = 1 if self.local_mode else self.network_config.BLOCK_TIME
         self.ipfs_client: Optional[IPFSClient] = None
         self.contract: Optional[protocolContract] = None
         self.protocol_abi: Optional[List] = None
@@ -127,6 +138,9 @@ class EthernityCloudRunner:
         self.signer = Account.from_key(private_key)
     def connect(self) -> None:
         """Connect to the protocol contract."""
+        if self.local_mode:
+            self.logger.info(f"LOCAL mode: no blockchain connection; using {self.local_endpoint}")
+            return
         if self.signer is None:
             raise RuntimeError("Private key must be set before connecting.")
         self.contract = protocolContract(
@@ -655,8 +669,65 @@ class EthernityCloudRunner:
         finally:
             self.running = False
 
+    def _run_local_attempt(self, code: str) -> None:
+        """LOCAL mode: run the task against the ecld-test API, no blockchain.
+
+        Walks the same event queue so get_state() reports the same progress
+        shape as a real run; the result dict mirrors get_result_from_order's."""
+        import json
+        import urllib.request
+
+        while not self.event_queue.empty() and self.is_running():
+            event = self.event_queue.get()
+            if event == ECEvent.INIT:
+                self.progress = ECEvent.INIT
+                try:
+                    with urllib.request.urlopen(self.local_endpoint + "/v1/health", timeout=5) as r:
+                        info = json.loads(r.read())
+                except Exception as e:
+                    raise ConnectionError(
+                        f"Local test API not reachable at {self.local_endpoint} — "
+                        f"start it with 'ecld-test serve' in your project. ({e})"
+                    )
+                self.logger.info(f"LOCAL mode: backend functions {info.get('backend')}")
+            elif event in (ECEvent.CREATED, ECEvent.ORDER_PLACED):
+                self.progress = event  # no chain interaction locally
+            elif event == ECEvent.IN_PROGRESS:
+                self.progress = event
+                body = json.dumps({"payload": code}).encode("utf-8")
+                req = urllib.request.Request(
+                    self.local_endpoint + "/v1/task", data=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=600) as r:
+                    resp = json.loads(r.read())
+                self.result = {
+                    "success": resp["task_code"] == 0,
+                    "contract_address": "LOCAL",
+                    "input_transaction_hash": None,
+                    "output_transaction_hash": None,
+                    "order_id": -1,
+                    "image_hash": "local",
+                    "script_hash": "",
+                    "file_set_hash": "",
+                    "public_timestamp": 0,
+                    "result_hash": resp["checksum"],
+                    "result_task_code": resp["task_code_name"],
+                    "result_task_code_int": resp["task_code"],
+                    "result_value": resp["result"],
+                    "result_timestamp": 0,
+                    "value": resp["result"],
+                }
+            elif event == ECEvent.FINISHED:
+                self.progress = ECEvent.FINISHED
+                self.status = ECStatus.SUCCESS
+                self.logger.info("Task completed (LOCAL mode).")
+            self.processed_events.append(event.name)
+
     def _run_attempt(self, securelock_enclave: str, securelock_version: str, code: str, node_address: str, resources: Dict[str, int]) -> None:
         """One full submission attempt: INIT through FINISHED."""
+        if self.local_mode:
+            return self._run_local_attempt(code)
         while not self.event_queue.empty() and self.is_running():
             event = self.event_queue.get()
             if event == ECEvent.INIT:
