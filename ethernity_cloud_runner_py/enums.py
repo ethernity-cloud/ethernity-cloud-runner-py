@@ -30,6 +30,7 @@ ECOrderTaskStatus = {
     # (securelock never ran / produced unusable output) and are the codes the
     # runner treats as retriable with a fresh DO request.
     21: "EXECUTION_TIMEOUT",
+    28: "IMPORT_ERROR",  # serverless backend failed to import inside the enclave
     40: "SECURELOCK_NOT_STARTED",
     41: "SECURELOCK_NO_RESULT",
     42: "SECURELOCK_MALFORMED",
