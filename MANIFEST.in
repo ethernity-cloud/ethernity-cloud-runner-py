@@ -1,0 +1,8 @@
+# setup.py reads ethernity_cloud_runner_py/README.md for long_description, so the
+# sdist must carry it -- without this, `python -m build` fails when it rebuilds
+# the wheel from the unpacked sdist ("No such file or directory: README.md").
+include ethernity_cloud_runner_py/README.md
+include LICENSE
+recursive-include ethernity_cloud_runner_py *.abi *.json
+recursive-exclude * __pycache__
+recursive-exclude * *.pyc
