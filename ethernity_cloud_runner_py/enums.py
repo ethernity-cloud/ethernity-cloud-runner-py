@@ -160,7 +160,7 @@ class ECNetwork:
             TOKEN_ADDRESS='0x9927809B61122B2af3f3b3A3303875e0687b8eE3'
             HEARTBEAT_CONTRACT_ADDRESS='0x2E27677fb67531eb09134fE331C27899f87ADe10'
             TOKEN_NAME='tECLD'
-            RPC_URL='https://rpc.ankr.com/polygon_amoy'
+            RPC_URL='https://polygon-amoy-bor-rpc.publicnode.com'
             RPC_DELAY=200
             CHAIN_ID=80002
             MIDDLEWARE='POA'
