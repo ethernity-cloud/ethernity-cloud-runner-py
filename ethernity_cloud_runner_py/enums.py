@@ -44,6 +44,8 @@ ECOrderTaskStatus = {
     31: "RUNTIME_ERROR",
     32: "CONFIG_ERROR",  # required enclave config value empty in the sealed image
     33: "EXECUTION_TIMEOUT",
+    34: "ESR_GAS_LIMIT_EXCEEDED",  # ESR state commits would exceed the per-order relayed-gas budget
+
     40: "SECURELOCK_NOT_STARTED",
     41: "SECURELOCK_NO_RESULT",
     42: "SECURELOCK_MALFORMED",
