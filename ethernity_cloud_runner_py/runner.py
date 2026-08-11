@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import threading
 from queue import Queue
@@ -270,7 +271,12 @@ class EthernityCloudRunner:
         """Generate v3 code metadata."""
         if not self.ipfs_client:
             raise RuntimeError("IPFS client not initialized.")
-        script_checksum = sha256(code)
+        # as_hex=True is REQUIRED: sha256()'s default returns bytes, and
+        # f-string interpolation of bytes writes the literal "b'...'" repr into
+        # the on-chain metadata. The enclave then compares its computed hex
+        # against that repr and every payload fails with
+        # PAYLOAD_CHECKSUM_ERROR (orders 1817-1819 on bloxberg testnet).
+        script_checksum = sha256(code, True)
         base64_encrypted_script = encrypt(code.encode("utf-8"), self.enclave_public_key)
         self.script_hash = self.ipfs_client.upload_to_ipfs(base64_encrypted_script)
         if self.script_hash is None:
@@ -279,6 +285,13 @@ class EthernityCloudRunner:
         # v4 request: emit the plain sha256 checksum (not a signature). The
         # DO-request is authenticated on-chain by the owner (tx sender), so the
         # enclave only needs the plain checksum to verify the payload content.
+        # Refuse to submit anything that is not a plain 64-char hex digest --
+        # a malformed checksum burns the client's gas on a task that can only
+        # be rejected by the enclave.
+        if not re.fullmatch(r"[0-9a-f]{64}", script_checksum):
+            raise ValueError(
+                f"payload checksum is not a plain sha256 hex digest: {script_checksum!r}"
+            )
         return f"{TRUSTEDZONE_VERSION}:{self.script_hash}:{script_checksum}"
     def get_v3_input_metadata(self) -> str:
         """Generate v3 input metadata."""
