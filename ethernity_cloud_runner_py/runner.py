@@ -324,9 +324,18 @@ class EthernityCloudRunner:
         # Transfer, other protocol events) besides _addDORequestEV. web3's
         # default (WARN) prints a MismatchedABI warning for every non-matching
         # log while still returning the one we want -- pure noise. DISCARD drops
-        # the non-matching logs silently; we only ever use the _addDORequestEV
-        # match below.
+        # ONLY the non-matching logs; the _addDORequestEV event we depend on is
+        # decoded identically. It never hides a failed tx (that is caught above
+        # by is_processed) nor a missing event (handled explicitly below).
         processed_logs = self.protocol_contract.events._addDORequestEV().process_receipt(receipt, errors=DISCARD)
+        if not processed_logs:
+            # The tx succeeded but the receipt carries no _addDORequestEV event
+            # -- we cannot know the DO request row number, so DO NOT proceed with
+            # a wrong/unknown value. Fail cleanly instead of crashing or guessing.
+            self.logger.error(
+                f"DO request tx {transaction_hash} confirmed but emitted no "
+                f"_addDORequestEV event; refusing to proceed without the request id.")
+            return False
         self.do_request = processed_logs[0].args._rowNumber
         self.logger.info(f"{transaction_hash} confirmed!")
         self.logger.info(f"Request {self.do_request} was created successfully!")
