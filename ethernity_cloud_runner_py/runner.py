@@ -10,6 +10,7 @@ from eth_typing import Address, HexStr
 from web3 import Web3
 from web3.contract.contract import Contract
 from web3.exceptions import TimeExhausted, TransactionNotFound, Web3RPCError
+from web3.logs import DISCARD
 from .errors import install_web3_friendly_prefix_filter, raw_rpc_error_message
 from .contract.abi.bloxbergAbi import contract as bloxbergAbi
 from .contract.abi.polygonProtocolAbi import contract as polygonAbi
@@ -319,7 +320,13 @@ class EthernityCloudRunner:
             self.logger.error(f"Unable to create DO request: {reason}")
             return False
         receipt = self.contract.get_provider().eth.get_transaction_receipt(transaction_hash)
-        processed_logs = self.protocol_contract.events._addDORequestEV().process_receipt(receipt)
+        # errors=DISCARD: a DO-request receipt carries other logs (ERC-20
+        # Transfer, other protocol events) besides _addDORequestEV. web3's
+        # default (WARN) prints a MismatchedABI warning for every non-matching
+        # log while still returning the one we want -- pure noise. DISCARD drops
+        # the non-matching logs silently; we only ever use the _addDORequestEV
+        # match below.
+        processed_logs = self.protocol_contract.events._addDORequestEV().process_receipt(receipt, errors=DISCARD)
         self.do_request = processed_logs[0].args._rowNumber
         self.logger.info(f"{transaction_hash} confirmed!")
         self.logger.info(f"Request {self.do_request} was created successfully!")
