@@ -17,6 +17,8 @@ from .contract.abi.polygonProtocolAbi import contract as polygonAbi
 from .contract.abi.ECLDAbi import contract as ECLDAbi
 from .contract.operation.imageRegistryContract import ImageRegistryContract
 from .contract.operation.protocolContract import protocolContract
+from .contract.operation.esrContract import ESRContract
+from .state_cache import StateCache, parse_result_envelope
 from binascii import hexlify
 from nacl.public import Box, PrivateKey, PublicKey
 from .crypto import decrypt_nacl, encrypt, sha256
@@ -94,6 +96,12 @@ class EthernityCloudRunner:
         self.order_placed_timer: Optional[Any] = None  # Unused? Consider removing
         self.task_has_been_picked_for_approval: bool = False
         self.get_result_from_order_repeats: int = 1
+        # Runner-managed ESR state cache (opt-in via enable_state_cache()).
+        self.state_cache: Optional[StateCache] = None
+        # enclave name -> ESR wallet, learned from result envelopes; lets
+        # esr_read() resolve the wallet without an explicit argument and
+        # self-heal across enclave identity rotation.
+        self._esr_wallet_memo: Dict[str, str] = {}
         self.enclave_image_ipfs_hash: str = ""
         self.enclave_public_key: str = ""
         self.enclave_docker_compose_ipfs_hash: str = ""
@@ -369,6 +377,35 @@ class EthernityCloudRunner:
             }
         except (IndexError, ValueError) as e:
             raise ValueError(ECError.PARSE_ERROR.value) from e
+    def _apply_envelope(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Decode the structured result envelope (legacy strings pass through).
+
+        Keeps `value` as the legacy STRING view so string-treating dApps work
+        against both old and new enclaves, and adds the typed accessors:
+        result_type / result_data / result_esr / result_raw. When the state
+        cache is enabled, every envelope's esr entries refresh it."""
+        parsed = parse_result_envelope(result.get("value"))
+        result["value"] = parsed["legacy"]
+        result["result_type"] = parsed["type"]
+        result["result_data"] = parsed["data"]
+        result["result_esr"] = parsed["esr"]
+        result["result_raw"] = parsed["raw"]
+        esr = parsed["esr"]
+        if isinstance(esr, dict) and esr.get("wallet"):
+            wallet = esr["wallet"]
+            if self.securelock_enclave:
+                self._esr_wallet_memo[self.securelock_enclave] = wallet
+            if self.state_cache is not None:
+                for entry in esr.get("entries") or []:
+                    try:
+                        if "state" in entry:
+                            self.state_cache.set(
+                                wallet, entry["key"], entry.get("state"),
+                                entry.get("version", 0), entry.get("cid"))
+                    except Exception:
+                        continue
+        return result
+
     def get_result_from_order(self, order_id: int) -> Optional[Dict[str, Any]]:
         """Get and verify result from order.
 
@@ -452,7 +489,7 @@ class EthernityCloudRunner:
             self.logger.error(f"Integrity check failed: {ipfs_result_checksum} != {transaction_result['checksum']}")
             self._fault = f"order {order_id}: result checksum verification failed"
             return None
-        return {
+        return self._apply_envelope({
             "success": True,
             "contract_address": self.contract.get_protocol_address(),
             "input_transaction_hash": self.do_hash,
@@ -468,7 +505,7 @@ class EthernityCloudRunner:
             "result_value": ipfs_result,
             "result_timestamp": 0,
             "value": decrypted_data["data"],
-        }
+        })
     def create_task(self, code: str) -> bool:
         """Create a new task."""
         do_sent_successfully = False
@@ -730,7 +767,7 @@ class EthernityCloudRunner:
                 )
                 with urllib.request.urlopen(req, timeout=600) as r:
                     resp = json.loads(r.read())
-                self.result = {
+                self.result = self._apply_envelope({
                     "success": resp["task_code"] == 0,
                     "contract_address": "LOCAL",
                     "input_transaction_hash": None,
@@ -746,7 +783,7 @@ class EthernityCloudRunner:
                     "result_value": resp["result"],
                     "result_timestamp": 0,
                     "value": resp["result"],
-                }
+                })
             elif event == ECEvent.FINISHED:
                 self.progress = ECEvent.FINISHED
                 self.status = ECStatus.SUCCESS
@@ -835,6 +872,123 @@ class EthernityCloudRunner:
     def get_result(self) -> Optional[Any]:
         """Retrieve the result of the task."""
         return self.result
+
+    def enable_state_cache(self, backend=None, file=None) -> "StateCache":
+        """Opt in to the runner-managed ESR state cache.
+
+        Every task result carrying an ESR attachment refreshes the cache, and
+        esr_read() serves unchanged state from it after a free on-chain check
+        -- zero orders, zero gas. `backend` accepts any dict-like store;
+        `file` persists the default backend as JSON across restarts."""
+        self.state_cache = StateCache(backend=backend, file=file)
+        return self.state_cache
+
+    def esr_read(
+        self,
+        key: str,
+        enclave_wallet: Optional[str] = None,
+        read_code: Optional[str] = None,
+        force: bool = False,
+        trust_min_version: Optional[int] = None,
+        securelock_enclave: Optional[str] = None,
+        securelock_version: Optional[str] = None,
+        node_address: str = "",
+        resources: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
+        """Cache-gated ESR read.
+
+        Serves the state from the cache while a FREE on-chain check
+        (`getState` eth_call) confirms it is current; otherwise submits one
+        state-fetch task (the SDK's built-in `esr_fetch`, or `read_code` if
+        given) and refreshes the cache from its result envelope.
+
+        Wallet resolution: explicit `enclave_wallet`, else the wallet learned
+        from previous result envelopes for this enclave (self-healing across
+        enclave identity rotation).
+
+        Returns {state, version, cid, wallet, from_cache, checked_on_chain}.
+        """
+        enclave_name = securelock_enclave or self.securelock_enclave
+        wallet = enclave_wallet or self._esr_wallet_memo.get(enclave_name or "")
+
+        checked_on_chain = False
+        if (not force) and self.state_cache is not None and wallet:
+            entry = self.state_cache.get(wallet, key)
+            if entry is not None:
+                try:
+                    from .contract.abi.esrAbi import contract as _esr_abi
+                    _registry = (
+                        _esr_abi.get(f"address_{self.network_name.lower()}_{self.network_type.lower()}")
+                        or _esr_abi.get(f"address_{self.network_name.lower()}")
+                    )
+                    esr = ESRContract(
+                        self.network_name, self.network_type,
+                        registry_address=_registry,
+                    )
+                    onchain = esr.get_state(wallet, key)
+                    checked_on_chain = True
+                    fresh = False
+                    # Prefer cid equality (content-addressed); fall back to
+                    # version. trust_min_version covers the caller's own
+                    # still-relaying commit: external writes only increase the
+                    # version, so they still invalidate.
+                    if entry.get("cid") and onchain.get("cid"):
+                        fresh = entry["cid"] == onchain["cid"]
+                    if not fresh:
+                        fresh = int(onchain.get("version", -1)) == int(entry.get("version", -2))
+                    if not fresh and trust_min_version is not None:
+                        fresh = int(onchain.get("version", 0)) <= int(trust_min_version)
+                    if fresh:
+                        return {
+                            "state": entry.get("state"),
+                            "version": entry.get("version"),
+                            "cid": entry.get("cid"),
+                            "wallet": wallet,
+                            "from_cache": True,
+                            "checked_on_chain": True,
+                        }
+                except Exception as e:
+                    # Fail safe: never serve a maybe-stale cache on an errored
+                    # check -- fall through and run the read task.
+                    self.logger.debug(f"esr_read free check failed ({e}); running task")
+                    checked_on_chain = False
+
+        # Miss / stale / forced: run one state-fetch task and cache its result.
+        code = read_code or f"esr_fetch('{key}')"
+        if enclave_name is None or securelock_version is None and self.securelock_version is None:
+            if enclave_name is None:
+                raise ValueError(
+                    "esr_read needs securelock_enclave (no previous run to inherit from)")
+        version = securelock_version or self.securelock_version
+        self.run(
+            resources or getattr(self, "resources", None),
+            enclave_name,
+            version,
+            code,
+            node_address=node_address or (self.node_address or ""),
+        )
+        result = self.get_result()
+        if not result or not result.get("success"):
+            raise RuntimeError(f"esr_read task failed for key '{key}'")
+        esr_att = result.get("result_esr") or {}
+        wallet = esr_att.get("wallet") or wallet
+        entry = None
+        for e in esr_att.get("entries") or []:
+            if e.get("key") == key:
+                entry = e
+                break
+        if entry is None:
+            raise RuntimeError(
+                f"esr_read: result carried no state for key '{key}' "
+                f"(is the enclave built with ESR and the new result API?)")
+        return {
+            "state": entry.get("state"),
+            "version": entry.get("version"),
+            "cid": entry.get("cid"),
+            "wallet": wallet,
+            "from_cache": False,
+            "checked_on_chain": checked_on_chain,
+        }
     def close(self) -> None:
         """Close resources and stop the runner."""
         self.running = False
