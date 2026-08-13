@@ -96,8 +96,13 @@ class EthernityCloudRunner:
         self.order_placed_timer: Optional[Any] = None  # Unused? Consider removing
         self.task_has_been_picked_for_approval: bool = False
         self.get_result_from_order_repeats: int = 1
-        # Runner-managed ESR state cache (opt-in via enable_state_cache()).
+        # Runner-managed ESR state cache. ON BY DEFAULT: esr_read serves
+        # unchanged state after a free on-chain check, so repeat reads cost no
+        # orders. The default backend is in-memory (no disk writes); call
+        # enable_state_cache(file=...) for persistence, or disable_state_cache()
+        # to turn it off entirely.
         self.state_cache: Optional[StateCache] = None
+        self._state_cache_disabled: bool = False
         # enclave name -> ESR wallet, learned from result envelopes; lets
         # esr_read() resolve the wallet without an explicit argument and
         # self-heal across enclave identity rotation.
@@ -395,11 +400,12 @@ class EthernityCloudRunner:
             wallet = esr["wallet"]
             if self.securelock_enclave:
                 self._esr_wallet_memo[self.securelock_enclave] = wallet
-            if self.state_cache is not None:
+            cache = self._get_state_cache()
+            if cache is not None:
                 for entry in esr.get("entries") or []:
                     try:
                         if "state" in entry:
-                            self.state_cache.set(
+                            cache.set(
                                 wallet, entry["key"], entry.get("state"),
                                 entry.get("version", 0), entry.get("cid"))
                     except Exception:
@@ -873,15 +879,32 @@ class EthernityCloudRunner:
         """Retrieve the result of the task."""
         return self.result
 
-    def enable_state_cache(self, backend=None, file=None) -> "StateCache":
-        """Opt in to the runner-managed ESR state cache.
+    def _get_state_cache(self) -> Optional["StateCache"]:
+        """The active state cache, creating the default (in-memory) one on first
+        use. The cache is ON BY DEFAULT; returns None only after
+        disable_state_cache()."""
+        if self._state_cache_disabled:
+            return None
+        if self.state_cache is None:
+            self.state_cache = StateCache()   # in-memory; no disk writes
+        return self.state_cache
 
+    def enable_state_cache(self, backend=None, file=None) -> "StateCache":
+        """Configure the ESR state cache (it is already ON BY DEFAULT).
+
+        Use this only to choose a backend or add persistence: `backend` is any
+        dict-like store; `file` persists the cache as JSON across restarts.
         Every task result carrying an ESR attachment refreshes the cache, and
         esr_read() serves unchanged state from it after a free on-chain check
-        -- zero orders, zero gas. `backend` accepts any dict-like store;
-        `file` persists the default backend as JSON across restarts."""
+        -- zero orders, zero gas."""
+        self._state_cache_disabled = False
         self.state_cache = StateCache(backend=backend, file=file)
         return self.state_cache
+
+    def disable_state_cache(self) -> None:
+        """Turn the ESR state cache OFF -- esr_read then always runs a task."""
+        self._state_cache_disabled = True
+        self.state_cache = None
 
     def esr_read(
         self,
@@ -912,8 +935,9 @@ class EthernityCloudRunner:
         wallet = enclave_wallet or self._esr_wallet_memo.get(enclave_name or "")
 
         checked_on_chain = False
-        if (not force) and self.state_cache is not None and wallet:
-            entry = self.state_cache.get(wallet, key)
+        cache = self._get_state_cache()
+        if (not force) and cache is not None and wallet:
+            entry = cache.get(wallet, key)
             if entry is not None:
                 try:
                     from .contract.abi.esrAbi import contract as _esr_abi
