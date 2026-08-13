@@ -45,6 +45,9 @@ ECOrderTaskStatus = {
     32: "CONFIG_ERROR",  # required enclave config value empty in the sealed image
     33: "EXECUTION_TIMEOUT",
     34: "ESR_GAS_LIMIT_EXCEEDED",  # ESR state commits would exceed the per-order relayed-gas budget
+    35: "SECURITY_VIOLATION",      # a state commit was authorized under a caller other than the
+                                  # task submitter (the in-enclave ownership check was bypassed);
+                                  # set by the securelock and/or the trustedzone re-adjudication
 
     40: "SECURELOCK_NOT_STARTED",
     41: "SECURELOCK_NO_RESULT",
