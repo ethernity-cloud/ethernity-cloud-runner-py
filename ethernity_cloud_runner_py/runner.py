@@ -1043,6 +1043,31 @@ class EthernityCloudRunner:
         eth_call), no task, no gas. version 0 means never committed."""
         return self._esr_onchain(key, enclave_wallet)
 
+    def esr_nonce(self, key: str, enclave_wallet: Optional[str] = None) -> Dict[str, Any]:
+        """Last accepted idempotency nonce for `key` -- {wallet, nonce}, free
+        (a single eth_call), no task, no gas. nonce 0 means no guarded commit
+        was ever made.
+
+        The nonce is PUBLIC on-chain data: the registry records it next to the
+        version, so a web3 app can read the latest accepted value here and
+        choose the next one (any strictly greater value; gaps allowed, so
+        timestamps work) before submitting a state-writing task that passes
+        `nonce=` to commit(). A duplicate submission then fails with task code
+        36 (ESR_NONCE_VIOLATION) instead of applying twice."""
+        enclave_name = self.securelock_enclave
+        wallet = enclave_wallet or self._esr_wallet_memo.get(enclave_name or "")
+        if not wallet:
+            raise ValueError(
+                "esr_nonce needs enclave_wallet (no previous run to learn it from)")
+        from .contract.abi.esrAbi import contract as _esr_abi
+        _registry = (
+            _esr_abi.get(f"address_{self.network_name.lower()}_{self.network_type.lower()}")
+            or _esr_abi.get(f"address_{self.network_name.lower()}")
+        )
+        esr = ESRContract(
+            self.network_name, self.network_type, registry_address=_registry)
+        return {"wallet": wallet, "nonce": esr.get_nonce(wallet, key)}
+
     def esr_wait_for_version(
         self,
         key: str,

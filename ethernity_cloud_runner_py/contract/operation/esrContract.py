@@ -98,6 +98,22 @@ class ESRContract:
             ).call()
         )
 
+    def get_nonce(self, enclave_address: str, key: str) -> int:
+        """Last accepted idempotency nonce for (enclave, key); 0 when none.
+
+        The nonce is PUBLIC on-chain data, recorded next to the version, so a
+        web3 client can learn the latest accepted value with one free eth_call
+        and pick the next one (any greater value; gaps are allowed) before
+        submitting a state-writing task with an idempotency guard. Registries
+        that predate the on-chain nonce field have no getNonce view -- this
+        raises there, like calling any missing function would.
+        """
+        return int(
+            self.contract.functions.getNonce(
+                to_checksum_address(enclave_address), self.key_hash(key)
+            ).call()
+        )
+
     def get_state(self, enclave_address: str, key: str) -> dict:
         """Metadata for (enclave, key).
 

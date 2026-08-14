@@ -1,18 +1,26 @@
-"""Enclave State Registry ABI (enumerable upgrade).
+"""Enclave State Registry ABI (nonce-aware enumerable registry).
 
-Generated from contracts/esr/EnclaveStateRegistry.abi in the SDK. Adds the
-enumeration API (commitSeq / entryCount / entryAt / getEntriesFrom) and a
-trailing 'seq' field on StateCommitted.
+Generated from contracts/esr/EnclaveStateRegistry.abi in the SDK. On top of
+the enumeration API (commitSeq / entryCount / entryAt / getEntriesFrom) this
+adds the PUBLIC per-(enclave, key) idempotency nonce: a getNonce view, a
+trailing 'nonce' field on StateCommitted, and nonce parameters on
+commit / commitFor / commitDigest. The contract enforces nonces strictly
+increasing per (enclave, key) (NonceOutOfOrder), with gaps allowed.
 """
 
 contract = {
-    # Enumerable ESR, deployed 2026-08-12.
-    # Bloxberg mainnet stays on the pre-enumeration contract until redeployed.
+    # Nonce-aware enumerable ESR. Addresses below are per-network deployments;
+    # networks still on an older registry keep working (the SDK falls back to
+    # the in-blob nonce when getNonce is absent).
     'address_bloxberg': '0xF76469A5659670B6ade366dE635e6463aaB8f3D8',
-    'address_bloxberg_testnet': '0xda5e68Bb5e68ee14D73b8de2a4D3Ca15736fACfb',
+    'address_bloxberg_testnet': '0xdfDD088b9cB998280685aF4E93DC0b37952aB08e',
     'address_litvm_liteforge': '0xbAa7F9E3287ff95D177104eD469E6d0Fd19dBB0F',
     'abi': [   {'inputs': [], 'name': 'BadSignature', 'type': 'error'},
     {'inputs': [], 'name': 'EmptyCID', 'type': 'error'},
+    {   'inputs': [   {'internalType': 'uint256', 'name': 'stored', 'type': 'uint256'},
+                      {'internalType': 'uint256', 'name': 'given', 'type': 'uint256'}],
+        'name': 'NonceOutOfOrder',
+        'type': 'error'},
     {   'inputs': [   {'internalType': 'uint256', 'name': 'expected', 'type': 'uint256'},
                       {'internalType': 'uint256', 'name': 'actual', 'type': 'uint256'}],
         'name': 'RelayNonceMismatch',
@@ -38,12 +46,17 @@ contract = {
                       {   'indexed': False,
                           'internalType': 'uint256',
                           'name': 'seq',
+                          'type': 'uint256'},
+                      {   'indexed': False,
+                          'internalType': 'uint256',
+                          'name': 'nonce',
                           'type': 'uint256'}],
         'name': 'StateCommitted',
         'type': 'event'},
     {   'inputs': [   {'internalType': 'bytes32', 'name': 'key', 'type': 'bytes32'},
                       {'internalType': 'string', 'name': 'newCID', 'type': 'string'},
-                      {'internalType': 'uint256', 'name': 'expectedVersion', 'type': 'uint256'}],
+                      {'internalType': 'uint256', 'name': 'expectedVersion', 'type': 'uint256'},
+                      {'internalType': 'uint256', 'name': 'nonce', 'type': 'uint256'}],
         'name': 'commit',
         'outputs': [],
         'stateMutability': 'nonpayable',
@@ -52,7 +65,8 @@ contract = {
                       {'internalType': 'bytes32', 'name': 'key', 'type': 'bytes32'},
                       {'internalType': 'string', 'name': 'newCID', 'type': 'string'},
                       {'internalType': 'uint256', 'name': 'expectedVersion', 'type': 'uint256'},
-                      {'internalType': 'uint256', 'name': 'relayNonce', 'type': 'uint256'}],
+                      {'internalType': 'uint256', 'name': 'relayNonce', 'type': 'uint256'},
+                      {'internalType': 'uint256', 'name': 'nonce', 'type': 'uint256'}],
         'name': 'commitDigest',
         'outputs': [{'internalType': 'bytes32', 'name': '', 'type': 'bytes32'}],
         'stateMutability': 'view',
@@ -62,6 +76,7 @@ contract = {
                       {'internalType': 'string', 'name': 'newCID', 'type': 'string'},
                       {'internalType': 'uint256', 'name': 'expectedVersion', 'type': 'uint256'},
                       {'internalType': 'uint256', 'name': 'relayNonce', 'type': 'uint256'},
+                      {'internalType': 'uint256', 'name': 'nonce', 'type': 'uint256'},
                       {'internalType': 'bytes', 'name': 'signature', 'type': 'bytes'}],
         'name': 'commitFor',
         'outputs': [],
@@ -102,6 +117,12 @@ contract = {
         'type': 'function'},
     {   'inputs': [   {'internalType': 'address', 'name': 'enclave', 'type': 'address'},
                       {'internalType': 'bytes32', 'name': 'key', 'type': 'bytes32'}],
+        'name': 'getNonce',
+        'outputs': [{'internalType': 'uint256', 'name': '', 'type': 'uint256'}],
+        'stateMutability': 'view',
+        'type': 'function'},
+    {   'inputs': [   {'internalType': 'address', 'name': 'enclave', 'type': 'address'},
+                      {'internalType': 'bytes32', 'name': 'key', 'type': 'bytes32'}],
         'name': 'getState',
         'outputs': [   {'internalType': 'string', 'name': 'cid', 'type': 'string'},
                        {'internalType': 'uint256', 'name': 'version', 'type': 'uint256'},
@@ -118,5 +139,5 @@ contract = {
         'name': 'relayNonce',
         'outputs': [{'internalType': 'uint256', 'name': '', 'type': 'uint256'}],
         'stateMutability': 'view',
-        'type': 'function'}],
+        'type': 'function'}]
 }
