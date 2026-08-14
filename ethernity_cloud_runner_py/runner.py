@@ -1013,6 +1013,67 @@ class EthernityCloudRunner:
             "from_cache": False,
             "checked_on_chain": checked_on_chain,
         }
+    def _esr_onchain(self, key: str, enclave_wallet: Optional[str] = None) -> Dict[str, Any]:
+        """FREE on-chain {wallet, version, cid} for an ESR key (one eth_call).
+
+        Wallet resolution mirrors esr_read: explicit `enclave_wallet`, else the
+        wallet learned from previous result envelopes for this enclave."""
+        enclave_name = self.securelock_enclave
+        wallet = enclave_wallet or self._esr_wallet_memo.get(enclave_name or "")
+        if not wallet:
+            raise ValueError(
+                "esr_version/esr_wait_for_version need enclave_wallet "
+                "(no previous run to learn it from)")
+        from .contract.abi.esrAbi import contract as _esr_abi
+        _registry = (
+            _esr_abi.get(f"address_{self.network_name.lower()}_{self.network_type.lower()}")
+            or _esr_abi.get(f"address_{self.network_name.lower()}")
+        )
+        esr = ESRContract(
+            self.network_name, self.network_type, registry_address=_registry)
+        onchain = esr.get_state(wallet, key)
+        return {
+            "wallet": wallet,
+            "version": int(onchain.get("version", 0) or 0),
+            "cid": onchain.get("cid"),
+        }
+
+    def esr_version(self, key: str, enclave_wallet: Optional[str] = None) -> Dict[str, Any]:
+        """Current on-chain {wallet, version, cid} for `key` -- free (a single
+        eth_call), no task, no gas. version 0 means never committed."""
+        return self._esr_onchain(key, enclave_wallet)
+
+    def esr_wait_for_version(
+        self,
+        key: str,
+        since_version: int,
+        enclave_wallet: Optional[str] = None,
+        timeout: float = 120.0,
+        interval: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Wait (free polling eth_calls) until `key`'s on-chain version is
+        GREATER than `since_version`; returns the fresh {wallet, version, cid}.
+
+        The intended pattern -- read the version, submit the state-writing
+        task, then wait for the commit to actually land on-chain:
+
+            v = runner.esr_version("dashboard", enclave_wallet=W)["version"]
+            runner.run(...)                       # task that commits state
+            runner.esr_wait_for_version("dashboard", v, enclave_wallet=W)
+
+        Raises TimeoutError if the version does not advance within `timeout`
+        seconds."""
+        deadline = time.monotonic() + float(timeout)
+        while True:
+            cur = self._esr_onchain(key, enclave_wallet)
+            if cur["version"] > int(since_version):
+                return cur
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"ESR state for '{key}' did not advance past version "
+                    f"{since_version} within {timeout}s")
+            time.sleep(interval)
+
     def close(self) -> None:
         """Close resources and stop the runner."""
         self.running = False
