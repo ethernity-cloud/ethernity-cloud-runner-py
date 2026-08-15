@@ -4,18 +4,19 @@ Generated from contracts/esr/EnclaveStateRegistry.abi in the SDK. On top of
 the enumeration API (commitSeq / entryCount / entryAt / getEntriesFrom) this
 adds the PUBLIC per-(enclave, key) idempotency nonce: a getNonce view, a
 trailing 'nonce' field on StateCommitted, and nonce parameters on
-commit / commitFor / commitDigest. The contract enforces nonces strictly
-sequentially per (enclave, key): exactly stored + 1, no gaps, no reuse
-(NonceOutOfOrder otherwise); 0 = no guard.
+commit / commitFor / commitDigest. The per-key nonce advances by exactly 1
+on every commit: 0 = omitted (the registry auto-assigns the next value);
+non-zero is client-pinned and must be exactly stored + 1, no gaps, no reuse
+(NonceOutOfOrder otherwise).
 """
 
 contract = {
     # Nonce-aware enumerable ESR deployments (2026-08-15), one per network.
     # The on-chain nonce is the primary source of truth (getNonce view),
     # enforced strictly sequentially per key: exactly stored + 1.
-    'address_bloxberg': '0xDaFa1e3CAF370765275d853cd86dDEd671Ce29Dd',
-    'address_bloxberg_testnet': '0xD7a7Cb9cbb0Ca1adFb2B8405382f299EA1c6132f',
-    'address_litvm_liteforge': '0x213aA794F29EA717B9226dF81F7317334Ac36169',
+    'address_bloxberg': '0x54e0dD4201F530703c7988427d3b7c70c1dCeC94',
+    'address_bloxberg_testnet': '0x421E216087eEc1e27b82188C23E490b0E2cA384d',
+    'address_litvm_liteforge': '0x5f427A78A0f2Bd7379b99A09C7D8fE51DD7E54D7',
     'abi': [   {'inputs': [], 'name': 'BadSignature', 'type': 'error'},
     {'inputs': [], 'name': 'EmptyCID', 'type': 'error'},
     {   'inputs': [   {'internalType': 'uint256', 'name': 'stored', 'type': 'uint256'},
