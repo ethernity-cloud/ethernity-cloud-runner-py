@@ -103,10 +103,11 @@ class ESRContract:
 
         The nonce is PUBLIC on-chain data, recorded next to the version, so a
         web3 client can learn the latest accepted value with one free eth_call
-        and pick the next one (any greater value; gaps are allowed) before
-        submitting a state-writing task with an idempotency guard. The chain
-        value is the primary source of truth; the copy inside the encrypted
-        state object is a reporting copy the enclave cross-checks against it.
+        and submit EXACTLY value + 1 (the contract enforces the sequence
+        strictly per key: no gaps, no reuse) as the idempotency guard of a
+        state-writing task. The chain value is the primary source of truth;
+        the copy inside the encrypted state object is a reporting copy the
+        enclave cross-checks against it.
         """
         return int(
             self.contract.functions.getNonce(

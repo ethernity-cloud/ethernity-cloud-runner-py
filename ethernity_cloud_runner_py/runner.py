@@ -1049,10 +1049,10 @@ class EthernityCloudRunner:
         was ever made.
 
         The nonce is PUBLIC on-chain data: the registry records it next to the
-        version, so a web3 app can read the latest accepted value here and
-        choose the next one (any strictly greater value; gaps allowed, so
-        timestamps work) before submitting a state-writing task that passes
-        `nonce=` to commit(). A duplicate submission then fails with task code
+        version, so a web3 app reads the latest accepted value here and
+        submits the state-writing task with EXACTLY nonce + 1 -- the contract
+        enforces the sequence strictly (1, 2, 3, ... per key; no gaps, no
+        reuse). A duplicate or out-of-sequence submission fails with task code
         36 (ESR_NONCE_VIOLATION) instead of applying twice."""
         enclave_name = self.securelock_enclave
         wallet = enclave_wallet or self._esr_wallet_memo.get(enclave_name or "")
