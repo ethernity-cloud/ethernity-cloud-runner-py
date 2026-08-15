@@ -9,12 +9,11 @@ increasing per (enclave, key) (NonceOutOfOrder), with gaps allowed.
 """
 
 contract = {
-    # Nonce-aware enumerable ESR. Addresses below are per-network deployments;
-    # networks still on an older registry keep working (the SDK falls back to
-    # the in-blob nonce when getNonce is absent).
-    'address_bloxberg': '0xF76469A5659670B6ade366dE635e6463aaB8f3D8',
+    # Nonce-aware enumerable ESR deployments (2026-08-15), one per network.
+    # The on-chain nonce is the primary source of truth (getNonce view).
+    'address_bloxberg': '0x39d6f2A98f7FFF9866AAaa0EAa9aEd8bcf6f728E',
     'address_bloxberg_testnet': '0xdfDD088b9cB998280685aF4E93DC0b37952aB08e',
-    'address_litvm_liteforge': '0xbAa7F9E3287ff95D177104eD469E6d0Fd19dBB0F',
+    'address_litvm_liteforge': '0x71a4bb5AC4c8F37ea0d9394fB29bBC06eEC28000',
     'abi': [   {'inputs': [], 'name': 'BadSignature', 'type': 'error'},
     {'inputs': [], 'name': 'EmptyCID', 'type': 'error'},
     {   'inputs': [   {'internalType': 'uint256', 'name': 'stored', 'type': 'uint256'},

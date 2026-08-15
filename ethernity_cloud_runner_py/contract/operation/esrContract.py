@@ -104,9 +104,9 @@ class ESRContract:
         The nonce is PUBLIC on-chain data, recorded next to the version, so a
         web3 client can learn the latest accepted value with one free eth_call
         and pick the next one (any greater value; gaps are allowed) before
-        submitting a state-writing task with an idempotency guard. Registries
-        that predate the on-chain nonce field have no getNonce view -- this
-        raises there, like calling any missing function would.
+        submitting a state-writing task with an idempotency guard. The chain
+        value is the primary source of truth; the copy inside the encrypted
+        state object is a reporting copy the enclave cross-checks against it.
         """
         return int(
             self.contract.functions.getNonce(
