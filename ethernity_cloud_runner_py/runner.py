@@ -429,6 +429,7 @@ class EthernityCloudRunner:
         duration_hours = (getattr(self, "resources", None) or {}).get("duration", 1)
         deadline = time.time() + duration_hours * 3600 + 900
         status = self.contract.get_status_from_order(order_id)
+        tick = 0
         while self.is_running() and status != 2:
             if time.time() > deadline:
                 self._fault = (
@@ -438,7 +439,28 @@ class EthernityCloudRunner:
                 self.logger.error(self._fault)
                 return None
             time.sleep(self.block_time)
-            status = self.contract.get_status_from_order(order_id)
+            tick += 1
+            # EVENT-FIRST: _orderClosedEV(_orderNumber) fires the moment the
+            # operator records the result -- one log scan per tick instead of
+            # a struct read. The struct probe stays as a periodic fallback:
+            # it also covers terminal states that never emit the event.
+            closed = None
+            start_block = getattr(self, "request_start_block", None)
+            if start_block is not None:
+                try:
+                    w3 = self.protocol_contract.w3
+                    closed = any(
+                        w3.codec.decode(["uint256"], bytes(log["data"]))[0] == order_id
+                        for log in self._event_logs("_orderClosedEV(uint256)", start_block)
+                    )
+                except Exception as e:
+                    self.logger.debug(f"Event scan unavailable ({type(e).__name__}: {e}); falling back to status polling")
+            if closed:
+                self.logger.debug(f"_orderClosedEV: order {order_id} closed")
+                status = 2
+                continue
+            if closed is None or tick % 5 == 0:
+                status = self.contract.get_status_from_order(order_id)
         if not self.is_running():
             self.logger.info(f"Task {order_id} was cancelled")
             return None
@@ -520,6 +542,11 @@ class EthernityCloudRunner:
         code_metadata = self.get_v3_code_metadata(code)
         input_metadata = self.get_v3_input_metadata()
         self.current_order_index = self.protocol_contract.functions._getOrdersCount().call()
+        # Anchor for the stateless event-log scans (find_order / result wait).
+        try:
+            self.request_start_block = self.protocol_contract.w3.eth.block_number
+        except Exception:
+            self.request_start_block = None
         do_sent_successfully = self.create_do_request(
             image_metadata, code_metadata, input_metadata, self.node_address
         )
@@ -579,8 +606,38 @@ class EthernityCloudRunner:
         """Process the task and get result."""
         result = self.get_result_from_order(self.order_id)
         return result if result else None
+    def _event_logs(self, signature: str, from_block: int) -> list:
+        """Stateless eth_getLogs scan for a protocol event. Used instead of
+        eth_newFilter subscriptions, which are stateful and break behind
+        load-balanced RPC endpoints."""
+        w3 = self.protocol_contract.w3
+        return w3.eth.get_logs({
+            "address": self.protocol_contract.address,
+            "fromBlock": from_block,
+            "topics": [w3.keccak(text=signature)],
+        })
     def find_order(self, doreq: int) -> bool:
         """Find the order by request ID."""
+        # EVENT-FIRST: one _orderPlacedEV log scan since the request block
+        # yields the order number directly -- no struct scanning. The event
+        # has no indexed params, so the request id is matched after decoding.
+        start_block = getattr(self, "request_start_block", None)
+        if start_block is not None:
+            try:
+                w3 = self.protocol_contract.w3
+                for log in self._event_logs("_orderPlacedEV(uint256,uint256,uint256)", start_block):
+                    order_no, do_req_id, _dp_req_id = w3.codec.decode(
+                        ["uint256", "uint256", "uint256"], bytes(log["data"])
+                    )
+                    if do_req_id == doreq:
+                        self.logger.debug(f"_orderPlacedEV: order {order_no} for request {doreq}")
+                        self.order = self.protocol_contract.caller()._getOrder(order_no)
+                        self.order_id = order_no
+                        return True
+                return False
+            except Exception as e:
+                self.logger.debug(f"Event scan unavailable ({type(e).__name__}: {e}); falling back to order scan")
+        # FALLBACK: struct scan over orders created after our request.
         count = self.protocol_contract.functions._getOrdersCount().call()
         for i in range(count - 1, self.current_order_index - 1, -1):
             order = self.protocol_contract.caller()._getOrder(i)
