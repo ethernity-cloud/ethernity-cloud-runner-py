@@ -666,7 +666,40 @@ class EthernityCloudRunner:
         when it fails on the operator side (order timeout, unusable operator
         output, or an operator-fault task code 40-49). Failures caused by the
         submitted code itself are final results and are never retried.
-        retry_delay: seconds to wait between resubmissions."""
+        retry_delay: seconds to wait between resubmissions.
+
+        Thread-safety: task state (do_request, order, result, ...) lives on
+        THIS instance, so concurrent run() calls are SERIALIZED here -- two
+        interleaved runs would otherwise track the same order, fail each
+        other's integrity checks, and collide on the wallet's transaction
+        nonce. Each call gets its own order, in call order. For truly
+        parallel tasks use one runner instance per task."""
+        import threading
+        if not hasattr(self, "_run_lock"):
+            self._run_lock = threading.Lock()
+        if not self._run_lock.acquire(blocking=False):
+            self.logger.info(
+                "Another task is in flight on this runner -- waiting; this "
+                "call will place its own order when the current one finishes.")
+            self._run_lock.acquire()
+        try:
+            return self.__run_exclusive(
+                resources, securelock_enclave, securelock_version, code,
+                node_address, trustedzone_enclave, max_retries, retry_delay)
+        finally:
+            self._run_lock.release()
+
+    def __run_exclusive(
+        self,
+        resources,
+        securelock_enclave,
+        securelock_version,
+        code,
+        node_address,
+        trustedzone_enclave,
+        max_retries,
+        retry_delay,
+    ) -> None:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self._fault = None
