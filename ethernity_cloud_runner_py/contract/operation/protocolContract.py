@@ -208,6 +208,14 @@ class protocolContract:
         return self._build_sign_send(contract_fn, 1000000)
     def get_order(self, order_id: int) -> int:
         return self.protocol_contract.functions._getOrder(order_id).call()
+    def add_metadata_to_request(self, request_id: int, key: str, value: str) -> HexStr:
+        """Append a metadata row to one of THIS wallet's DO requests (the
+        contract enforces caller == downer). The interactive-session input
+        channel."""
+        contract_fn = self.protocol_contract.functions._addMetadataToRequest(
+            request_id, key, value
+        )
+        return self._build_sign_send(contract_fn, 300000)
     def approve_order(self, order_id: int) -> HexStr:
         contract_fn = self.protocol_contract.functions._approveOrder(
             order_id

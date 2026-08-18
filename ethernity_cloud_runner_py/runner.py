@@ -311,7 +311,13 @@ class EthernityCloudRunner:
         """Generate v3 input metadata."""
         # v4 request: emit the plain ZERO_CHECKSUM for empty input (not a
         # signature). Matches the JS runner and the v4-only enclave validation.
-        return f"{TRUSTEDZONE_VERSION}::{ZERO_CHECKSUM}"
+        # Interactive sessions mark the request with a 'v3s' version tag --
+        # the trustedzone parses it through the same v3 branch but keeps the
+        # enclaves alive for the order duration.
+        version = (f"{TRUSTEDZONE_VERSION}s"
+                   if getattr(self, "_session_request", False)
+                   else TRUSTEDZONE_VERSION)
+        return f"{version}::{ZERO_CHECKSUM}"
     def create_do_request(self, image_metadata: str, code_metadata: str, input_metadata: str, node_address: Address) -> bool:
         """Create a DO request on the contract."""
         if not self.contract:
@@ -951,6 +957,131 @@ class EthernityCloudRunner:
                 self.status = ECStatus.SUCCESS
                 self.logger.info("Task completed successfully.")
             self.processed_events.append(event.name)
+    def run_session(
+        self,
+        resources: Optional[Dict[str, int]],
+        securelock_enclave: str,
+        securelock_version: str,
+        code: str,
+        node_address: str = "",
+        trustedzone_enclave: str = "etny-pynithy-testnet",
+    ) -> "EthernityCloudSession":
+        """Start an INTERACTIVE SESSION task and return its handle.
+
+        Same submission flow as run() up to order approval, but the request
+        carries the v3s session marker, so the enclaves stay alive for the
+        order duration and stream inputs/outputs through the on-chain
+        metadata channels. Returns once the order is PROCESSING; use the
+        returned EthernityCloudSession to send_input / poll_outputs / close.
+        Synchronous by design -- the session handle is the async surface.
+        """
+        from .session import EthernityCloudSession
+        import threading
+        if not hasattr(self, "_run_lock"):
+            self._run_lock = threading.Lock()
+        with self._run_lock:
+            self._fault = None
+            if resources is None:
+                resources = {
+                    "taskPrice": 10, "cpu": 1, "memory": 1, "storage": 40,
+                    "bandwidth": 1, "duration": 1, "validators": 1,
+                }
+            self.resources = resources
+            self.price = resources["taskPrice"]
+            self.status = ECStatus.RUNNING
+            self.logger.info("Checking wallet balance...")
+            balance = int(self.contract.get_balance())
+            if balance < self.price:
+                if self.network_type != "MAINNET":
+                    self.logger.info("Insufficient wallet balance, using testnet faucet...")
+                    self.contract.faucet()
+                else:
+                    raise ValueError(
+                        f"Insufficient wallet balance. Required: {self.price}, Available: {balance}")
+            self.logger.info("Verifying node address...")
+            self.node_address = node_address
+            if not self.is_node_operator_address(node_address):
+                raise ValueError("Node address verification failed.")
+            self.securelock_enclave = securelock_enclave
+            self.securelock_version = securelock_version
+            self.cleanup()
+            self.image_registry_contract = ImageRegistryContract(
+                self.network_name, self.network_type, self.signer)
+            if not self.check_web3_connection():
+                raise ConnectionError("Web3 connection failed.")
+            if not self.get_enclave_details():
+                raise ValueError("Unable to find enclave in registry")
+            if self.network_name != "BLOXBERG":
+                allowance = self.token_contract.functions.allowance(
+                    self.signer.address, self.contract.get_protocol_address()).call()
+                if allowance < self.price:
+                    transaction_hash = self.contract.set_allowance(self.price)
+                    receipt = self.poll_transaction(transaction_hash, max_attempts=100)
+                    if not receipt or receipt["status"] != 1:
+                        raise ValueError("Allowance approval failed.")
+            self._session_request = True
+            try:
+                if not self.create_task(code):
+                    raise ValueError("Unable to create a DO request")
+            finally:
+                self._session_request = False
+            if not self.check_order_for_task():
+                raise ValueError("Could not find any available operator matching this task request.")
+            if not self.approve_task():
+                raise ValueError("Task approval failed.")
+            self.logger.info(f"Session order {self.order_id} is processing")
+            return EthernityCloudSession(self, self.order_id)
+
+    def attach_session(
+        self,
+        order_id: int,
+        securelock_enclave: Optional[str] = None,
+        securelock_version: str = "v3",
+    ) -> "EthernityCloudSession":
+        """Reattach to a running session order -- STATELESS: everything is
+        rebuilt from chain state (seq resumes from the on-chain rows, output
+        decryption uses the wallet key). Pass securelock_enclave to also
+        re-resolve the enclave certificate so send_input works from this
+        fresh process; without it the handle is receive/close-only.
+        """
+        from .session import EthernityCloudSession
+        order = self.protocol_contract.caller()._getOrder(int(order_id))
+        if str(order[0]).lower() != str(self.signer.address).lower():
+            raise ValueError("Order does not belong to this wallet")
+        meta = self.protocol_contract.caller()._getDORequestMetadata(int(order[2]))
+        if str(meta[3] or "").split(":")[0] != "v3s":
+            raise ValueError("Order is not an interactive session")
+        if securelock_enclave:
+            self.securelock_enclave = securelock_enclave
+            self.securelock_version = securelock_version
+            self.image_registry_contract = ImageRegistryContract(
+                self.network_name, self.network_type, self.signer)
+            if not self.get_enclave_details():
+                raise ValueError("Unable to find enclave in registry")
+        return EthernityCloudSession(self, int(order_id))
+
+    def list_sessions(self) -> List[int]:
+        """Order ids of THIS wallet's session requests still PROCESSING --
+        running enclaves this wallet can reattach to."""
+        sessions = []
+        try:
+            my_orders = self.protocol_contract.functions._getMyDOOrders().call(
+                {"from": self.signer.address})
+        except Exception as e:
+            self.logger.warning(f"Could not enumerate orders: {e}")
+            return sessions
+        for oid in my_orders:
+            try:
+                order = self.protocol_contract.caller()._getOrder(int(oid))
+                if int(order[4]) != 1:
+                    continue
+                meta = self.protocol_contract.caller()._getDORequestMetadata(int(order[2]))
+                if str(meta[3] or "").split(":")[0] == "v3s":
+                    sessions.append(int(oid))
+            except Exception:
+                continue
+        return sessions
+
     def get_state(self) -> Dict[str, Any]:
         """Retrieve the current task status."""
         remaining_events = list(self.event_queue.queue)
