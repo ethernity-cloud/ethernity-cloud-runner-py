@@ -42,6 +42,20 @@ SESSION_STATUS_NAMES = {
     2: "expired-idle",
     3: "expired-unprocessed",
     4: "flooded",
+    5: "unsupported-securelock",
+}
+
+# Codes carried by 'error' output rows (msg["code"]): task codes for payload
+# failures (5 = no ___etny_on_input___ handler defined, 1 = handler raised)
+# and session notices 50-53 (malformed row, out-of-order seq, undecryptable
+# input, securelock build without session support). 0 for ok/late rows.
+SESSION_ERROR_CODE_NAMES = {
+    1: "handler-error",
+    5: "handler-not-defined",
+    50: "input-malformed",
+    51: "input-out-of-order",
+    52: "input-undecryptable",
+    53: "unsupported-securelock",
 }
 
 
@@ -196,16 +210,17 @@ class EthernityCloudSession:
 
     def _verify_output_row(self, value: str) -> Optional[Dict[str, Any]]:
         parts = value.split(":")
-        if len(parts) != 8 or parts[0] != SESSION_WIRE_VERSION:
+        if len(parts) != 9 or parts[0] != SESSION_WIRE_VERSION:
             return None
         try:
             seq, row_order, ack = int(parts[1]), int(parts[2]), int(parts[3])
+            code = int(parts[5])
         except ValueError:
             return None
-        status, cid, sha_hex, sig = parts[4], parts[5], parts[6].lower(), parts[7]
+        status, cid, sha_hex, sig = parts[4], parts[6], parts[7].lower(), parts[8]
         if row_order != self.order_id:
             return None
-        message = f"etny-so|{self.order_id}|{seq}|{ack}|{status}|{cid}|{sha_hex}"
+        message = f"etny-so|{self.order_id}|{seq}|{ack}|{status}|{code}|{cid}|{sha_hex}"
         try:
             signer = Account.recover_message(
                 encode_defunct(text=message),
@@ -219,9 +234,11 @@ class EthernityCloudSession:
                 f"[session] output {seq}: signature by {signer}, expected the "
                 f"task wallet {task_wallet} -- DISCARDING (operator forgery?)")
             return None
-        msg = {"seq": seq, "ack": ack, "status": status, "data": None}
-        if status != "ok" or not cid:
-            return msg  # signed late/notice row -- no payload
+        msg = {"seq": seq, "ack": ack, "status": status, "code": code, "data": None}
+        if not cid:
+            return msg  # signed notice row without payload (late)
+        # 'ok' rows carry the reply; 'error' rows carry an encrypted
+        # explanation of why the input was not processed -- fetch both.
         try:
             content = self.runner.ipfs_client.get_file_content(cid)
             raw = content if isinstance(content, bytes) else str(content).encode("utf-8")
