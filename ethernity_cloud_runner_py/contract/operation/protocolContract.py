@@ -51,6 +51,12 @@ class protocolContract:
         if nonce is None:
             nonce = self.provider.eth.get_transaction_count(self.signer.address, "pending")
 
+        # Each caller sizes `gas` for its own operation (_addDORequest needs
+        # ~1M, _approveOrder ~100k), so it wins over the network default.
+        # GAS_LIMIT is 0 on every EIP1559 network, which the node rejects as
+        # "intrinsic gas too low"; it is only meaningful on legacy bloxberg.
+        gas_limit = gas or self.network_config.GAS_LIMIT
+
         if self.network_config.EIP1559 == True:
             latest_block = self.provider.eth.get_block("latest")
             max_fee_per_gas = int(latest_block.baseFeePerGas * 1.1) + self.provider.to_wei(self.network_config.MAX_PRIORITY_FEE_PER_GAS, self.network_config.GAS_PRICE_MEASURE) # 10% increase in previous block gas price + priority fee
@@ -64,7 +70,7 @@ class protocolContract:
                 "from": self.signer.address,
                 'maxFeePerGas': max_fee_per_gas,
                 'maxPriorityFeePerGas': self.provider.to_wei(self.network_config.MAX_PRIORITY_FEE_PER_GAS, self.network_config.GAS_PRICE_MEASURE),
-                "gas": self.network_config.GAS_LIMIT,
+                "gas": gas_limit,
             }
         else:
             transaction_options = {
@@ -72,7 +78,7 @@ class protocolContract:
                 "chainId": self.chain_id,
                 "from": self.signer.address,
                 "gasPrice": self.provider.to_wei(self.network_config.GAS_PRICE, self.network_config.GAS_PRICE_MEASURE),
-                "gas": self.network_config.GAS_LIMIT,
+                "gas": gas_limit,
             }
         return transaction_options
 
