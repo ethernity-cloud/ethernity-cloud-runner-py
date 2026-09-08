@@ -235,6 +235,38 @@ class ECNetwork:
             NETWORK_FEE=5
             ENCLAVE_FEE=10
 
+    class LITVM:
+        # LitVM (LiteForge) -- Litecoin EVM ZK-rollup on Arbitrum Orbit, gas
+        # token zkLTC. The type name is LITEFORGE (not TESTNET) so the ESR
+        # lookup key the runner builds, address_{network}_{type}, matches the
+        # 'address_litvm_liteforge' entry in contract/abi/esrAbi.py.
+        class LITEFORGE:
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x55e0ad455Be85162b71a790f00Fc305680E3CE53'
+            PROTOCOL_ADDRESS='0x29D3eC870565B6A1510232bd950A8Bc8336f0EB2'
+            TOKEN_ADDRESS='0x95Aa17fCFaAB75e8ed7d7DF218045795dCeB9c50'
+            HEARTBEAT_CONTRACT_ADDRESS='0x6D7F920958dfb9a13729723C1007b04eB7950E58'
+            TOKEN_NAME='tECLD'
+            RPC_URL='https://liteforge.rpc.caldera.xyz/infra-partner-http'
+            RPC_DELAY=200
+            CHAIN_ID=4441
+            MIDDLEWARE=None
+            BLOCK_TIME=1
+            MINIMUM_GAS_AT_START=200000000000000000
+            GAS_PRICE_MEASURE='gwei'
+            EIP1559=True
+            GAS_PRICE=0
+            GAS_LIMIT=0
+            # Measured base fee is 0.01 gwei and LitVM suggests no tip, so the
+            # ceiling of 2 gwei leaves ample headroom over base*1.1.
+            MAX_FEE_PER_GAS=2
+            MAX_PRIORITY_FEE_PER_GAS=0
+            TASK_EXECUTION_PRICE_DEFAULT=1
+            INTEGRATION_TEST_IMAGE='ecld-pynithy-litvm-testnet'
+            TRUSTEDZONE_IMAGE='ecld-pynithy-litvm-testnet'
+            REWARD_TYPE=2
+            NETWORK_FEE=5
+            ENCLAVE_FEE=10
+
 ZERO_CHECKSUM = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
