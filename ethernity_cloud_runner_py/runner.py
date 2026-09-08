@@ -989,46 +989,57 @@ class EthernityCloudRunner:
             self.resources = resources
             self.price = resources["taskPrice"]
             self.status = ECStatus.RUNNING
-            self.logger.info("Checking wallet balance...")
-            balance = int(self.contract.get_balance())
-            if balance < self.price:
-                if self.network_type != "MAINNET":
-                    self.logger.info("Insufficient wallet balance, using testnet faucet...")
-                    self.contract.faucet()
-                else:
-                    raise ValueError(
-                        f"Insufficient wallet balance. Required: {self.price}, Available: {balance}")
-            self.logger.info("Verifying node address...")
-            self.node_address = node_address
-            if not self.is_node_operator_address(node_address):
-                raise ValueError("Node address verification failed.")
-            self.securelock_enclave = securelock_enclave
-            self.securelock_version = securelock_version
-            self.cleanup()
-            self.image_registry_contract = ImageRegistryContract(
-                self.network_name, self.network_type, self.signer)
-            if not self.check_web3_connection():
-                raise ConnectionError("Web3 connection failed.")
-            if not self.get_enclave_details():
-                raise ValueError("Unable to find enclave in registry")
-            if self.network_name != "BLOXBERG":
-                allowance = self.token_contract.functions.allowance(
-                    self.signer.address, self.contract.get_protocol_address()).call()
-                if allowance < self.price:
-                    transaction_hash = self.contract.set_allowance(self.price)
-                    receipt = self.poll_transaction(transaction_hash, max_attempts=100)
-                    if not receipt or receipt["status"] != 1:
-                        raise ValueError("Allowance approval failed.")
-            self._session_request = True
+            # get_enclave_details() and the submission steps below bail out
+            # early unless is_running() holds; without this the registry lookup
+            # returns False and surfaces as "Unable to find enclave in
+            # registry" even when the enclave is published.
+            self.running = True
+            # The session stays running after this returns, so the flag is
+            # cleared only when submission fails; close() clears it otherwise.
             try:
-                if not self.create_task(code):
-                    raise ValueError("Unable to create a DO request")
-            finally:
-                self._session_request = False
-            if not self.check_order_for_task():
-                raise ValueError("Could not find any available operator matching this task request.")
-            if not self.approve_task():
-                raise ValueError("Task approval failed.")
+                self.logger.info("Checking wallet balance...")
+                balance = int(self.contract.get_balance())
+                if balance < self.price:
+                    if self.network_type != "MAINNET":
+                        self.logger.info("Insufficient wallet balance, using testnet faucet...")
+                        self.contract.faucet()
+                    else:
+                        raise ValueError(
+                            f"Insufficient wallet balance. Required: {self.price}, Available: {balance}")
+                self.logger.info("Verifying node address...")
+                self.node_address = node_address
+                if not self.is_node_operator_address(node_address):
+                    raise ValueError("Node address verification failed.")
+                self.securelock_enclave = securelock_enclave
+                self.securelock_version = securelock_version
+                self.cleanup()
+                self.image_registry_contract = ImageRegistryContract(
+                    self.network_name, self.network_type, self.signer)
+                if not self.check_web3_connection():
+                    raise ConnectionError("Web3 connection failed.")
+                if not self.get_enclave_details():
+                    raise ValueError("Unable to find enclave in registry")
+                if self.network_name != "BLOXBERG":
+                    allowance = self.token_contract.functions.allowance(
+                        self.signer.address, self.contract.get_protocol_address()).call()
+                    if allowance < self.price:
+                        transaction_hash = self.contract.set_allowance(self.price)
+                        receipt = self.poll_transaction(transaction_hash, max_attempts=100)
+                        if not receipt or receipt["status"] != 1:
+                            raise ValueError("Allowance approval failed.")
+                self._session_request = True
+                try:
+                    if not self.create_task(code):
+                        raise ValueError("Unable to create a DO request")
+                finally:
+                    self._session_request = False
+                if not self.check_order_for_task():
+                    raise ValueError("Could not find any available operator matching this task request.")
+                if not self.approve_task():
+                    raise ValueError("Task approval failed.")
+            except BaseException:
+                self.running = False
+                raise
             self.logger.info(f"Session order {self.order_id} is processing")
             return EthernityCloudSession(self, self.order_id)
 
@@ -1051,13 +1062,21 @@ class EthernityCloudRunner:
         meta = self.protocol_contract.caller()._getDORequestMetadata(int(order[2]))
         if str(meta[3] or "").split(":")[0] != "v3s":
             raise ValueError("Order is not an interactive session")
+        # The order is PROCESSING on chain, so the runner is running from this
+        # process's point of view; get_enclave_details() below needs the flag
+        # set or it returns False and reports a missing enclave.
+        self.running = True
         if securelock_enclave:
             self.securelock_enclave = securelock_enclave
             self.securelock_version = securelock_version
             self.image_registry_contract = ImageRegistryContract(
                 self.network_name, self.network_type, self.signer)
-            if not self.get_enclave_details():
-                raise ValueError("Unable to find enclave in registry")
+            try:
+                if not self.get_enclave_details():
+                    raise ValueError("Unable to find enclave in registry")
+            except BaseException:
+                self.running = False
+                raise
         return EthernityCloudSession(self, int(order_id))
 
     def list_sessions(self) -> List[int]:
