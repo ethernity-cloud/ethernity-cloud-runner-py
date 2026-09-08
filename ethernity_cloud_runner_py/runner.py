@@ -323,10 +323,13 @@ class EthernityCloudRunner:
         if not self.contract:
             raise RuntimeError("Contract not initialized.")
         self.logger.info("Submitting transaction for DO request")
-        if node_address:
-            node_address = Web3.to_checksum_address(node_address)
-        else:
-            node_address = '0x0000000000000000000000000000000000000000'
+        # An unpinned request must leave Metadata4 EMPTY: the contract's
+        # "any node may take it" path is metadata4.length == 0. The zero
+        # address is a 42-character string, so it takes the delegated branch,
+        # parses to 0x0 and reverts with "node address invalid" for every
+        # caller -- no node can ever place an order. The JS runner sends the
+        # empty string here, which is why those requests get served.
+        node_address = Web3.to_checksum_address(node_address) if node_address else ""
         def send_tx():
             return self.contract.add_do_request(image_metadata, code_metadata, input_metadata, node_address, self.resources)
         transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2)
