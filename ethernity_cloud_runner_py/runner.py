@@ -402,6 +402,10 @@ class EthernityCloudRunner:
         result["value"] = parsed["legacy"]
         result["result_type"] = parsed["type"]
         result["result_data"] = parsed["data"]
+        # get_state() advertises the payload under "result", so a caller
+        # reading get_result()["result"] got None on a task that succeeded --
+        # a silent false negative. Alias of result_data; both stay populated.
+        result["result"] = parsed["data"]
         result["result_esr"] = parsed["esr"]
         result["result_raw"] = parsed["raw"]
         esr = parsed["esr"]
