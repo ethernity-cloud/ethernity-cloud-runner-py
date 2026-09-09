@@ -665,8 +665,10 @@ class EthernityCloudRunner:
             return self.contract.approve_order(self.order_id)
 
         transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2)
-        receipt = self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100)
-        if receipt and receipt['status'] == 1:
+        # wait_for_transaction_to_be_processed returns a bool, not a receipt:
+        # subscripting it raised TypeError and killed the approval.
+        approved = self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100)
+        if approved:
             self.node_address = self.contract.get_order(self.order_id)[1]
             self.logger.info(f"{transaction_hash} confirmed!")
             self.logger.info(f"Task {self.order_id} approved successfully!")
