@@ -26,10 +26,9 @@ ECOrderTaskStatus = {
     7: "INPUT_CHECKSUM_ERROR",
     8: "EXECVE",
     # Extended diagnostics emitted by newer enclave builds (canonical registry:
-    # the trustedzone extended enum). 20-33 are customer-side outcomes; 40-49
-    # are operator-side infrastructure failures (securelock never ran /
-    # produced unusable output) and are the codes the runner treats as
-    # retriable with a fresh DO request.
+    # the trustedzone TaskStatus enum in etny_exec.py). 20-36 and 38 are
+    # customer-side outcomes; 37, 39 and 40 are node-side faults the validator
+    # refunds, listed in OPERATOR_FAULT_CODES below.
     20: "SIGNATURE_ERROR",
     21: "SYNTAX_ERROR",
     22: "MEMORY_ERROR",
@@ -49,19 +48,26 @@ ECOrderTaskStatus = {
     36: "ESR_NONCE_VIOLATION",     # a commit's idempotency nonce was already used -- duplicate
                                   # task submitter (the in-enclave ownership check was bypassed);
                                   # set by the securelock and/or the trustedzone re-adjudication
-
-    40: "SECURELOCK_NOT_STARTED",
-    41: "SECURELOCK_NO_RESULT",
-    42: "SECURELOCK_MALFORMED",
-    43: "SIGNATURE_ERROR",
-    44: "STORAGE_ERROR",
-    45: "INTERNAL_ERROR",
+    37: "ESR_RELAY_TIMEOUT",       # signed state commits did not land on the registry in time
+    38: "ESR_COMMIT_LIMIT_EXCEEDED",  # more than the per-run cap of state commits
+    39: "SESSION_RELAY_FAULT",     # the node withheld session input delivery or failed to relay
+    # The CAS that provisioned the enclave presented a quote the enclave could
+    # not bind to its own injected environment; the enclave terminated the
+    # order for refund. Set by the trustedzone (etny_exec.py TaskStatus) and by
+    # the securelock alike. Codes 41-45 are not defined by any enclave and the
+    # node emits no task codes of its own, so nothing on the network produces
+    # them.
+    40: "CAS_ATTESTATION_FAULT",
 }
 
-# Task codes attributed to the node operator rather than the submitted code.
-# The escrow for such orders is refunded by the validator, so resubmitting the
-# same task as a new DO request is safe and is what the runner's retry does.
-OPERATOR_FAULT_CODES = range(40, 50)
+# Task codes attributed to the node operator rather than the submitted code:
+# the node did not relay signed state commits (37), withheld session input or
+# output rows (39), or was provisioned by a CAS whose self-attestation failed
+# the ValidatorRegistry checks (40). The escrow for such orders is refunded by
+# the validator, so resubmitting the same task as a new DO request is safe and
+# is what the runner's retry does. 38 (per-run commit cap) is a dApp-side
+# fault and is not refunded.
+OPERATOR_FAULT_CODES = frozenset({37, 39, 40})
 
 
 def task_status_name(code: int) -> str:
