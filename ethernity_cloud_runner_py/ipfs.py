@@ -1,5 +1,12 @@
 import requests  # type: ignore
 
+# Every blob the runner adds (challenge, code, input, session rows) is stored
+# as a CIDv1 raw sha256 block: `cid-version=1&raw-leaves=true` makes the CID
+# base32(0x01 0x55 0x12 0x20 || sha256(content)), so it can be computed from
+# the bytes alone, without an IPFS node. The node pins results with the same
+# recipe (mvp-pox-node utils.py cidv1_raw).
+RAW_BLOCK_PARAMS = {"cid-version": "1", "raw-leaves": "true"}
+
 
 class IPFSClient:
     def __init__(
@@ -15,7 +22,7 @@ class IPFSClient:
 
         with open(file_path, "rb") as file:
             files = {"file": file}
-            response = requests.post(add_url, files=files, headers=self.headers)
+            response = requests.post(add_url, params=RAW_BLOCK_PARAMS, files=files, headers=self.headers)
 
         if response.status_code == 200:
             try:
@@ -34,7 +41,7 @@ class IPFSClient:
     def upload_to_ipfs(self, data: str) -> None:
         add_url = f"{self.api_url}/add"
         files = {"file": data}
-        response = requests.post(add_url, files=files, headers=self.headers)
+        response = requests.post(add_url, params=RAW_BLOCK_PARAMS, files=files, headers=self.headers)
 
         if response.status_code == 200:
             try:
