@@ -176,6 +176,9 @@ class EthernityCloudSession:
         receipt = self.runner.poll_transaction(tx_hash, max_attempts=60)
         if not receipt or receipt["status"] != 1:
             raise SessionError(f"input row transaction failed ({tx_hash})")
+        # With the public intake, the row is on chain now, so the bytes it
+        # names can be delivered.
+        self.runner.ipfs_client.flush_pending(self.do_req)
         seq = self._input_seq
         self._input_seq += 1
         self.runner.logger.info(f"[session] input {seq} committed ({cid})")

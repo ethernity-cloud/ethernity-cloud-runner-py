@@ -33,7 +33,7 @@ from .enums import (
     OPERATOR_FAULT_CODES,
     task_status_name,
 )
-from .ipfs import IPFSClient
+from .ipfs import IPFSClient, PUBLIC_INTAKE
 from .utils import (
     format_date,
     generate_random_hex_of_size,
@@ -361,6 +361,9 @@ class EthernityCloudRunner:
         self.do_request = processed_logs[0].args._rowNumber
         self.logger.info(f"{transaction_hash} confirmed!")
         self.logger.info(f"Request {self.do_request} was created successfully!")
+        # With the public intake, the artefacts named in the request are
+        # delivered now that the request they belong to is on chain.
+        self.ipfs_client.flush_pending(self.do_request)
         return True
     def parse_order_result(self, result: str) -> Dict[str, Any]:
         """Parse order result string."""
@@ -705,8 +708,15 @@ class EthernityCloudRunner:
             self.logger.error("The target address is not a valid node operator address")
         return is_node
     def set_storage_ipfs(self, ipfs_address: str, token: str = "") -> None:
-        """Set IPFS client."""
+        """Upload and read through the application's own Kubo RPC API."""
         self.ipfs_client = IPFSClient(ipfs_address, token)
+    def set_public_intake(self, base_url: str = PUBLIC_INTAKE) -> None:
+        """Upload through the bootnode's payload intake and read through its
+        public API. Artefact CIDs are computed locally and the bytes are
+        delivered once the DO request is on chain."""
+        network = f"{self.network_name.lower()}_{self.network_type.lower()}"
+        self.ipfs_client = IPFSClient(f"{base_url.rstrip('/')}/api/v0", "",
+                                      intake_url=base_url, network=network)
     def retry_operation(self, func: callable, max_retries: int = 10, delay: Optional[int] = None, backoff_factor: float = 1.5) -> Any:
         """Retry a function with exponential backoff."""
         delay = delay or self.block_time
