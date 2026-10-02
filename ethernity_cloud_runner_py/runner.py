@@ -52,8 +52,8 @@ class OperatorFaultError(Exception):
     """A failure attributed to the node operator, not the submitted task.
 
     Raised when the order times out with no on-chain result, when the
-    operator's result is unparseable/unverifiable, or when the task code is in
-    the operator-fault range (40-49). Because the DO request cannot be reused
+    operator's result is unparseable/unverifiable, or when the task code is an
+    operator fault (OPERATOR_FAULT_CODES). Because the DO request cannot be reused
     once an order was placed against it (the contract flips it to BOOKED with
     no reset path), the runner retries by submitting a NEW DO request; the
     escrow of the failed order is refunded by the validator."""
@@ -174,6 +174,17 @@ class EthernityCloudRunner:
     def is_mainnet(self) -> bool:
         """Check if the current network is mainnet."""
         return self.network_type == "MAINNET"
+    def _resolve_trustedzone(self, trustedzone_enclave: Optional[str]) -> str:
+        """The trustedzone a task runs on: `trustedzone_enclave` when given,
+        else the network's. An -unsafe trustedzone runs without a CAS, and a
+        mainnet accepts none."""
+        if self.local_mode:
+            return "local"
+        trustedzone = trustedzone_enclave or self.network_config.TRUSTEDZONE_IMAGE
+        if trustedzone.endswith("-unsafe") and self.is_mainnet():
+            raise ValueError(
+                f"{trustedzone} runs without a CAS; a mainnet accepts no -unsafe trustedzone")
+        return trustedzone
     def get_enclave_details(self) -> bool:
         """Fetch enclave details from the registry."""
         if not self.is_running():
@@ -381,11 +392,16 @@ class EthernityCloudRunner:
         """Parse transaction bytes."""
         try:
             result = parse_transaction_bytes_ut(self.protocol_abi, bytes_str)
+            if result is None or result["function_name"] != "_addResultToOrder":
+                raise ValueError("the result transaction is not an _addResultToOrder call")
             arr = result["result"].split(":")
             task_code_int = int(arr[1])
             return {
                 "version": arr[0],
                 "from": result["from"],
+                "to": result["to"],
+                "chain_id": result["chain_id"],
+                "order_id": result["params"]["_orderItem"],
                 "task_code": arr[1],
                 "task_code_int": task_code_int,
                 "task_code_string": task_status_name(task_code_int),
@@ -394,6 +410,23 @@ class EthernityCloudRunner:
             }
         except (IndexError, ValueError) as e:
             raise ValueError(ECError.PARSE_ERROR.value) from e
+    def _result_binding_error(self, transaction_result: Dict[str, Any], order_id: int) -> Optional[str]:
+        """Why the enclave-signed result transaction is not this order's result
+        on this network's PoX, or None when it is.
+
+        The validators reject such a result the same way (ethernity-cas
+        result_tx.rs, bound_to): a genuine enclave signature over another
+        order, contract or chain proves nothing about this order. A chain id
+        of 0 is a pre-EIP-155 signature."""
+        if int(transaction_result["order_id"]) != int(order_id):
+            return f"the result transaction is for order {transaction_result['order_id']}"
+        protocol = self.contract.get_protocol_address()
+        to = transaction_result["to"] or ""
+        if to.lower() != protocol.lower():
+            return f"the result transaction is addressed to {to or 'no contract'}, not {protocol}"
+        if transaction_result["chain_id"] not in (0, self.network_config.CHAIN_ID):
+            return f"the result transaction is signed for chain {transaction_result['chain_id']}"
+        return None
     def _apply_envelope(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Decode the structured result envelope (legacy strings pass through).
 
@@ -491,6 +524,12 @@ class EthernityCloudRunner:
             self.logger.error("Could not parse. The operator result is invalid, indicating a failure")
             self.logger.error("Tokens will be refunded after validation. Please try again.")
             self._fault = f"order {order_id}: operator result could not be parsed"
+            return None
+        binding_error = self._result_binding_error(transaction_result, order_id)
+        if binding_error:
+            self._fault = f"order {order_id}: {binding_error}"
+            self.logger.error(self._fault)
+            self.logger.error("Tokens will be refunded after validation.")
             return None
         task_code_int = transaction_result.get("task_code_int")
         if task_code_int in OPERATOR_FAULT_CODES:
@@ -738,16 +777,21 @@ class EthernityCloudRunner:
         securelock_version: str,
         code: str,
         node_address: str = "",
-        trustedzone_enclave: str = "etny-pynithy-testnet",
+        trustedzone_enclave: Optional[str] = None,
         max_retries: int = 2,
         retry_delay: int = 30,
     ) -> None:
         """Run the task.
 
+        trustedzone_enclave: the trustedzone the securelock was built against,
+        e.g. etny-nodenithy-testnet for a nodenithy dApp, or the -unsafe
+        variant for a securelock published without a CAS on the bloxberg
+        testnet. Default: the network's (TRUSTEDZONE_IMAGE).
         max_retries: how many times to resubmit the task as a NEW DO request
         when it fails on the operator side (order timeout, unusable operator
-        output, or an operator-fault task code 40-49). Failures caused by the
-        submitted code itself are final results and are never retried.
+        output, or an operator-fault task code, OPERATOR_FAULT_CODES). Failures
+        caused by the submitted code itself are final results and are never
+        retried.
         retry_delay: seconds to wait between resubmissions.
 
         Thread-safety: task state (do_request, order, result, ...) lives on
@@ -782,6 +826,7 @@ class EthernityCloudRunner:
         max_retries,
         retry_delay,
     ) -> None:
+        trustedzone = self._resolve_trustedzone(trustedzone_enclave)
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self._fault = None
@@ -799,6 +844,7 @@ class EthernityCloudRunner:
         self.price = resources['taskPrice']
         if self.running:
             raise RuntimeError("A task is already running.")
+        self.trustedZoneImage = trustedzone
         self.status = ECStatus.RUNNING
         self.last_error = None
         self.result = None
@@ -983,15 +1029,16 @@ class EthernityCloudRunner:
         securelock_version: str,
         code: str,
         node_address: str = "",
-        trustedzone_enclave: str = "etny-pynithy-testnet",
+        trustedzone_enclave: Optional[str] = None,
     ) -> "EthernityCloudSession":
         """Start an INTERACTIVE SESSION task and return its handle.
 
-        Same submission flow as run() up to order approval, but the request
-        carries the v3s session marker, so the enclaves stay alive for the
-        order duration and stream inputs/outputs through the on-chain
-        metadata channels. Returns once the order is PROCESSING; use the
-        returned EthernityCloudSession to send_input / poll_outputs / close.
+        Same submission flow and trustedzone selection as run() up to order
+        approval, but the request carries the v3s session marker, so the
+        enclaves stay alive for the order duration and stream inputs/outputs
+        through the on-chain metadata channels. Returns once the order is
+        PROCESSING; use the returned EthernityCloudSession to send_input /
+        poll_outputs / close.
         Synchronous by design -- the session handle is the async surface.
         """
         from .session import EthernityCloudSession
@@ -999,6 +1046,7 @@ class EthernityCloudRunner:
         if not hasattr(self, "_run_lock"):
             self._run_lock = threading.Lock()
         with self._run_lock:
+            self.trustedZoneImage = self._resolve_trustedzone(trustedzone_enclave)
             self._fault = None
             if resources is None:
                 resources = {
@@ -1091,6 +1139,11 @@ class EthernityCloudRunner:
             self.image_registry_contract = ImageRegistryContract(
                 self.network_name, self.network_type, self.signer)
             try:
+                # The trustedzone the order was placed with: field 2 of its
+                # image metadata (v3:image:trustedzone:compose:challenge:key).
+                image_fields = str(meta[1] or "").split(":")
+                self.trustedZoneImage = self._resolve_trustedzone(
+                    image_fields[2] if len(image_fields) > 2 else None)
                 if not self.get_enclave_details():
                     raise ValueError("Unable to find enclave in registry")
             except BaseException:
@@ -1249,6 +1302,7 @@ class EthernityCloudRunner:
             version,
             code,
             node_address=node_address or (self.node_address or ""),
+            trustedzone_enclave=self.trustedZoneImage,
         )
         result = self.get_result()
         if not result or not result.get("success"):

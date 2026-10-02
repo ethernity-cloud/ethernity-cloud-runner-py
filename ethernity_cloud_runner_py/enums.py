@@ -90,7 +90,9 @@ class ECNetwork:
     class BLOXBERG:
 
         class TESTNET:
-            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31'
+            # ECImageRegistryV2, where the testnet trustedzones and the
+            # securelocks published against them are registered.
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x99A84C624C028bdf0a855A1E9E3f2fcf7275B3D8'
             PROTOCOL_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
             TOKEN_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
             HEARTBEAT_CONTRACT_ADDRESS='0x9B105aefF69Cd26050798d575db17ffc2eAC4E4d'

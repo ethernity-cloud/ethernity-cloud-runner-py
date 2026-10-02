@@ -175,7 +175,8 @@ def parse_transaction_bytes_ut(contract_abi, bytes_input):
         chain_id = (v - 35) // 2
         v_standard = v - (chain_id * 2 + 35) + 27
     else:
-        chain_id = None
+        # Pre-EIP-155: the signature carries no chain id.
+        chain_id = 0
         v_standard = v
 
     try:
@@ -204,6 +205,7 @@ def parse_transaction_bytes_ut(contract_abi, bytes_input):
     result = {
         "from": sender_address,
         "to": to_checksum_address(tx.to) if tx.to else None,
+        "chain_id": chain_id,
         "nonce": tx.nonce,
         "gasPrice": tx.gasPrice,
         "gas": tx.gas,
