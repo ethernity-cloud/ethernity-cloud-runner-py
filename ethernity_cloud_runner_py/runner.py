@@ -39,6 +39,7 @@ from .utils import (
     generate_random_hex_of_size,
     is_address,
     is_null_or_empty,
+    normalize_node_address,
     parse_transaction_bytes_ut,
     generate_wallet,
 )
@@ -338,8 +339,9 @@ class EthernityCloudRunner:
         # "any node may take it" path is metadata4.length == 0. The zero
         # address is a 42-character string, so it takes the delegated branch,
         # parses to 0x0 and reverts with "node address invalid" for every
-        # caller -- no node can ever place an order. The JS runner sends the
-        # empty string here, which is why those requests get served.
+        # caller -- no node can ever place an order. The zero address is
+        # therefore written as the empty string, like no address at all.
+        node_address = normalize_node_address(node_address)
         node_address = Web3.to_checksum_address(node_address) if node_address else ""
         def send_tx():
             return self.contract.add_do_request(image_metadata, code_metadata, input_metadata, node_address, self.resources)
@@ -978,8 +980,8 @@ class EthernityCloudRunner:
                     else:
                         raise ValueError(f"Insufficient wallet balance. Required: {self.price}, Available: {balance}")
                 self.logger.info("Verifying node address...")
-                self.node_address = node_address
-                if not self.is_node_operator_address(node_address):
+                self.node_address = normalize_node_address(node_address)
+                if not self.is_node_operator_address(self.node_address):
                     raise ValueError("Node address verification failed.")
                 self.cleanup()
                 image_to_check = self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage
@@ -1076,8 +1078,8 @@ class EthernityCloudRunner:
                         raise ValueError(
                             f"Insufficient wallet balance. Required: {self.price}, Available: {balance}")
                 self.logger.info("Verifying node address...")
-                self.node_address = node_address
-                if not self.is_node_operator_address(node_address):
+                self.node_address = normalize_node_address(node_address)
+                if not self.is_node_operator_address(self.node_address):
                     raise ValueError("Node address verification failed.")
                 self.securelock_enclave = securelock_enclave
                 self.securelock_version = securelock_version

@@ -66,6 +66,18 @@ def is_address(address: str) -> bool:
     return True
 
 
+def normalize_node_address(node_address: str) -> str:
+    """The node a DO request is pinned to, or "" for an unpinned request.
+
+    The zero address means "any node". Written into Metadata4 it would pin the
+    request to 0x0, which no node can place: the protocol contract takes any
+    non-empty Metadata4 as the address of the node the request is pinned to."""
+    address = (node_address or "").strip()
+    if address == "" or (is_address(address) and int(address, 16) == 0):
+        return ""
+    return address
+
+
 # def parse_transaction_bytes_ut(contract_abi: Any, bytes_input: bytes) -> Any:
 #     contract = w3.eth.contract(abi=contract_abi)
 #     decoded_data = contract.decode_function_input(bytes_input)
