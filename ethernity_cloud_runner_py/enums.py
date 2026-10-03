@@ -86,6 +86,14 @@ class ECOrderTaskStatusCode(Enum):
     INPUT_CHECKSUM_ERROR = "INPUT_CHECKSUM_ERROR"
     EXECVE = "EXECVE"
 
+# An -unsafe network: a network type ending in _UNSAFE, with the chain and
+# contracts of the type it is named after and the trustedzones that run without
+# a CAS, whose names end in -unsafe. The runner runs an -unsafe trustedzone only
+# on an -unsafe network, and no other trustedzone there.
+UNSAFE_NETWORK_SUFFIX = "_UNSAFE"
+UNSAFE_TRUSTEDZONE_SUFFIX = "-unsafe"
+
+
 class ECNetwork:
     class BLOXBERG:
 
@@ -115,6 +123,13 @@ class ECNetwork:
             REWARD_TYPE=1
             NETWORK_FEE=5
             ENCLAVE_FEE=10
+
+        class TESTNET_UNSAFE(TESTNET):
+            # The chain and contracts of TESTNET, with the trustedzones that
+            # run without a CAS (hardware SGX platforms the CAS cannot
+            # attest): a task chosen to run unsafe names this network.
+            INTEGRATION_TEST_IMAGE='etny-pynithy-testnet-unsafe'
+            TRUSTEDZONE_IMAGE='etny-pynithy-testnet-unsafe'
 
         class MAINNET:
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31'
@@ -274,6 +289,13 @@ class ECNetwork:
             REWARD_TYPE=2
             NETWORK_FEE=5
             ENCLAVE_FEE=10
+
+        class LITEFORGE_UNSAFE(LITEFORGE):
+            # The chain and contracts of LITEFORGE, with the trustedzones that
+            # run without a CAS: a task chosen to run unsafe names this
+            # network.
+            INTEGRATION_TEST_IMAGE='ecld-pynithy-litvm-testnet-unsafe'
+            TRUSTEDZONE_IMAGE='ecld-pynithy-litvm-testnet-unsafe'
 
 ZERO_CHECKSUM = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 

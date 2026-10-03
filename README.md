@@ -103,7 +103,9 @@ This script will initialize the `EthernityCloudRunner`, set up the necessary eve
 
 ### Choosing the trustedzone
 
-`run()` and `run_session()` take `trustedzone_enclave`, the trustedzone the securelock was built against. It defaults to the network's (`etny-pynithy-testnet` on the bloxberg testnet); a nodenithy dApp passes `etny-nodenithy-testnet`. On the bloxberg testnet a securelock published without a CAS (`<project>-unsafe`) runs on `etny-pynithy-testnet-unsafe` or `etny-nodenithy-testnet-unsafe`; the runner refuses an `-unsafe` trustedzone on a mainnet.
+`run()` and `run_session()` take `trustedzone_enclave`, the trustedzone the securelock was built against. It defaults to the network's (`etny-pynithy-testnet` on the bloxberg testnet); a nodenithy dApp passes `etny-nodenithy-testnet`.
+
+A securelock published without a CAS (`<project>-unsafe`) runs on an `-unsafe` network, which you choose by name: `EthernityCloudRunner("BLOXBERG", "TESTNET_UNSAFE")` or `EthernityCloudRunner("LITVM", "LITEFORGE_UNSAFE")`. An `-unsafe` network has the chain and contracts of the network it is named after; its trustedzone is `etny-pynithy-testnet-unsafe` (`ecld-pynithy-litvm-testnet-unsafe` on LitVM), and a nodenithy dApp passes the `etny-nodenithy-...-unsafe` one. The runner runs an `-unsafe` trustedzone only on an `-unsafe` network and runs nothing else there, so a task that runs without a CAS always says so in the network it names.
 
 The runner accepts a result only when the transaction the enclave signed is `_addResultToOrder` for this order, addressed to this network's protocol contract and signed for this chain, and its signer is the wallet derived from the task's challenge.
 

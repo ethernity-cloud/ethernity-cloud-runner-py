@@ -31,6 +31,8 @@ from .enums import (
     ECStatus,
     ECLog,
     OPERATOR_FAULT_CODES,
+    UNSAFE_NETWORK_SUFFIX,
+    UNSAFE_TRUSTEDZONE_SUFFIX,
     task_status_name,
 )
 from .ipfs import IPFSClient, PUBLIC_INTAKE
@@ -175,16 +177,33 @@ class EthernityCloudRunner:
     def is_mainnet(self) -> bool:
         """Check if the current network is mainnet."""
         return self.network_type == "MAINNET"
+    def is_unsafe(self) -> bool:
+        """Whether this is an -unsafe network (a type ending in _UNSAFE): the
+        chain and contracts of the network it is named after, with the
+        trustedzones that run without a CAS."""
+        return self.network_type.endswith(UNSAFE_NETWORK_SUFFIX)
     def _resolve_trustedzone(self, trustedzone_enclave: Optional[str]) -> str:
         """The trustedzone a task runs on: `trustedzone_enclave` when given,
-        else the network's. An -unsafe trustedzone runs without a CAS, and a
-        mainnet accepts none."""
+        else the network's. An -unsafe trustedzone runs without a CAS, and
+        runs only on an -unsafe network, which runs no other."""
         if self.local_mode:
             return "local"
         trustedzone = trustedzone_enclave or self.network_config.TRUSTEDZONE_IMAGE
-        if trustedzone.endswith("-unsafe") and self.is_mainnet():
+        unsafe_zone = trustedzone.endswith(UNSAFE_TRUSTEDZONE_SUFFIX)
+        if unsafe_zone and not self.is_unsafe():
+            twin = f"{self.network_type}{UNSAFE_NETWORK_SUFFIX}"
+            if getattr(getattr(ECNetwork, self.network_name), twin, None) is None:
+                raise ValueError(
+                    f"{trustedzone} runs without a CAS; {self.network_name} "
+                    f"{self.network_type} has no -unsafe network")
             raise ValueError(
-                f"{trustedzone} runs without a CAS; a mainnet accepts no -unsafe trustedzone")
+                f"{trustedzone} runs without a CAS: run it on the {self.network_name} "
+                f"{twin} network")
+        if self.is_unsafe() and not unsafe_zone:
+            raise ValueError(
+                f"{self.network_name} {self.network_type} runs only -unsafe trustedzones, "
+                f"and {trustedzone} is provisioned by a CAS: run it on the "
+                f"{self.network_name} {self.network_type[:-len(UNSAFE_NETWORK_SUFFIX)]} network")
         return trustedzone
     def get_enclave_details(self) -> bool:
         """Fetch enclave details from the registry."""
@@ -786,9 +805,10 @@ class EthernityCloudRunner:
         """Run the task.
 
         trustedzone_enclave: the trustedzone the securelock was built against,
-        e.g. etny-nodenithy-testnet for a nodenithy dApp, or the -unsafe
-        variant for a securelock published without a CAS on the bloxberg
-        testnet. Default: the network's (TRUSTEDZONE_IMAGE).
+        e.g. etny-nodenithy-testnet for a nodenithy dApp. Default: the
+        network's (TRUSTEDZONE_IMAGE). A securelock published without a CAS
+        runs on the -unsafe network (BLOXBERG TESTNET_UNSAFE, LITVM
+        LITEFORGE_UNSAFE) against an -unsafe trustedzone, and only there.
         max_retries: how many times to resubmit the task as a NEW DO request
         when it fails on the operator side (order timeout, unusable operator
         output, or an operator-fault task code, OPERATOR_FAULT_CODES). Failures
