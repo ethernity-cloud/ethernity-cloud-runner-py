@@ -845,6 +845,10 @@ class EthernityCloudRunner:
         if self.running:
             raise RuntimeError("A task is already running.")
         self.trustedZoneImage = trustedzone
+        # Recorded for every mode, LOCAL included: esr_read() and the ESR
+        # wallet memo name the enclave of the last run.
+        self.securelock_enclave = securelock_enclave
+        self.securelock_version = securelock_version
         self.status = ECStatus.RUNNING
         self.last_error = None
         self.result = None
@@ -853,7 +857,7 @@ class EthernityCloudRunner:
         self._populate_event_queue()
         self.task_thread = threading.Thread(
             target=self._process_events,
-            args=(securelock_enclave, securelock_version, code, node_address, resources),
+            args=(code, node_address, resources),
             daemon=True
         )
         self.task_thread.start()
@@ -868,13 +872,13 @@ class EthernityCloudRunner:
         ]
         for event in events:
             self.event_queue.put(event)
-    def _process_events(self, securelock_enclave: str, securelock_version: str, code: str, node_address: str, resources: Dict[str, int]) -> None:
+    def _process_events(self, code: str, node_address: str, resources: Dict[str, int]) -> None:
         """Process events, resubmitting on operator-side failures."""
         attempt = 0
         try:
             while True:
                 try:
-                    self._run_attempt(securelock_enclave, securelock_version, code, node_address, resources)
+                    self._run_attempt(code, node_address, resources)
                     return
                 except OperatorFaultError as e:
                     attempt += 1
@@ -957,7 +961,7 @@ class EthernityCloudRunner:
                 self.logger.info("Task completed (LOCAL mode).")
             self.processed_events.append(event.name)
 
-    def _run_attempt(self, securelock_enclave: str, securelock_version: str, code: str, node_address: str, resources: Dict[str, int]) -> None:
+    def _run_attempt(self, code: str, node_address: str, resources: Dict[str, int]) -> None:
         """One full submission attempt: INIT through FINISHED."""
         if self.local_mode:
             return self._run_local_attempt(code)
@@ -977,8 +981,6 @@ class EthernityCloudRunner:
                 self.node_address = node_address
                 if not self.is_node_operator_address(node_address):
                     raise ValueError("Node address verification failed.")
-                self.securelock_enclave = securelock_enclave
-                self.securelock_version = securelock_version
                 self.cleanup()
                 image_to_check = self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage
                 self.logger.info(f"Checking image {image_to_check} in registry...")
@@ -1304,9 +1306,14 @@ class EthernityCloudRunner:
             node_address=node_address or (self.node_address or ""),
             trustedzone_enclave=self.trustedZoneImage,
         )
+        # run() hands the task to task_thread and returns at once; the result
+        # exists only when that thread has finished.
+        if self.task_thread is not None:
+            self.task_thread.join()
         result = self.get_result()
         if not result or not result.get("success"):
-            raise RuntimeError(f"esr_read task failed for key '{key}'")
+            reason = self.last_error or (result or {}).get("result_task_code")
+            raise RuntimeError(f"esr_read task failed for key '{key}': {reason}")
         esr_att = result.get("result_esr") or {}
         wallet = esr_att.get("wallet") or wallet
         entry = None
