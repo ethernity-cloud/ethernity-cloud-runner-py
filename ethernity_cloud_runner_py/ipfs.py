@@ -51,7 +51,11 @@ class IPFSClient:
             content = file.read()
         return self.upload_to_ipfs(content)
 
-    def upload_to_ipfs(self, data: str) -> None:
+    def upload_to_ipfs(self, data: str, attempts: int = 3, delay: float = 5.0) -> None:
+        """Add one blob and return its CID, or None. An add the API does not
+        answer within the timeout, or answers with a 5xx, is retried
+        `attempts` times; without the timeout an unanswered add held the run
+        until its own deadline with no DO request placed."""
         content = self._data_bytes(data)
         if self.intake_url:
             cid = cidv1_raw(content)
@@ -59,19 +63,24 @@ class IPFSClient:
             return cid
 
         add_url = f"{self.api_url}/add"
-        files = {"file": content}
-        response = requests.post(add_url, params=RAW_BLOCK_PARAMS, files=files, headers=self.headers)
-
-        if response.status_code == 200:
+        for attempt in range(attempts):
             try:
-                response_data = response.json()
-                ipfs_hash = response_data["Hash"]
-                return ipfs_hash
-            except Exception as e:
-                return None
-        else:
-            print(f"Failed to upload to IPFS. Status code: {response.status_code}")
-            return None
+                response = requests.post(add_url, params=RAW_BLOCK_PARAMS, files={"file": content},
+                                         headers=self.headers, timeout=(10, 60))
+            except requests.RequestException as e:
+                print(f"IPFS upload attempt {attempt + 1}/{attempts} failed: {e}")
+            else:
+                if response.status_code == 200:
+                    try:
+                        return response.json()["Hash"]
+                    except Exception:
+                        return None
+                print(f"Failed to upload to IPFS. Status code: {response.status_code}")
+                if response.status_code < 500:
+                    return None
+            if attempt + 1 < attempts:
+                time.sleep(delay)
+        return None
 
     def flush_pending(self, do_request: int, attempts: int = 3, delay: float = 5.0) -> None:
         """Deliver every queued blob to the intake for `do_request`. A blob the
