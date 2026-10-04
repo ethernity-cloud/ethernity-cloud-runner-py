@@ -223,4 +223,7 @@ The `resources` parameter provided in the `run` method as the last parameter is 
 7. `validators`: This property determines the number of validators required for the task. Validators are nodes on the network responsible for processing and validating tasks.
 
 By providing these resource requirements in the `resources` object, the task execution engine (EthernityCloudRunner) can use this information to allocate the necessary resources and process the task accordingly on the specified TESTNET network.
-```
+
+### Storage and the result read
+
+Uploads go to the IPFS API given to `set_storage_ipfs`, or, with `set_public_intake()`, are computed locally and delivered to the bootnode's payload intake once the DO request is on chain. A result is read from the configured API first and from the public gateway `https://ipfs.io` second, without credentials; each request is abandoned after 60 seconds, and the read is repeated until the order's deadline (its duration plus 15 minutes, and at least two minutes after it closed) before the task is reported as not downloadable.

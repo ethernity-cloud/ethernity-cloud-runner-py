@@ -571,12 +571,9 @@ class EthernityCloudRunner:
                 return None
             self.logger.info("Verification successful!")
         self.logger.info(f"The result is signed by: {transaction_result['from']}")
-        ipfs_result = self.retry_operation(
-            lambda: self.ipfs_client.get_file_content(parsed_order_result['result_ipfs_hash']) if self.ipfs_client else None,
-            max_retries
-        )
+        ipfs_result = self._read_result(parsed_order_result["result_ipfs_hash"], deadline)
         if ipfs_result is None:
-            self.logger.error("Failed to download IPFS result after retries.")
+            self.logger.error("Failed to download the IPFS result before the order's deadline.")
             self._fault = f"order {order_id}: result could not be downloaded from IPFS"
             return None
         self.logger.info("Decrypting result")
@@ -777,6 +774,32 @@ class EthernityCloudRunner:
         network = f"{self.network_name.lower()}_{self.network_type.lower()}"
         self.ipfs_client = IPFSClient(f"{base_url.rstrip('/')}/api/v0", "",
                                       intake_url=base_url, network=network)
+    def _read_result(self, result_cid: str, deadline: float) -> Optional[str]:
+        """Read the result blob until the order's deadline, and for at least
+        two minutes after the order closed: a result pinned at close may take
+        that long to reach the endpoint read from. Each attempt tries the
+        configured API, then the public gateway (IPFSClient.get_file_content);
+        a miss is logged at debug level and asked again, and only giving up is
+        a warning."""
+        if not self.ipfs_client:
+            return None
+        until = max(deadline, time.time() + 120)
+        attempt = 0
+        while self.is_running():
+            attempt += 1
+            try:
+                content = self.ipfs_client.get_file_content(result_cid)
+            except Exception as e:
+                content = None
+                self.logger.debug(f"Result read attempt {attempt}: {e}")
+            if content is not None:
+                return content
+            if time.time() >= until:
+                self.logger.warning(f"Result {result_cid} not readable after {attempt} attempts")
+                return None
+            time.sleep(min(self.block_time, max(1, until - time.time())))
+        return None
+
     def retry_operation(self, func: callable, max_retries: int = 10, delay: Optional[int] = None, backoff_factor: float = 1.5) -> Any:
         """Retry a function with exponential backoff."""
         delay = delay or self.block_time

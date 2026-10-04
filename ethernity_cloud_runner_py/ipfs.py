@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import time
+from typing import Optional
 
 import requests  # type: ignore
 
@@ -16,6 +17,14 @@ RAW_BLOCK_PARAMS = {"cid-version": "1", "raw-leaves": "true"}
 # the DO request is on chain; the intake accepts it only when that request
 # names the CID and the bytes hash to it (mvp-pox-node ipfs_intake.py).
 PUBLIC_INTAKE = "https://ipfs.ethernity.cloud"
+
+# The public gateway a blob is read from when the configured API does not
+# answer: a mirror of the same content, reached without credentials.
+PUBLIC_GATEWAY = "https://ipfs.io/ipfs"
+
+# (connect, read) timeout of one read request; a request past it is abandoned
+# and the next endpoint tried.
+READ_TIMEOUT = (10, 60)
 
 
 def cidv1_raw(content: bytes) -> str:
@@ -132,20 +141,21 @@ class IPFSClient:
             if attempt < 6:
                 self.download_file(ipfs_hash, download_path, attempt + 1)
 
-    def get_file_content(self, ipfs_hash: str) -> None:
-        gateway_url = f"https://ipfs.io/ipfs/{ipfs_hash}"
-        response = requests.get(url=gateway_url, timeout=30, headers=self.headers)
-
-        if response.status_code == 200:
-            # TODO: use a get encoding function to determine the encoding
-            return response.content.decode("utf-8")
-
-        url = self.api_url
-        gateway_url = f"{url}/cat?arg={ipfs_hash}"
-        response = requests.post(url=gateway_url, timeout=30, headers=self.headers)
-
-        if response.status_code == 200:
-            # TODO: use a get encoding function to determine the encoding
-            return response.content.decode("utf-8")
-
+    def get_file_content(self, ipfs_hash: str) -> Optional[str]:
+        """Read one blob as UTF-8: the configured API first, the public
+        gateway second, each request bounded by READ_TIMEOUT. None when
+        neither answered with the content; the caller decides whether to ask
+        again."""
+        reads = (
+            lambda: requests.post(f"{self.api_url}/cat?arg={ipfs_hash}", timeout=READ_TIMEOUT,
+                                  headers=self.headers),
+            lambda: requests.get(f"{PUBLIC_GATEWAY}/{ipfs_hash}", timeout=READ_TIMEOUT),
+        )
+        for read in reads:
+            try:
+                response = read()
+            except requests.RequestException:
+                continue
+            if response.status_code == 200:
+                return response.content.decode("utf-8")
         return None
