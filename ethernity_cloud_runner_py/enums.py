@@ -99,8 +99,9 @@ class ECNetwork:
 
         class TESTNET:
             # ECImageRegistryV2, where the testnet trustedzones and the
-            # securelocks published against them are registered.
-            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x99A84C624C028bdf0a855A1E9E3f2fcf7275B3D8'
+            # securelocks published against them are registered: the
+            # deployment of 2026-10-05, certified under the current CAS set.
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0xDf8cBCb1B57Fa34e7eA6b0f6B104B1aC8EF1dc53'
             PROTOCOL_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
             TOKEN_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
             HEARTBEAT_CONTRACT_ADDRESS='0x9B105aefF69Cd26050798d575db17ffc2eAC4E4d'
