@@ -98,10 +98,11 @@ class ECNetwork:
     class BLOXBERG:
 
         class TESTNET:
-            # ECImageRegistryV2, where the testnet trustedzones and the
+            # ECImageRegistryV3, where the testnet trustedzones and the
             # securelocks published against them are registered: the
-            # deployment of 2026-10-05, certified under the current CAS set.
-            IMAGE_REGISTRY_CONTRACT_ADDRESS='0xDf8cBCb1B57Fa34e7eA6b0f6B104B1aC8EF1dc53'
+            # deployment of 2026-10-06, whose securelock names belong to their
+            # publishers.
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0xa372a6e1Eb7Fcf343AF6b91E809b900C55001CD1'
             PROTOCOL_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
             TOKEN_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
             HEARTBEAT_CONTRACT_ADDRESS='0x9B105aefF69Cd26050798d575db17ffc2eAC4E4d'
