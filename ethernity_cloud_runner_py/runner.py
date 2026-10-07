@@ -498,7 +498,9 @@ class EthernityCloudRunner:
         # offline and the order will never leave PROCESSING on its own.
         duration_hours = (getattr(self, "resources", None) or {}).get("duration", 1)
         deadline = time.time() + duration_hours * 3600 + 900
-        status = self.contract.get_status_from_order(order_id)
+        # The RPC is load-balanced over replicas that lag one another, so a read
+        # of an order placed moments ago can revert on one that has not seen it.
+        status = self.retry_operation(lambda: self.contract.get_status_from_order(order_id), max_retries)
         tick = 0
         while self.is_running() and status != 2:
             if time.time() > deadline:
@@ -530,7 +532,7 @@ class EthernityCloudRunner:
                 status = 2
                 continue
             if closed is None or tick % 5 == 0:
-                status = self.contract.get_status_from_order(order_id)
+                status = self.retry_operation(lambda: self.contract.get_status_from_order(order_id), max_retries)
         if not self.is_running():
             self.logger.info(f"Task {order_id} was cancelled")
             return None
