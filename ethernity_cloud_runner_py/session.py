@@ -67,7 +67,9 @@ class EthernityCloudSession:
     def __init__(self, runner, order_id: int):
         self.runner = runner
         self.order_id = int(order_id)
-        order = runner.protocol_contract.caller()._getOrder(self.order_id)
+        # Retried: a replica of a load-balanced RPC that has not seen an order
+        # placed moments ago reverts the read.
+        order = runner.retry_operation(lambda: runner.protocol_contract.caller()._getOrder(self.order_id))
         self.do_req = int(order[2])
         self.dp_req = int(order[3])
         doreq = runner.protocol_contract.caller()._getDORequest(self.do_req)

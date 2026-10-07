@@ -735,7 +735,9 @@ class EthernityCloudRunner:
         # subscripting it raised TypeError and killed the approval.
         approved = self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100)
         if approved:
-            self.node_address = self.contract.get_order(self.order_id)[1]
+            # The receipt came from one RPC replica; the order read can land on
+            # one that has not seen the order yet and revert.
+            self.node_address = self.retry_operation(lambda: self.contract.get_order(self.order_id))[1]
             self.logger.info(f"{transaction_hash} confirmed!")
             self.logger.info(f"Task {self.order_id} approved successfully!")
             return True
