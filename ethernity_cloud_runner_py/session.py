@@ -4,7 +4,7 @@ Created by EthernityCloudRunner.run_session() / attach_session(). Wraps one
 running session order and exposes the streaming API:
 
     session = runner.run_session(resources, enclave, version, code)
-    seq = session.send_input("hello")          # on-chain etny-si row + IPFS
+    seq = session.send_input("hello")          # etny-si row on chain, bytes through the storage
     for msg in session.wait_outputs(count=1):  # verified + decrypted etny-so
         print(msg["data"])
     final = session.close()                    # close row -> final result
@@ -152,7 +152,8 @@ class EthernityCloudSession:
     # ------------------------------------------------------------------- input
 
     def send_input(self, data: str) -> int:
-        """Encrypt for the enclave, pin to IPFS, commit the etny-si row.
+        """Encrypt for the enclave, hand the bytes to the configured storage
+        (the bootnode's payload intake by default), commit the etny-si row.
         Returns the input seq. Refuses when the session cannot answer any
         more (cap reached or inside the enclave's input cutoff)."""
         if self.closed:
@@ -166,9 +167,9 @@ class EthernityCloudSession:
         if not self.is_running():
             raise SessionError("session order is no longer processing")
         ciphertext = encrypt(str(data).encode("utf-8"), self.runner.enclave_public_key)
-        cid = self.runner.ipfs_client.upload_to_ipfs(ciphertext)
+        cid = self.runner.storage().upload_to_ipfs(ciphertext)
         if not cid:
-            raise SessionError("could not pin the input to IPFS")
+            raise SessionError("the configured storage did not accept the input")
         digest = hashlib.sha256(
             ciphertext if isinstance(ciphertext, bytes) else str(ciphertext).encode("utf-8")
         ).hexdigest()
@@ -180,7 +181,7 @@ class EthernityCloudSession:
             raise SessionError(f"input row transaction failed ({tx_hash})")
         # With the public intake, the row is on chain now, so the bytes it
         # names can be delivered.
-        self.runner.ipfs_client.flush_pending(self.do_req)
+        self.runner.storage().flush_pending(self.do_req)
         seq = self._input_seq
         self._input_seq += 1
         self.runner.logger.info(f"[session] input {seq} committed ({cid})")
@@ -245,7 +246,7 @@ class EthernityCloudSession:
         # 'ok' rows carry the reply; 'error' rows carry an encrypted
         # explanation of why the input was not processed -- fetch both.
         try:
-            content = self.runner.ipfs_client.get_file_content(cid)
+            content = self.runner.storage().get_file_content(cid)
             raw = content if isinstance(content, bytes) else str(content).encode("utf-8")
             if hashlib.sha256(raw).hexdigest() != sha_hex:
                 self.runner.logger.error(

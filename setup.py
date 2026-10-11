@@ -1,19 +1,14 @@
-from setuptools import setup, find_packages
-
-# read the contents of your README file
 from pathlib import Path
 
-this_directory = Path(__file__).parent
-long_description = (
-    this_directory / "ethernity_cloud_runner_py" / "README.md"
-).read_text()
+from setuptools import setup, find_packages
 
-print(this_directory);
+# The PyPI page is the repository README.
+long_description = (Path(__file__).parent / "README.md").read_text(encoding="utf-8")
 
 
 setup(
     name="ethernity-cloud-runner-py",
-    version="0.5.4",
+    version="0.5.5",
     url="https://github.com/ethernity-cloud/ethernity-cloud-runner-py",
     author="Ethernity Cloud Team",
     author_email="contact@ethernity.cloud",
@@ -24,7 +19,6 @@ setup(
     install_requires=[
         "web3==7.6.0",
         "eth-typing",
-        "ipfshttpclient",
         "python-dotenv",
         "tinyec",
         "cryptography",

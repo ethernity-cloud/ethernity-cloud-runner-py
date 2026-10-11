@@ -17,6 +17,10 @@ RAW_BLOCK_PARAMS = {"cid-version": "1", "raw-leaves": "true"}
 # the DO request is on chain; the intake accepts it only when that request
 # names the CID and the bytes hash to it (mvp-pox-node ipfs_intake.py).
 PUBLIC_INTAKE = "https://ipfs.ethernity.cloud"
+# The networks the intake serves, by the node agent's name for them: those the
+# bootnode's agent runs (mvp-pox-node registers an intake backend per network
+# handle). A runner on another network configures its storage itself.
+INTAKE_NETWORKS = ("bloxberg_testnet", "bloxberg_testnet_unsafe")
 
 # The public gateway a blob is read from when the configured API does not
 # answer: a mirror of the same content, reached without credentials.
@@ -35,13 +39,13 @@ def cidv1_raw(content: bytes) -> str:
 
 
 class IPFSClient:
-    """Uploads go to a configured Kubo RPC API, or, when `intake_url` is set,
-    are computed locally and delivered to the public intake once the DO
-    request exists (`flush_pending`). Reads always use `api_url`."""
+    """Uploads go to the Kubo RPC API at `api_url`, with `token` as the
+    Authorization header of every request, or, when `intake_url` is set, are
+    computed locally and delivered to the public intake once the DO request
+    exists (`flush_pending`). Reads always use `api_url`."""
 
     def __init__(
-        self, api_url: str = "https://ipfs.ethernity.cloud/api/v0", token: str = "",
-        intake_url: str = "", network: str = "",
+        self, api_url: str, token: str = "", intake_url: str = "", network: str = "",
     ) -> None:
         self.api_url = api_url
         self.headers = {}
@@ -55,16 +59,11 @@ class IPFSClient:
     def _data_bytes(self, data):
         return data if isinstance(data, bytes) else str(data).encode("utf-8")
 
-    def upload_file(self, file_path: str) -> None:
-        with open(file_path, "rb") as file:
-            content = file.read()
-        return self.upload_to_ipfs(content)
-
-    def upload_to_ipfs(self, data: str, attempts: int = 3, delay: float = 5.0) -> None:
+    def upload_to_ipfs(self, data: str, attempts: int = 3, delay: float = 5.0) -> Optional[str]:
         """Add one blob and return its CID, or None. An add the API does not
         answer within the timeout, or answers with a 5xx, is retried
-        `attempts` times; without the timeout an unanswered add held the run
-        until its own deadline with no DO request placed."""
+        `attempts` times. A 401 or 403 raises at once: the API admits only a
+        caller with a writer token, which repeating the add cannot supply."""
         content = self._data_bytes(data)
         if self.intake_url:
             cid = cidv1_raw(content)
@@ -84,6 +83,13 @@ class IPFSClient:
                         return response.json()["Hash"]
                     except Exception:
                         return None
+                if response.status_code in (401, 403):
+                    raise RuntimeError(
+                        f"{add_url} refused the add ({response.status_code}): this API's add "
+                        "takes a writer token, passed as the second argument of "
+                        "set_storage_ipfs(url, token) and sent as the Authorization header; "
+                        "set_public_intake() delivers through the bootnode's payload intake "
+                        "and needs no token.")
                 print(f"Failed to upload to IPFS. Status code: {response.status_code}")
                 if response.status_code < 500:
                     return None
@@ -94,9 +100,10 @@ class IPFSClient:
     def flush_pending(self, do_request: int, attempts: int = 3, delay: float = 5.0) -> None:
         """Deliver every queued blob to the intake for `do_request`. A blob the
         intake confirms (200) leaves the queue; one it refuses (4xx) raises at
-        once, since retrying the same bytes cannot change the answer; a
-        connection failure or 5xx is retried `attempts` times. No-op without an
-        intake."""
+        once, since retrying the same bytes cannot change the answer, and the
+        404 for a network the intake does not serve names the storage such a
+        network needs; a connection failure or 5xx is retried `attempts`
+        times. No-op without an intake."""
         if not self.intake_url or not self.pending:
             return
         for cid in list(self.pending):
@@ -112,6 +119,13 @@ class IPFSClient:
                     if response.status_code == 200:
                         del self.pending[cid]
                         break
+                    if response.status_code == 404 and "unknown network" in response.text:
+                        raise RuntimeError(
+                            f"{self.intake_url} does not serve network {self.network} (the "
+                            "intake serves the networks the bootnode's agent runs), so "
+                            f"{cid} for request {do_request} stays undelivered: on this "
+                            "network deliver through set_storage_ipfs(url, token), a Kubo "
+                            "RPC API of your own or the public API with a writer token.")
                     if 400 <= response.status_code < 500 and response.status_code != 409:
                         raise RuntimeError(
                             f"intake refused {cid} for request {do_request}: "
@@ -123,23 +137,6 @@ class IPFSClient:
                 raise RuntimeError(
                     f"intake did not accept {cid} for request {do_request} after "
                     f"{attempts} attempts: {last}")
-
-    def download_file(
-        self, ipfs_hash: str, download_path: str, attempt: int = 0
-    ) -> None:
-        gateway_url = f"https://ipfs.io/ipfs/{ipfs_hash}"
-        response = requests.get(url=gateway_url, timeout=60, headers=self.headers)
-
-        if response.status_code == 200:
-            with open(download_path, "wb") as file:
-                file.write(response.content)
-            print(f"File downloaded successfully to {download_path}")
-        else:
-            print(
-                f"Failed to download from IPFS. Attempt {attempt}. Status code: {response.status_code}. Response text: {response.text}.\n{'Trying again...' if attempt < 6 else ''}"
-            )
-            if attempt < 6:
-                self.download_file(ipfs_hash, download_path, attempt + 1)
 
     def get_file_content(self, ipfs_hash: str) -> Optional[str]:
         """Read one blob as UTF-8: the configured API first, the public

@@ -304,7 +304,6 @@ ZERO_CHECKSUM = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85
 
 class ECError(Enum):
     PARSE_ERROR = "The result is not a valid v3 result"
-    IPFS_DOWNLOAD_ERROR = "Unable to download results, will keep trying until the download is complete."
 
 class ECLog(IntEnum):
     ERROR = 1

@@ -35,7 +35,7 @@ from .enums import (
     UNSAFE_TRUSTEDZONE_SUFFIX,
     task_status_name,
 )
-from .ipfs import IPFSClient, PUBLIC_INTAKE
+from .ipfs import IPFSClient, INTAKE_NETWORKS, PUBLIC_INTAKE
 from .utils import (
     format_date,
     generate_random_hex_of_size,
@@ -148,6 +148,10 @@ class EthernityCloudRunner:
         if self.network_config is None:
             raise ValueError(f"Invalid network type: {network_type} for network {network_name}")
         self.trustedZoneImage = self.network_config.TRUSTEDZONE_IMAGE
+        # An intake client posts under its network key, so one built for the
+        # previous network is rebuilt for this one.
+        if self.ipfs_client is not None and self.ipfs_client.intake_url:
+            self.set_public_intake(self.ipfs_client.intake_url)
     def set_private_key(self, private_key: str) -> None:
         """Set the private key and derive signer."""
         if not private_key.startswith("0x") or len(private_key) != 66:
@@ -303,10 +307,8 @@ class EthernityCloudRunner:
         return self.bytes_to_hex(priv_key)
     def get_v3_image_metadata(self, challenge_hash: bytes) -> str:
         """Generate v3 image metadata."""
-        if not self.ipfs_client:
-            raise RuntimeError("IPFS client not initialized.")
         base64_encrypted_challenge = encrypt(challenge_hash, self.enclave_public_key)
-        challenge_ipfs_hash = self.ipfs_client.upload_to_ipfs(base64_encrypted_challenge)
+        challenge_ipfs_hash = self.storage().upload_to_ipfs(base64_encrypted_challenge)
         if challenge_ipfs_hash is None:
             raise ValueError("Failed to upload challenge to IPFS.")
         self.logger.info(f"Uploaded challenge to IPFS: {challenge_ipfs_hash}")
@@ -314,8 +316,6 @@ class EthernityCloudRunner:
         return f"{TRUSTEDZONE_VERSION}:{self.enclave_image_ipfs_hash}:{self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
     def get_v3_code_metadata(self, code: str) -> str:
         """Generate v3 code metadata."""
-        if not self.ipfs_client:
-            raise RuntimeError("IPFS client not initialized.")
         # as_hex=True is REQUIRED: sha256()'s default returns bytes, and
         # f-string interpolation of bytes writes the literal "b'...'" repr into
         # the on-chain metadata. The enclave then compares its computed hex
@@ -323,7 +323,7 @@ class EthernityCloudRunner:
         # PAYLOAD_CHECKSUM_ERROR (orders 1817-1819 on bloxberg testnet).
         script_checksum = sha256(code, True)
         base64_encrypted_script = encrypt(code.encode("utf-8"), self.enclave_public_key)
-        self.script_hash = self.ipfs_client.upload_to_ipfs(base64_encrypted_script)
+        self.script_hash = self.storage().upload_to_ipfs(base64_encrypted_script)
         if self.script_hash is None:
             raise ValueError("Failed to upload encrypted code to IPFS.")
         self.logger.info(f"Uploaded encrypted code to IPFS: {self.script_hash}")
@@ -395,7 +395,7 @@ class EthernityCloudRunner:
         self.logger.info(f"Request {self.do_request} was created successfully!")
         # With the public intake, the artefacts named in the request are
         # delivered now that the request they belong to is on chain.
-        self.ipfs_client.flush_pending(self.do_request)
+        self.storage().flush_pending(self.do_request)
         return True
     def parse_order_result(self, result: str) -> Dict[str, Any]:
         """Parse order result string."""
@@ -769,15 +769,44 @@ class EthernityCloudRunner:
             self.logger.error("The target address is not a valid node operator address")
         return is_node
     def set_storage_ipfs(self, ipfs_address: str, token: str = "") -> None:
-        """Upload and read through the application's own Kubo RPC API."""
+        """Upload and read through a Kubo RPC API: one of your own, or the
+        public API (https://ipfs.ethernity.cloud/api/v0) with a writer token
+        as `token`. The token is sent as the Authorization header of every
+        request."""
         self.ipfs_client = IPFSClient(ipfs_address, token)
     def set_public_intake(self, base_url: str = PUBLIC_INTAKE) -> None:
         """Upload through the bootnode's payload intake and read through its
-        public API. Artefact CIDs are computed locally and the bytes are
-        delivered once the DO request is on chain."""
-        network = f"{self.network_name.lower()}_{self.network_type.lower()}"
+        public API: the storage a runner uses when neither this nor
+        set_storage_ipfs() was called. Artefact CIDs are computed locally and
+        the bytes are delivered once the DO request is on chain, under the
+        current network's key."""
         self.ipfs_client = IPFSClient(f"{base_url.rstrip('/')}/api/v0", "",
-                                      intake_url=base_url, network=network)
+                                      intake_url=base_url, network=self._intake_network())
+    def _intake_network(self) -> str:
+        """The network's key in the intake's route, the node agent's name for
+        it: <network>_<type>, lower case (bloxberg_testnet)."""
+        return f"{self.network_name.lower()}_{self.network_type.lower()}"
+    def storage(self) -> IPFSClient:
+        """The client every upload and read goes through: the one
+        set_storage_ipfs() or set_public_intake() configured, else the
+        bootnode's payload intake, built on first use."""
+        if self.ipfs_client is None:
+            self.set_public_intake()
+        return self.ipfs_client
+    def _resolve_storage(self) -> None:
+        """Resolves the storage a new task's or session's artefacts go through
+        before the first transaction names them (storage() builds the
+        default). A runner that configured no storage on a network the
+        bootnode's payload intake does not serve (ipfs.INTAKE_NETWORKS) is
+        refused here, before any transaction."""
+        if self.ipfs_client is None and self._intake_network() not in INTAKE_NETWORKS:
+            raise RuntimeError(
+                "No storage is configured, and the default, the bootnode's payload intake, "
+                f"serves {', '.join(INTAKE_NETWORKS)}, not {self.network_name} "
+                f"{self.network_type}: call set_storage_ipfs(url, token) with a Kubo RPC API "
+                "of your own, or with the public API https://ipfs.ethernity.cloud/api/v0 and "
+                "a writer token; set_public_intake() uses the intake regardless.")
+        self.storage()
     def _read_result(self, result_cid: str, deadline: float) -> Optional[str]:
         """Read the result blob until the order's deadline, and for at least
         two minutes after the order closed: a result pinned at close may take
@@ -785,14 +814,12 @@ class EthernityCloudRunner:
         configured API, then the public gateway (IPFSClient.get_file_content);
         a miss is logged at debug level and asked again, and only giving up is
         a warning."""
-        if not self.ipfs_client:
-            return None
         until = max(deadline, time.time() + 120)
         attempt = 0
         while self.is_running():
             attempt += 1
             try:
-                content = self.ipfs_client.get_file_content(result_cid)
+                content = self.storage().get_file_content(result_cid)
             except Exception as e:
                 content = None
                 self.logger.debug(f"Result read attempt {attempt}: {e}")
@@ -876,6 +903,8 @@ class EthernityCloudRunner:
         retry_delay,
     ) -> None:
         trustedzone = self._resolve_trustedzone(trustedzone_enclave)
+        if not self.local_mode:
+            self._resolve_storage()
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self._fault = None
@@ -1098,6 +1127,7 @@ class EthernityCloudRunner:
             self._run_lock = threading.Lock()
         with self._run_lock:
             self.trustedZoneImage = self._resolve_trustedzone(trustedzone_enclave)
+            self._resolve_storage()
             self._fault = None
             if resources is None:
                 resources = {
@@ -1190,6 +1220,8 @@ class EthernityCloudRunner:
             self.image_registry_contract = ImageRegistryContract(
                 self.network_name, self.network_type, self.signer)
             try:
+                # send_input delivers through the storage.
+                self._resolve_storage()
                 # The trustedzone the order was placed with: field 2 of its
                 # image metadata (v3:image:trustedzone:compose:challenge:key).
                 image_fields = str(meta[1] or "").split(":")
@@ -1471,13 +1503,6 @@ class EthernityCloudRunner:
     def close(self) -> None:
         """Close resources and stop the runner."""
         self.running = False
-        if self.ipfs_client:
-            try:
-                self.ipfs_client.close()
-                self.logger.debug("Closed IPFS client")
-            except Exception:
-                pass
-            self.ipfs_client = None
         for attr in ['contract', 'image_registry_contract']:
             obj = getattr(self, attr, None)
             if obj:
@@ -1502,6 +1527,7 @@ class EthernityCloudRunner:
         self.processed_events = []
         self.result = None
         self.task_thread = None
+        self.ipfs_client = None
         self.contract = None
         self.token_contract = None
         self.protocol_contract = None
