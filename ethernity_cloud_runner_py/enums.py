@@ -267,7 +267,9 @@ class ECNetwork:
         # 'address_litvm_liteforge' entry in contract/abi/esrAbi.py.
         class LITEFORGE:
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0x55e0ad455Be85162b71a790f00Fc305680E3CE53'
-            PROTOCOL_ADDRESS='0x29D3eC870565B6A1510232bd950A8Bc8336f0EB2'
+            # The EthernityImplementationV2 1.1 of 2026-10-11, the PoX LitVM's
+            # CAS set validates orders on.
+            PROTOCOL_ADDRESS='0xE35991de1f2A435e29E70406FA2781b1AffCb168'
             TOKEN_ADDRESS='0x95Aa17fCFaAB75e8ed7d7DF218045795dCeB9c50'
             HEARTBEAT_CONTRACT_ADDRESS='0x6D7F920958dfb9a13729723C1007b04eB7950E58'
             TOKEN_NAME='tECLD'
