@@ -8,7 +8,7 @@ long_description = (Path(__file__).parent / "README.md").read_text(encoding="utf
 
 setup(
     name="ethernity-cloud-runner-py",
-    version="0.5.7",
+    version="0.5.8",
     url="https://github.com/ethernity-cloud/ethernity-cloud-runner-py",
     author="Ethernity Cloud Team",
     author_email="contact@ethernity.cloud",

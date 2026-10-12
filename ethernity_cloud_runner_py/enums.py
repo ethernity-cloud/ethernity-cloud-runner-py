@@ -266,7 +266,8 @@ class ECNetwork:
         # lookup key the runner builds, address_{network}_{type}, matches the
         # 'address_litvm_liteforge' entry in contract/abi/esrAbi.py.
         class LITEFORGE:
-            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x55e0ad455Be85162b71a790f00Fc305680E3CE53'
+            # The ECImageRegistryV3 of 2026-10-12.
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0xAf8Ce29103E1f59feDD49688ff070Ffc2346AF1D'
             # The EthernityImplementationV2 1.1 of 2026-10-11, the PoX LitVM's
             # CAS set validates orders on.
             PROTOCOL_ADDRESS='0xE35991de1f2A435e29E70406FA2781b1AffCb168'

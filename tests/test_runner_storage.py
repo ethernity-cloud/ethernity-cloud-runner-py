@@ -103,7 +103,7 @@ def test_mainnet_session_without_storage_is_refused_before_any_transaction():
 
 def test_a_testnet_the_intake_does_not_serve_is_refused_before_any_transaction():
     runner = EthernityCloudRunner("POLYGON", "AMOY")
-    with pytest.raises(RuntimeError, match="serves bloxberg_testnet, bloxberg_testnet_unsafe, not POLYGON AMOY"):
+    with pytest.raises(RuntimeError, match="serves bloxberg_testnet, bloxberg_testnet_unsafe, litvm_liteforge, litvm_liteforge_unsafe, not POLYGON AMOY"):
         runner.run(RESOURCES, "my-dapp-securelock", "v3", '___etny_result___("x")')
     assert runner.ipfs_client is None
     assert not runner.is_running()
@@ -124,16 +124,23 @@ def test_mainnet_runner_with_its_own_kubo_resolves_it():
 
 
 def test_an_explicit_public_intake_on_a_network_it_does_not_serve_is_refused_before_any_transaction():
-    """ecld-run's default on LitVM: the intake has no route for the network,
-    so the refusal comes before the DO request, not after it is on chain."""
-    runner = EthernityCloudRunner("LITVM", "LITEFORGE")
+    """ecld-run's default (the intake) on a network without an intake route:
+    the refusal comes before the DO request, not after it is on chain."""
+    runner = EthernityCloudRunner("POLYGON", "AMOY")
     runner.set_public_intake()
     with pytest.raises(RuntimeError) as failure:
         runner.run(RESOURCES, "my-dapp-securelock", "v3", '___etny_result___("x")')
     message = str(failure.value)
-    assert message.startswith("The bootnode's payload intake serves bloxberg_testnet, bloxberg_testnet_unsafe, not LITVM LITEFORGE")
+    assert message.startswith("The bootnode's payload intake serves bloxberg_testnet, bloxberg_testnet_unsafe, litvm_liteforge, litvm_liteforge_unsafe, not POLYGON AMOY")
     assert "set_storage_ipfs(url, token)" in message
     assert not runner.is_running()
+
+
+def test_litvm_resolves_the_default_intake():
+    runner = EthernityCloudRunner("LITVM", "LITEFORGE")
+    runner._resolve_storage()
+    assert runner.ipfs_client.network == "litvm_liteforge"
+    assert runner.ipfs_client.intake_url == PUBLIC_INTAKE
 
 
 def test_mainnet_runner_with_an_explicit_public_intake_is_refused():
