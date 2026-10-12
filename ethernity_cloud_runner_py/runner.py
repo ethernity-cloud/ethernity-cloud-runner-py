@@ -779,7 +779,10 @@ class EthernityCloudRunner:
         public API: the storage a runner uses when neither this nor
         set_storage_ipfs() was called. Artefact CIDs are computed locally and
         the bytes are delivered once the DO request is on chain, under the
-        current network's key."""
+        current network's key. The bootnode's intake serves ipfs.INTAKE_NETWORKS
+        only: a run or session on another network is refused by
+        _resolve_storage before any transaction; an intake of your own, named
+        by `base_url`, serves what its agent runs."""
         self.ipfs_client = IPFSClient(f"{base_url.rstrip('/')}/api/v0", "",
                                       intake_url=base_url, network=self._intake_network())
     def _intake_network(self) -> str:
@@ -796,16 +799,21 @@ class EthernityCloudRunner:
     def _resolve_storage(self) -> None:
         """Resolves the storage a new task's or session's artefacts go through
         before the first transaction names them (storage() builds the
-        default). A runner that configured no storage on a network the
-        bootnode's payload intake does not serve (ipfs.INTAKE_NETWORKS) is
-        refused here, before any transaction."""
-        if self.ipfs_client is None and self._intake_network() not in INTAKE_NETWORKS:
+        default). A runner whose storage is the bootnode's payload intake,
+        configured or by default, on a network that intake does not serve
+        (ipfs.INTAKE_NETWORKS) is refused here, before any transaction: a
+        delivery refused once the DO request is on chain would leave the
+        request's escrow on an order nobody approves."""
+        network = self._intake_network()
+        if network not in INTAKE_NETWORKS and (
+                self.ipfs_client is None or self.ipfs_client.intake_url == PUBLIC_INTAKE):
+            configured = ("No storage is configured, and the default, the bootnode's payload intake,"
+                          if self.ipfs_client is None else "The bootnode's payload intake")
             raise RuntimeError(
-                "No storage is configured, and the default, the bootnode's payload intake, "
-                f"serves {', '.join(INTAKE_NETWORKS)}, not {self.network_name} "
+                f"{configured} serves {', '.join(INTAKE_NETWORKS)}, not {self.network_name} "
                 f"{self.network_type}: call set_storage_ipfs(url, token) with a Kubo RPC API "
                 "of your own, or with the public API https://ipfs.ethernity.cloud/api/v0 and "
-                "a writer token; set_public_intake() uses the intake regardless.")
+                "a writer token.")
         self.storage()
     def _read_result(self, result_cid: str, deadline: float) -> Optional[str]:
         """Read the result blob until the order's deadline, and for at least

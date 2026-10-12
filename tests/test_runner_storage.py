@@ -88,7 +88,6 @@ def test_mainnet_run_without_storage_is_refused_before_any_transaction():
     assert "not BLOXBERG MAINNET" in message
     assert "set_storage_ipfs(url, token)" in message
     assert "writer token" in message
-    assert "set_public_intake()" in message
     assert runner.ipfs_client is None
     assert not runner.is_running()
     assert runner.task_thread is None
@@ -124,11 +123,32 @@ def test_mainnet_runner_with_its_own_kubo_resolves_it():
     assert runner.storage().headers == {"authorization": "writer-token"}
 
 
-def test_mainnet_runner_with_an_explicit_intake_resolves_it():
+def test_an_explicit_public_intake_on_a_network_it_does_not_serve_is_refused_before_any_transaction():
+    """ecld-run's default on LitVM: the intake has no route for the network,
+    so the refusal comes before the DO request, not after it is on chain."""
+    runner = EthernityCloudRunner("LITVM", "LITEFORGE")
+    runner.set_public_intake()
+    with pytest.raises(RuntimeError) as failure:
+        runner.run(RESOURCES, "my-dapp-securelock", "v3", '___etny_result___("x")')
+    message = str(failure.value)
+    assert message.startswith("The bootnode's payload intake serves bloxberg_testnet, bloxberg_testnet_unsafe, not LITVM LITEFORGE")
+    assert "set_storage_ipfs(url, token)" in message
+    assert not runner.is_running()
+
+
+def test_mainnet_runner_with_an_explicit_public_intake_is_refused():
     runner = EthernityCloudRunner("BLOXBERG", "MAINNET")
     runner.set_public_intake()
+    with pytest.raises(RuntimeError, match="not BLOXBERG MAINNET"):
+        runner._resolve_storage()
+
+
+def test_an_intake_of_ones_own_serves_any_network():
+    runner = EthernityCloudRunner("LITVM", "LITEFORGE")
+    runner.set_public_intake("https://intake.example")
     runner._resolve_storage()
-    assert runner.storage().network == "bloxberg_mainnet"
+    assert runner.storage().network == "litvm_liteforge"
+    assert runner.storage().intake_url == "https://intake.example"
 
 
 def test_testnet_runner_resolves_the_default_intake():
