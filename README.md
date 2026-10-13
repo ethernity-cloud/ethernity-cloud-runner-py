@@ -36,11 +36,9 @@ A wallet is a crucial tool within the Ethernity Cloud ecosystem, empowering user
 
 The wallet setup process with Metamask is detailed here: [Getting started with MetaMask](https://support.metamask.io/hc/en-us/articles/360015489531-Getting-started-with-MetaMask).
 
-Currently, there are two networks for using Ethernity Cloud. Please set up your wallet for the desired network following one of the articles below:
+Ethernity Cloud runs on several networks; set up your wallet for the one you intend to use: Bloxberg (mainnet and testnet), Polygon (mainnet) and Polygon Amoy, IoTeX Testnet, Ethereum Sepolia, and LitVM LiteForge.
 
-- OpenBeta Network on bloxberg
-- TestNet Network on bloxberg
-- MainNet Network on Polygon
+A testnet that has an ethernity-cas validator set -- the bloxberg testnet and LitVM LiteForge -- comes in two kinds. `EthernityCloudRunner("BLOXBERG", "TESTNET")` and `("LITVM", "LITEFORGE")` run the securelock in an enclave the set attests, on nodes whose platform it can attest (DCAP), and the set validates the order in full, as on mainnet. `("BLOXBERG", "TESTNET_UNSAFE")` and `("LITVM", "LITEFORGE_UNSAFE")` are the `-unsafe` networks beside them: the same chain and contracts, for hardware SGX platforms the CAS cannot attest (EPID-only, SGX1); their enclaves are debug-signed and self-signed from their measurement, so a result proves which image ran, not that an enclave ran it, and the validators judge such an order without the challenge-derived signer check. The securelock and trustedzone of an `-unsafe` network carry `-unsafe` in their registered names (see "Choosing the trustedzone"). Mainnet has no `-unsafe` network.
 
 ### 4. Code execution
 
@@ -112,7 +110,7 @@ This script connects the runner with the wallet's key, submits the task and poll
 
 ### Choosing the trustedzone
 
-`run()` and `run_session()` take `trustedzone_enclave`, the trustedzone the securelock was built against. It defaults to the network's (`etny-pynithy-testnet` on the bloxberg testnet); a nodenithy dApp passes `etny-nodenithy-testnet`.
+`run()` and `run_session()` take `trustedzone_enclave`, the trustedzone the securelock was built against. It defaults to the network's (`etny-pynithy-testnet` on the bloxberg testnet, a trustedzone the chain's ethernity-cas validator set provisions); a nodenithy dApp passes `etny-nodenithy-testnet`.
 
 A securelock published without a CAS (`<project>-unsafe`) runs on an `-unsafe` network, which you choose by name: `EthernityCloudRunner("BLOXBERG", "TESTNET_UNSAFE")` or `EthernityCloudRunner("LITVM", "LITEFORGE_UNSAFE")`. An `-unsafe` network has the chain and contracts of the network it is named after; its trustedzone is `etny-pynithy-testnet-unsafe` (`ecld-pynithy-litvm-testnet-unsafe` on LitVM), and a nodenithy dApp passes the `etny-nodenithy-...-unsafe` one. The runner runs an `-unsafe` trustedzone only on an `-unsafe` network and runs nothing else there, so a task that runs without a CAS always says so in the network it names.
 
@@ -171,7 +169,7 @@ By providing these resource requirements in the `resources` object, the task exe
 
 ### Storage and the result read
 
-A runner that configures no storage delivers the task's artefacts (the encrypted challenge, code and session inputs) through the bootnode's payload intake: each CID is computed locally and the bytes are posted to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>` once the DO request is on chain, with no token. The intake serves the networks the bootnode's agent runs, today the bloxberg testnet. `set_public_intake()` configures the same storage explicitly, and takes the base URL of another intake.
+A runner that configures no storage delivers the task's artefacts (the encrypted challenge, code and session inputs) through the bootnode's payload intake: each CID is computed locally and the bytes are posted to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>` once the DO request is on chain, with no token. The intake serves the networks the bootnode's agent runs, today the bloxberg testnet and LitVM LiteForge, each with its `-unsafe` twin (`ipfs.INTAKE_NETWORKS`). `set_public_intake()` configures the same storage explicitly, and takes the base URL of another intake.
 
 On a network the intake does not serve, a run with the default storage fails at delivery, after the DO request is on chain: the intake answers 404 for the network and the runner stops with a message that names `set_storage_ipfs`. Such a runner must call `set_storage_ipfs(url, token)` before `run()`. On a `MAINNET` network type the runner builds no default at all: `run()`, `run_session()` and `attach_session(order_id, securelock_enclave)` refuse before any transaction unless `set_storage_ipfs` or `set_public_intake` was called.
 

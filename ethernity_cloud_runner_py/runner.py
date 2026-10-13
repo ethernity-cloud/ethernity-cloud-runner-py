@@ -90,7 +90,6 @@ class EthernityCloudRunner:
         self.node_address: str = ""
         self.challenge_hash: bytes = b""
         self.do_hash: Optional[str] = None
-        self.do_request_id: int = -1
         self.do_request: int = -1
         self.order: Optional[Any] = None
         self.order_id: int = -1
@@ -743,12 +742,17 @@ class EthernityCloudRunner:
             return True
         self.logger.error(f"Approval failed for transaction {transaction_hash}.")
         return False
+    @property
+    def do_request_id(self) -> int:
+        """The DO request of the current run: the _rowNumber of its
+        _addDORequestEV (create_do_request), the order's request on
+        attach_task; -1 before the request is on chain and after reset()."""
+        return self.do_request
     def reset(self) -> None:
         """Reset state variables."""
         self.order = None
         self.order_id = -1
         self.do_hash = None
-        self.do_request_id = -1
         self.do_request = -1
         self.script_hash = ""
         self.file_set_hash = ""
