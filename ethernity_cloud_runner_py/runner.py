@@ -874,7 +874,8 @@ class EthernityCloudRunner:
         e.g. etny-nodenithy-testnet for a nodenithy dApp. Default: the
         network's (TRUSTEDZONE_IMAGE). A securelock published without a CAS
         runs on the -unsafe network (BLOXBERG TESTNET_UNSAFE, LITVM
-        LITEFORGE_UNSAFE) against an -unsafe trustedzone, and only there.
+        LITEFORGE_UNSAFE, ETHEREUM SEPOLIA_UNSAFE) against an -unsafe
+        trustedzone, and only there.
         max_retries: how many times to resubmit the task as a NEW DO request
         when it fails on the operator side (order timeout, unusable operator
         output, or an operator-fault task code, OPERATOR_FAULT_CODES). Failures

@@ -236,9 +236,13 @@ class ECNetwork:
 
     class ETHEREUM:
         class SEPOLIA:
-            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x55e0ad455Be85162b71a790f00Fc305680E3CE53'
-            PROTOCOL_ADDRESS='0x29D3eC870565B6A1510232bd950A8Bc8336f0EB2'
-            TOKEN_ADDRESS='0x95Aa17fCFaAB75e8ed7d7DF218045795dCeB9c50'
+            # The ECImageRegistryV3 of 2026-10-14.
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0xa7E43a269E3307cf9d246b07df2B89CAA1b4C42F'
+            # The EthernityImplementationV2 1.1 of 2026-10-14, the PoX Sepolia's
+            # CAS set validates orders on; its tECLD is the family's own. The
+            # previous family (0x29D3eC87..., 0x95Aa17fC...) is abandoned.
+            PROTOCOL_ADDRESS='0x798975F9FdD90A21Cb11Ac26F1377e1542c58f9c'
+            TOKEN_ADDRESS='0x2E27677fb67531eb09134fE331C27899f87ADe10'
             HEARTBEAT_CONTRACT_ADDRESS='0x6D7F920958dfb9a13729723C1007b04eB7950E58'
             TOKEN_NAME='tECLD'
             RPC_URL='https://ethereum-sepolia-rpc.publicnode.com'
@@ -259,6 +263,13 @@ class ECNetwork:
             REWARD_TYPE=2
             NETWORK_FEE=5
             ENCLAVE_FEE=10
+
+        class SEPOLIA_UNSAFE(SEPOLIA):
+            # The chain and contracts of SEPOLIA, with the trustedzones that
+            # run without a CAS: a task chosen to run unsafe names this
+            # network.
+            INTEGRATION_TEST_IMAGE='ecld-pynithy-ethereum-sepolia-unsafe'
+            TRUSTEDZONE_IMAGE='ecld-pynithy-ethereum-sepolia-unsafe'
 
     class LITVM:
         # LitVM (LiteForge) -- Litecoin EVM ZK-rollup on Arbitrum Orbit, gas

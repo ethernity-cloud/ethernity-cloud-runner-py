@@ -21,6 +21,9 @@ contract = {
     'address_bloxberg_testnet_unsafe': '0x0Ea1728EAE108FD3B9340ae91451348E2Cc6b4E4',
     'address_litvm_liteforge': '0x709052Fe77Af543d3d9FE2Ac06a15c635c8D4Be5',
     'address_litvm_liteforge_unsafe': '0x709052Fe77Af543d3d9FE2Ac06a15c635c8D4Be5',
+    # Deployed 2026-10-14 with Sepolia's PoX family.
+    'address_ethereum_sepolia': '0x9927809B61122B2af3f3b3A3303875e0687b8eE3',
+    'address_ethereum_sepolia_unsafe': '0x9927809B61122B2af3f3b3A3303875e0687b8eE3',
     'abi': [   {'inputs': [], 'name': 'BadSignature', 'type': 'error'},
     {'inputs': [], 'name': 'EmptyCID', 'type': 'error'},
     {   'inputs': [   {'internalType': 'uint256', 'name': 'stored', 'type': 'uint256'},
