@@ -47,30 +47,30 @@ class protocolContract:
         return self.token_address
     def get_protocol_address(self) -> Address:
         return self.protocol_address
-    def __transaction_object(self, gas, nonce=None) -> TxParams:
+    def __transaction_object(self, nonce=None) -> TxParams:
+        """The fee and nonce fields of a transaction. It carries no gas limit:
+        build_transaction then asks the node for the call's estimate, which
+        _build_sign_send sizes (a fixed figure sent an approve out of gas on
+        Sepolia, whose schedule prices a new storage slot several times the
+        local EVM's). The type is the hex string "0x2": build_transaction
+        passes the field to eth_estimateGas as given, and Tenderly's gateway
+        refuses the number 2."""
         if nonce is None:
             nonce = self.provider.eth.get_transaction_count(self.signer.address, "pending")
-
-        # Each caller sizes `gas` for its own operation (_addDORequest needs
-        # ~1M, _approveOrder ~100k), so it wins over the network default.
-        # GAS_LIMIT is 0 on every EIP1559 network, which the node rejects as
-        # "intrinsic gas too low"; it is only meaningful on legacy bloxberg.
-        gas_limit = gas or self.network_config.GAS_LIMIT
 
         if self.network_config.EIP1559 == True:
             latest_block = self.provider.eth.get_block("latest")
             max_fee_per_gas = int(latest_block.baseFeePerGas * 1.1) + self.provider.to_wei(self.network_config.MAX_PRIORITY_FEE_PER_GAS, self.network_config.GAS_PRICE_MEASURE) # 10% increase in previous block gas price + priority fee
             if max_fee_per_gas > self.provider.to_wei(self.network_config.MAX_FEE_PER_GAS, self.network_config.GAS_PRICE_MEASURE):
                 raise Exception("Network base fee is too high!")
-        
+
             transaction_options = {
-                "type": 2,
+                "type": "0x2",
                 "nonce": nonce,
                 "chainId": self.chain_id,
                 "from": self.signer.address,
                 'maxFeePerGas': max_fee_per_gas,
                 'maxPriorityFeePerGas': self.provider.to_wei(self.network_config.MAX_PRIORITY_FEE_PER_GAS, self.network_config.GAS_PRICE_MEASURE),
-                "gas": gas_limit,
             }
         else:
             transaction_options = {
@@ -78,7 +78,6 @@ class protocolContract:
                 "chainId": self.chain_id,
                 "from": self.signer.address,
                 "gasPrice": self.provider.to_wei(self.network_config.GAS_PRICE, self.network_config.GAS_PRICE_MEASURE),
-                "gas": gas_limit,
             }
         return transaction_options
 
@@ -93,8 +92,13 @@ class protocolContract:
 
         for attempt in range(max_attempts):
             try:
-                options = self.__transaction_object(gas, nonce=current_nonce)
+                options = self.__transaction_object(nonce=current_nonce)
+                # build_transaction fills `gas` with the node's estimate for the
+                # call on the current state; a quarter on top covers the state
+                # moving before the block, and the caller's figure, sized for
+                # the local EVM, stays as the floor.
                 tx = contract_fn.build_transaction(options)
+                tx["gas"] = max(int(tx["gas"] * 1.25), int(gas or 0))
                 signed_tx = self.provider.eth.account.sign_transaction(
                     tx, private_key=self.signer._private_key
                 )
