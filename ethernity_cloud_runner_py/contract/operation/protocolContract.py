@@ -231,6 +231,11 @@ class protocolContract:
             order_id
         )
         return self._build_sign_send(contract_fn, 100000)
+    def cancel_do_request(self, request_id: int) -> HexStr:
+        contract_fn = self.protocol_contract.functions._cancelDORequest(
+            request_id
+        )
+        return self._build_sign_send(contract_fn, 200000)
     def get_result_from_order(self, order_id: int) -> Any:
         self.protocol_contract.caller()._getOrder(order_id)
         return self.protocol_contract.caller()._getResultFromOrder(order_id)

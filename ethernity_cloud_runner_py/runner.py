@@ -49,6 +49,9 @@ import logging
 import random
 LAST_BLOCKS = 20
 TRUSTEDZONE_VERSION = "v3"
+# How long check_order_for_task waits for a node to place an order on the DO
+# request before cancel_unclaimed_request cancels it; set_order_wait changes it.
+DEFAULT_ORDER_WAIT_SECONDS = 600
 
 
 class OperatorFaultError(Exception):
@@ -173,6 +176,11 @@ class EthernityCloudRunner:
         provider = self.contract.get_provider()
         if not provider.is_connected():
             raise ConnectionError("Failed to connect to Web3 provider.")
+    def set_order_wait(self, seconds: float) -> None:
+        """How long a task waits for a node to place an order on its DO
+        request before the request is cancelled and its escrow returned
+        (default DEFAULT_ORDER_WAIT_SECONDS)."""
+        self.order_wait_seconds = float(seconds)
     def set_log_level(self, level: str) -> None:
         """Set the logging level."""
         self.log_level = ECLog[level.upper()]
@@ -640,7 +648,11 @@ class EthernityCloudRunner:
         backoff_factor = 2
         current_delay = initial_delay
         retry_count = 0
+        wait_seconds = getattr(self, "order_wait_seconds", DEFAULT_ORDER_WAIT_SECONDS)
+        deadline = time.monotonic() + wait_seconds
         while self.is_running():
+            if time.monotonic() >= deadline:
+                return self.cancel_unclaimed_request(wait_seconds)
             try:
                 if self.find_order(self.do_request):
                     self.logger.info("Connected!")
@@ -660,6 +672,29 @@ class EthernityCloudRunner:
                 time.sleep(current_delay)
                 retry_count += 1
                 current_delay = min(initial_delay * (backoff_factor ** retry_count), max_delay)
+        return False
+    def cancel_unclaimed_request(self, wait_seconds: float) -> bool:
+        """The DO request had no order after the wait: cancel it, which
+        returns its escrow, and return False. The contract refuses the cancel
+        once a node has booked the request; the order that node placed is
+        then taken (True) and the task goes on with it."""
+        self.logger.warning(f"No node took request {self.do_request} within {wait_seconds} s; cancelling it")
+        cancel_error = None
+        try:
+            transaction_hash = self.contract.cancel_do_request(self.do_request)
+            if self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100):
+                self.logger.info(f"Request {self.do_request} cancelled; its escrow is returned")
+                return False
+            cancel_error = f"cancel transaction {transaction_hash} failed"
+        except Exception as e:
+            cancel_error = raw_rpc_error_message(e) if isinstance(e, Web3RPCError) else str(e)
+        try:
+            if self.find_order(self.do_request):
+                self.logger.info(f"Request {self.do_request} was booked meanwhile (order {self.order_id}); continuing with it")
+                return True
+        except Exception as e:
+            self.logger.error(f"Could not look the order of request {self.do_request} up: {e}")
+        self.logger.error(f"Request {self.do_request} could not be cancelled: {cancel_error}")
         return False
     def approve_task(self) -> bool:
         """Approve the task."""

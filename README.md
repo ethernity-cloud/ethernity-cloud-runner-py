@@ -167,6 +167,8 @@ The `resources` parameter, the first argument of the `run` method, is a dict tha
 
 By providing these resource requirements in the `resources` object, the task execution engine (EthernityCloudRunner) can use this information to allocate the necessary resources and process the task accordingly on the specified TESTNET network.
 
+When no node places an order on the request within the order wait (`runner.set_order_wait(seconds)`, default 600), the runner cancels the request, which returns its escrow, and the task fails. If a node booked the request just before the cancel, the cancel is refused by the contract and the task goes on with that node's order.
+
 ### Storage and the result read
 
 A runner that configures no storage delivers the task's artefacts (the encrypted challenge, code and session inputs) through the bootnode's payload intake: each CID is computed locally and the bytes are posted to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>` once the DO request is on chain, with no token. The intake serves the networks the bootnode's agent runs, today the bloxberg testnet, LitVM LiteForge and Ethereum Sepolia, each with its `-unsafe` twin (`ipfs.INTAKE_NETWORKS`). `set_public_intake()` configures the same storage explicitly, and takes the base URL of another intake.
