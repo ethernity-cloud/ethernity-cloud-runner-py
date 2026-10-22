@@ -66,8 +66,8 @@ def test_a_failed_cancel_with_no_order_ends_the_wait(monkeypatch):
     assert calls["cancel"] == [9]
 
 
-def test_the_default_wait_is_ten_minutes(monkeypatch):
+def test_the_default_wait_is_thirty_minutes(monkeypatch):
     t = _clock(monkeypatch)
     r, _ = _runner(cancel=lambda: TX)
     assert r.check_order_for_task() is False
-    assert t["now"] >= runner_module.DEFAULT_ORDER_WAIT_SECONDS == 600
+    assert t["now"] >= runner_module.DEFAULT_ORDER_WAIT_SECONDS == 1800

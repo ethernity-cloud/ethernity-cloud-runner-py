@@ -167,7 +167,7 @@ The `resources` parameter, the first argument of the `run` method, is a dict tha
 
 By providing these resource requirements in the `resources` object, the task execution engine (EthernityCloudRunner) can use this information to allocate the necessary resources and process the task accordingly on the specified TESTNET network.
 
-When no node places an order on the request within the order wait (`runner.set_order_wait(seconds)`, default 600), the runner cancels the request, which returns its escrow, and the task fails. If a node booked the request just before the cancel, the cancel is refused by the contract and the task goes on with that node's order.
+When no node places an order on the request within the order wait (`runner.set_order_wait(seconds)`, default 1800), the runner cancels the request, which returns its escrow, and the task fails. If a node booked the request just before the cancel, the cancel is refused by the contract and the task goes on with that node's order.
 
 ### Storage and the result read
 

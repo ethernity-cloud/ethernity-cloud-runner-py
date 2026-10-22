@@ -51,7 +51,9 @@ LAST_BLOCKS = 20
 TRUSTEDZONE_VERSION = "v3"
 # How long check_order_for_task waits for a node to place an order on the DO
 # request before cancel_unclaimed_request cancels it; set_order_wait changes it.
-DEFAULT_ORDER_WAIT_SECONDS = 600
+# A mainnet node defers a request by up to (registered nodes / 25) blocks to
+# spread orders.
+DEFAULT_ORDER_WAIT_SECONDS = 1800
 
 
 class OperatorFaultError(Exception):
