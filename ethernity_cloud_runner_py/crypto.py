@@ -9,7 +9,9 @@ from base64 import a85decode, a85encode
 from typing import Any
 
 from Crypto.Cipher import AES
+from Crypto.Hash import SHA256
 from Crypto.PublicKey import ECC
+from Crypto.Signature import DSS
 
 # from cryptography.hazmat.primitives.asymmetric import ec
 from nacl.public import Box, PrivateKey, PublicKey
@@ -102,6 +104,19 @@ def ecc_read_key(public_key_file: str) -> Any:
     with open(public_key_file) as r:
         key = ECC.import_key(r.read())
         return key
+
+
+def verify_certificate_signature(certificate_pem: str, message: bytes, signature_der: bytes) -> bool:
+    """Whether `signature_der` (ECDSA, SHA-256, DER) over `message` was made
+    with the key of the certificate `certificate_pem` carries: the signatures
+    a trustedzone makes with its certificate key (etny_crypto.sign_data),
+    its session's task wallet attestation among them."""
+    try:
+        key = ECC.import_key(certificate_pem)
+        DSS.new(key, "fips-186-3", encoding="der").verify(SHA256.new(message), signature_der)
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 def encrypt(message: bytes, public_key_file: str) -> bytes:

@@ -13,9 +13,11 @@ Trust model, mirrored from the enclave side:
 - inputs are transactions from THIS wallet (the contract only accepts the
   data owner), ciphertext encrypted for the trustedzone certificate, digest
   bound in the row;
-- every output row's signature is verified against order.dproc -- the
-  task wallet the enclave anchored on-chain -- BEFORE the payload is
-  decrypted or delivered, so the operator cannot forge or alter outputs;
+- every output row's signature is verified against the task wallet the
+  trustedzone attests in the session's 'etny-sw' row, signed with the key
+  of the certificate the Image Registry holds for it (the certificate the
+  challenge was sealed with) -- BEFORE the payload is decrypted or
+  delivered, so the operator cannot forge or alter outputs;
 - liveness (is_running / get_status) derives from chain state alone.
 """
 
@@ -26,10 +28,11 @@ from typing import Any, Callable, Dict, List, Optional
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
-from .crypto import decrypt_nacl, encrypt
+from .crypto import decrypt_nacl, encrypt, verify_certificate_signature
 
 SESSION_INPUT_KEY = "etny-si"
 SESSION_OUTPUT_KEY = "etny-so"
+SESSION_WALLET_KEY = "etny-sw"
 SESSION_WIRE_VERSION = "v1"
 MAX_SESSION_MESSAGES = 256
 # Mirror of the enclave's input-acceptance margin (M3): sending inside this
@@ -81,6 +84,10 @@ class EthernityCloudSession:
         self._input_seq = self._count_my_inputs()
         self.outputs: List[Dict[str, Any]] = []
         self.closed = False
+        # The task wallet the trustedzone attested in the session's 'etny-sw'
+        # row: the signer every output row is checked against. None until
+        # that row has been read and verified.
+        self._attested_wallet: Optional[str] = None
 
     # ----------------------------------------------------------------- helpers
 
@@ -111,11 +118,42 @@ class EthernityCloudSession:
                     continue
         return seq
 
-    def _task_wallet(self) -> str:
-        """order.dproc: the enclave task wallet, anchored on-chain by
-        _addProcessorToOrder. The signature authority for output rows."""
-        order = self._caller()._getOrder(self.order_id)
-        return str(order[1])
+    def _task_wallet(self) -> Optional[str]:
+        """The task wallet the output rows are signed with: attested by the
+        trustedzone in the session's 'etny-sw' row, signed with the key of
+        the certificate the Image Registry holds for it. None until that
+        row has been read and verified."""
+        return self._attested_wallet
+
+    def _accept_wallet_attestation(self, value: str) -> bool:
+        """Verify an 'etny-sw' row, 'v1:<orderId>:<taskWallet>:<sigDerHex>',
+        against the trustedzone's certificate (the one the challenge was
+        sealed with) and keep its wallet. A row that does not verify is
+        ignored: a node cannot name the signer of this session's outputs."""
+        parts = value.split(":")
+        if len(parts) != 4 or parts[0] != SESSION_WIRE_VERSION:
+            return False
+        wallet, sig = parts[2], parts[3]
+        try:
+            if int(parts[1]) != self.order_id:
+                return False
+            signature = bytes.fromhex(sig[2:] if sig.startswith("0x") else sig)
+        except ValueError:
+            return False
+        message = f"{SESSION_WALLET_KEY}|{self.order_id}|{wallet}".encode("utf-8")
+        if not verify_certificate_signature(self.runner.enclave_public_key, message, signature):
+            self.runner.logger.error(
+                f"[session] task wallet attestation of {wallet} does not verify against the "
+                f"trustedzone's certificate -- IGNORING")
+            return False
+        if self._attested_wallet is not None and self._attested_wallet.lower() != wallet.lower():
+            self.runner.logger.error(
+                f"[session] a second task wallet attestation ({wallet}) differs from the first "
+                f"({self._attested_wallet}) -- IGNORING")
+            return False
+        self._attested_wallet = wallet
+        self.runner.logger.info(f"[session] task wallet attested by the trustedzone: {wallet}")
+        return True
 
     # ------------------------------------------------------------------ status
 
@@ -190,9 +228,11 @@ class EthernityCloudSession:
     # ------------------------------------------------------------------ output
 
     def poll_outputs(self) -> List[Dict[str, Any]]:
-        """Read new etny-so rows, verify each signature against the on-chain
-        task wallet, fetch + verify + decrypt the payload. Returns only the
-        NEW verified messages (also appended to self.outputs)."""
+        """Read new rows: the 'etny-sw' row attests the task wallet, each
+        'etny-so' row is verified against it, its payload fetched, verified
+        and decrypted. Returns only the NEW verified messages (also appended
+        to self.outputs). An output row before any attestation is discarded:
+        its signer cannot be checked."""
         try:
             count = int(self._caller()._getMetadataCountForDPRequest(self.dp_req))
         except Exception as e:
@@ -205,8 +245,18 @@ class EthernityCloudSession:
                 key, value = self._caller()._getMetadataValueForDPRequest(self.dp_req, i)
             except Exception:
                 break
-            self._rows_seen = i + 1
+            if key == SESSION_WALLET_KEY:
+                self._accept_wallet_attestation(str(value or ""))
+                self._rows_seen = i + 1
+                continue
             if key != SESSION_OUTPUT_KEY:
+                self._rows_seen = i + 1
+                continue
+            self._rows_seen = i + 1
+            if self._attested_wallet is None:
+                self.runner.logger.error(
+                    f"[session] output row {i} precedes the task wallet attestation; its signer "
+                    f"cannot be checked -- DISCARDING")
                 continue
             msg = self._verify_output_row(str(value or ""))
             if msg is not None:
@@ -235,10 +285,10 @@ class EthernityCloudSession:
             self.runner.logger.warning(f"[session] output {seq}: bad signature encoding ({e})")
             return None
         task_wallet = self._task_wallet()
-        if signer.lower() != task_wallet.lower():
+        if task_wallet is None or signer.lower() != task_wallet.lower():
             self.runner.logger.error(
                 f"[session] output {seq}: signature by {signer}, expected the "
-                f"task wallet {task_wallet} -- DISCARDING (operator forgery?)")
+                f"attested task wallet {task_wallet} -- DISCARDING (operator forgery?)")
             return None
         msg = {"seq": seq, "ack": ack, "status": status, "code": code, "data": None}
         if not cid:
