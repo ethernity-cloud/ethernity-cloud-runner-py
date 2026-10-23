@@ -139,6 +139,8 @@ A task the enclave reports with a non-zero task code, such as `BASE_EXCEPTION` f
 
 `run(..., input_data="...")` sends a string to the task as its input dataset, read in the payload as `___etny_data_set___` (`ecld.input`). It is encrypted for the trustedzone and stored like the payload, and the request carries its sha256, which the trustedzone verifies before the securelock receives it. An interactive session takes its inputs through `send_input` instead.
 
+Every artefact (challenge, payload, input) is stored as an IPFS node with its default settings stores a file added with `--cid-version=1 --raw-leaves`: in blocks of 256 KiB, a single block as it is, several under a UnixFS tree. The runner computes that CID itself, so an artefact of any size is named in the request before it is uploaded, and the bootnode's payload intake takes it up to its 100 MiB body cap.
+
 The `ECEvent` steps, in order: `INIT` (the wallet balance, the node address and the enclave's registry entry are checked, the DO request is placed and the artefacts delivered), `CREATED` (waits for a node to place an order), `ORDER_PLACED` (the order is approved), `IN_PROGRESS` (the result is awaited and verified) and `FINISHED`. A failure on the operator's side (an order that times out, a result that does not verify, an operator-fault task code) resubmits the task as a new DO request up to `max_retries` times (an argument of `run()`, 2 by default) before `ERROR` is set.
 
 ### Task resources

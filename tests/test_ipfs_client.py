@@ -4,7 +4,7 @@ requests is replaced by a recorder; no request leaves the process."""
 import pytest
 
 from ethernity_cloud_runner_py import ipfs
-from ethernity_cloud_runner_py.ipfs import IPFSClient, RAW_BLOCK_PARAMS, cidv1_raw
+from ethernity_cloud_runner_py.ipfs import IPFSClient, RAW_BLOCK_PARAMS, cidv1_raw, unixfs_cid
 
 
 class Response:
@@ -100,24 +100,44 @@ def test_intake_client_queues_the_bytes_without_a_request(monkeypatch):
     assert calls == []
 
 
-def test_adds_use_chunks_of_kubos_largest_block():
-    assert RAW_BLOCK_PARAMS["chunker"] == "size-1048576"
+def test_adds_use_kubos_default_chunk_size():
+    assert ipfs.BLOCK_SIZE == 262144
+    assert RAW_BLOCK_PARAMS["chunker"] == "size-262144"
 
 
-def test_the_intake_takes_an_artefact_of_one_block(monkeypatch):
-    client = IPFSClient("https://ipfs.ethernity.cloud/api/v0",
-                        intake_url="https://ipfs.ethernity.cloud", network="bloxberg_testnet")
-    content = b"x" * ipfs.RAW_BLOCK_MAX
-    assert client.upload_to_ipfs(content) == cidv1_raw(content)
+def pattern(n):
+    """The first n bytes of the byte values 0..250 repeated: the files Kubo
+    0.36.0 and 0.42.0 named the CIDs below, through `add --cid-version=1
+    --raw-leaves`, with the default chunker and with the chunker passed."""
+    unit = bytes(range(251))
+    return (unit * (n // len(unit) + 1))[:n]
 
 
-def test_the_intake_refuses_an_artefact_above_one_block_before_any_request(monkeypatch):
+def test_content_up_to_one_block_is_named_by_its_raw_cid():
+    content = pattern(ipfs.BLOCK_SIZE)
+    assert unixfs_cid(content) == cidv1_raw(content) == "bafkreibruh455iawsviqslif5c7uurdcfdemh22mtnytyzvnzn75kpejxy"
+
+
+def test_content_above_one_block_is_named_by_its_unixfs_root():
+    assert unixfs_cid(pattern(ipfs.BLOCK_SIZE + 1)) == "bafybeiexg2oqkfnj56l7fcmawswqbijt5shq4b5rg6a546uwpkqqzwjioi"
+    assert unixfs_cid(pattern(648000)) == "bafybeicnawjqvxvtindqftaj5acjkqb6lh5sove2uqkdrzjkwooypl56zu"
+    assert unixfs_cid(pattern(1048576)) == "bafybeiedpcapwld4tkgtzwahfofgn4wex5ryysf4se6hwpmlrsh4ntnrau"
+    assert unixfs_cid(pattern(2621440)) == "bafybeichq3thyi62tokqze6l4467yvja3nw7w34y7w52vn6h7lyo7qgxoy"
+
+
+def test_more_blocks_than_a_node_links_make_a_second_level():
+    """184330 bytes in 1 KiB blocks are 181 leaves: 174 under one node and 7
+    under another, both under the root (Kubo, chunker=size-1024)."""
+    assert unixfs_cid(pattern(184330), block_size=1024) == "bafybeids2yxkrcqqq6cpa7lgs6hv5xpsfn2bctwvljcrq73hhhzhszxkvy"
+
+
+def test_the_intake_queues_an_artefact_of_any_size_under_its_cid(monkeypatch):
     calls = post_answering(monkeypatch)
     client = IPFSClient("https://ipfs.ethernity.cloud/api/v0",
                         intake_url="https://ipfs.ethernity.cloud", network="bloxberg_testnet")
-    with pytest.raises(ValueError, match="set_storage_ipfs"):
-        client.upload_to_ipfs(b"x" * (ipfs.RAW_BLOCK_MAX + 1))
-    assert client.pending == {}
+    content = pattern(648000)
+    assert client.upload_to_ipfs(content) == "bafybeicnawjqvxvtindqftaj5acjkqb6lh5sove2uqkdrzjkwooypl56zu"
+    assert client.pending == {"bafybeicnawjqvxvtindqftaj5acjkqb6lh5sove2uqkdrzjkwooypl56zu": content}
     assert calls == []
 
 

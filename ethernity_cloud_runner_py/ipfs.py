@@ -6,12 +6,17 @@ from typing import Optional
 import requests  # type: ignore
 
 # Every blob the runner adds (challenge, code, input, session rows) is stored
-# as CIDv1 raw sha256 blocks of at most RAW_BLOCK_MAX bytes, Kubo's largest
-# chunk: a blob of up to one block has the CID base32(0x01 0x55 0x12 0x20 ||
-# sha256(content)), computable from the bytes alone, without an IPFS node. The
-# node adds with the same parameters (mvp-pox-node utils.py add_bytes_raw).
-RAW_BLOCK_MAX = 1048576
-RAW_BLOCK_PARAMS = {"cid-version": "1", "raw-leaves": "true", "chunker": f"size-{RAW_BLOCK_MAX}"}
+# as Kubo's `add --cid-version=1 --raw-leaves` stores it with its default
+# chunker: in raw sha256 blocks of BLOCK_SIZE bytes (the last one shorter), a
+# single block as it is, several under a balanced UnixFS tree of at most
+# LINKS_PER_NODE blocks per node. unixfs_cid() computes the resulting CID from
+# the bytes alone, without an IPFS node, and an IPFS node adding the same
+# bytes with its default settings names them the same; the chunker is passed
+# all the same, for a node whose default was changed. The node adds with the
+# same parameters (mvp-pox-node utils.py add_bytes_raw).
+BLOCK_SIZE = 262144
+LINKS_PER_NODE = 174
+RAW_BLOCK_PARAMS = {"cid-version": "1", "raw-leaves": "true", "chunker": f"size-{BLOCK_SIZE}"}
 
 # The bootnode's payload intake: a runner with no IPFS API of its own delivers
 # each artefact to POST {intake}/payload/<network>/<doRequestId>/<cid> after
@@ -33,12 +38,66 @@ PUBLIC_GATEWAY = "https://ipfs.io/ipfs"
 READ_TIMEOUT = (10, 60)
 
 
+def _b32(cid: bytes) -> str:
+    return "b" + base64.b32encode(cid).decode("ascii").lower().rstrip("=")
+
+
+def _varint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _field(number: int, wire: int, payload: bytes) -> bytes:
+    """A protobuf field: varint (wire 0) or length-delimited (wire 2)."""
+    tag = _varint((number << 3) | wire)
+    return tag + (_varint(len(payload)) + payload if wire == 2 else payload)
+
+
+def _raw_cid(content: bytes) -> bytes:
+    """CIDv1, codec raw (0x55), sha2-256 (0x12, 32 bytes)."""
+    return bytes([0x01, 0x55, 0x12, 0x20]) + hashlib.sha256(content).digest()
+
+
+def _file_node(children):
+    """A dag-pb UnixFS File node over `children`, each (cid, tsize, filesize);
+    returns (cid, tsize, filesize). Links come before Data in dag-pb; a link
+    carries the child's CID, an empty Name and its Tsize, the size of the
+    child's subtree; Data is UnixFS Type=File(2), filesize, blocksizes."""
+    links = b"".join(
+        _field(2, 2, _field(1, 2, cid) + _field(2, 2, b"") + _field(3, 0, _varint(tsize)))
+        for cid, tsize, _ in children)
+    filesize = sum(size for _, _, size in children)
+    data = _field(1, 0, _varint(2)) + _field(3, 0, _varint(filesize))
+    data += b"".join(_field(4, 0, _varint(size)) for _, _, size in children)
+    block = links + _field(1, 2, data)
+    cid = bytes([0x01, 0x70, 0x12, 0x20]) + hashlib.sha256(block).digest()
+    return cid, len(block) + sum(tsize for _, tsize, _ in children), filesize
+
+
+def unixfs_cid(content: bytes, block_size: int = BLOCK_SIZE) -> str:
+    """The CID Kubo gives `content` for `add` with RAW_BLOCK_PARAMS: the raw
+    block's CID up to one block, else the root of the balanced UnixFS tree
+    over the blocks, LINKS_PER_NODE to a node, every node full but the last."""
+    if len(content) <= block_size:
+        return _b32(_raw_cid(content))
+    nodes = [(_raw_cid(content[i:i + block_size]), len(content[i:i + block_size]), len(content[i:i + block_size]))
+             for i in range(0, len(content), block_size)]
+    while len(nodes) > 1:
+        nodes = [_file_node(nodes[i:i + LINKS_PER_NODE]) for i in range(0, len(nodes), LINKS_PER_NODE)]
+    return _b32(nodes[0][0])
+
+
 def cidv1_raw(content: bytes) -> str:
-    """The CID Kubo returns for `add` with RAW_BLOCK_PARAMS of up to
-    RAW_BLOCK_MAX bytes, from the bytes."""
-    digest = hashlib.sha256(content).digest()
-    raw = bytes([0x01, 0x55, 0x12, 0x20]) + digest
-    return "b" + base64.b32encode(raw).decode("ascii").lower().rstrip("=")
+    """The CID of `content` as one raw block: its CID through RAW_BLOCK_PARAMS
+    up to BLOCK_SIZE bytes."""
+    return _b32(_raw_cid(content))
 
 
 class IPFSClient:
@@ -68,18 +127,11 @@ class IPFSClient:
         `attempts` times. A 401 or 403 raises at once: the API admits only a
         caller with a writer token, which repeating the add cannot supply.
 
-        Through the intake, a blob above RAW_BLOCK_MAX raises ValueError: its
-        CID is a DAG root only an IPFS node computes, so the intake, which
-        checks the bytes against the CID the request names, would refuse it
-        after the request had been paid for."""
+        Through the intake the CID is computed here (unixfs_cid) and the bytes
+        are delivered by flush_pending once the request names the CID."""
         content = self._data_bytes(data)
         if self.intake_url:
-            if len(content) > RAW_BLOCK_MAX:
-                raise ValueError(
-                    f"a {len(content)}-byte artefact is above the {RAW_BLOCK_MAX}-byte limit of the payload "
-                    f"intake; deliver it through set_storage_ipfs(url, token), an IPFS API of your own "
-                    f"or the public API with a writer token")
-            cid = cidv1_raw(content)
+            cid = unixfs_cid(content)
             self.pending[cid] = content
             return cid
 
