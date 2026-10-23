@@ -131,7 +131,13 @@ This special function plays a crucial role in ensuring that the results of execu
 
 - `is_running()` is `True` while that thread works and `False` once the task has finished or failed.
 - `get_state()` returns a dict: `status` is the `ECStatus` name, `RUNNING` until the task ends in `SUCCESS` or `ERROR`; `progress` is the `ECEvent` name of the step the task is at; `last_error` is the message of the failure that set `ERROR`, `None` otherwise; `result` is what `get_result()` returns; `processed_events` lists the `ECEvent` names already completed and `remaining_events` those still queued.
-- `get_result()` returns `None` until the task has finished, then a dict whose `value` is what the task passed to `___etny_result___`, `result_task_code` the name of the enclave's task code (`SUCCESS`, `PAYLOAD_CHECKSUM_ERROR`, ...), `result_task_code_int` its number and `order_id` the order the result was read from.
+- `get_result()` returns `None` until the task has finished, then a dict whose `value` is what the task passed to `___etny_result___`, `result_task_code` the name of the enclave's task code (`SUCCESS`, `PAYLOAD_CHECKSUM_ERROR`, ...), `result_task_code_int` its number, `success` whether that code is `0`, and `order_id` the order the result was read from.
+
+A task the enclave reports with a non-zero task code, such as `BASE_EXCEPTION` for an exception raised in the dApp, ends in `ERROR`: `last_error` names the code, and `get_result()` still returns the result, whose `value` is the enclave's error report (for an exception, its traceback).
+
+### Input dataset
+
+`run(..., input_data="...")` sends a string to the task as its input dataset, read in the payload as `___etny_data_set___` (`ecld.input`). It is encrypted for the trustedzone and stored like the payload, and the request carries its sha256, which the trustedzone verifies before the securelock receives it. An interactive session takes its inputs through `send_input` instead.
 
 The `ECEvent` steps, in order: `INIT` (the wallet balance, the node address and the enclave's registry entry are checked, the DO request is placed and the artefacts delivered), `CREATED` (waits for a node to place an order), `ORDER_PLACED` (the order is approved), `IN_PROGRESS` (the result is awaited and verified) and `FINISHED`. A failure on the operator's side (an order that times out, a result that does not verify, an operator-fault task code) resubmits the task as a new DO request up to `max_retries` times (an argument of `run()`, 2 by default) before `ERROR` is set.
 

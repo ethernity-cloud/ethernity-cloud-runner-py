@@ -100,6 +100,7 @@ class EthernityCloudRunner:
         self.order_id: int = -1
         self.script_hash: str = ""
         self.file_set_hash: str = ""
+        self.input_data: Optional[str] = None
         self.order_placed_timer: Optional[Any] = None  # Unused? Consider removing
         self.task_has_been_picked_for_approval: bool = False
         self.get_result_from_order_repeats: int = 1
@@ -348,16 +349,29 @@ class EthernityCloudRunner:
             )
         return f"{TRUSTEDZONE_VERSION}:{self.script_hash}:{script_checksum}"
     def get_v3_input_metadata(self) -> str:
-        """Generate v3 input metadata."""
-        # v4 request: emit the plain ZERO_CHECKSUM for empty input (not a
-        # signature). Matches the JS runner and the v4-only enclave validation.
-        # Interactive sessions mark the request with a 'v3s' version tag --
-        # the trustedzone parses it through the same v3 branch but keeps the
-        # enclaves alive for the order duration.
-        version = (f"{TRUSTEDZONE_VERSION}s"
-                   if getattr(self, "_session_request", False)
-                   else TRUSTEDZONE_VERSION)
-        return f"{version}::{ZERO_CHECKSUM}"
+        """Generate v3 input metadata: '<version>:<cid>:<sha256>' for the run's
+        input dataset, or '<version>::<ZERO_CHECKSUM>' when it has none.
+
+        The dataset is encrypted for the trustedzone and uploaded like the
+        payload; the node fetches the CID into the task's input.txt and the
+        trustedzone checks its plain sha256 against the checksum here, then
+        hands it to the securelock as ___etny_data_set___ / ecld.input.
+        Interactive sessions mark the request with a 'v3s' version tag --
+        the trustedzone parses it through the same v3 branch but keeps the
+        enclaves alive for the order duration."""
+        session = getattr(self, "_session_request", False)
+        version = f"{TRUSTEDZONE_VERSION}s" if session else TRUSTEDZONE_VERSION
+        input_data = None if session else getattr(self, "input_data", None)
+        if not input_data:
+            self.file_set_hash = ""
+            return f"{version}::{ZERO_CHECKSUM}"
+        input_checksum = sha256(input_data, True)
+        base64_encrypted_input = encrypt(input_data.encode("utf-8"), self.enclave_public_key)
+        self.file_set_hash = self.storage().upload_to_ipfs(base64_encrypted_input)
+        if self.file_set_hash is None:
+            raise ValueError("Failed to upload encrypted input to IPFS.")
+        self.logger.info(f"Uploaded encrypted input to IPFS: {self.file_set_hash}")
+        return f"{version}:{self.file_set_hash}:{input_checksum}"
     def create_do_request(self, image_metadata: str, code_metadata: str, input_metadata: str, node_address: Address) -> bool:
         """Create a DO request on the contract."""
         if not self.contract:
@@ -602,11 +616,11 @@ class EthernityCloudRunner:
             self._fault = f"order {order_id}: result checksum verification failed"
             return None
         return self._apply_envelope({
-            "success": True,
             "contract_address": self.contract.get_protocol_address(),
             "input_transaction_hash": self.do_hash,
             "output_transaction_hash": "",
             "order_id": order_id,
+            "success": task_code_int == 0,
             "image_hash": f"{self.enclave_image_ipfs_hash}:{self.securelock_enclave}",
             "script_hash": self.script_hash,
             "file_set_hash": self.file_set_hash,
@@ -904,6 +918,7 @@ class EthernityCloudRunner:
         trustedzone_enclave: Optional[str] = None,
         max_retries: int = 2,
         retry_delay: int = 30,
+        input_data: Optional[str] = None,
     ) -> None:
         """Run the task.
 
@@ -919,6 +934,9 @@ class EthernityCloudRunner:
         caused by the submitted code itself are final results and are never
         retried.
         retry_delay: seconds to wait between resubmissions.
+        input_data: the task's input dataset, a string the payload reads as
+        ___etny_data_set___ (ecld.input). It travels encrypted for the
+        trustedzone, which verifies it against the sha256 in the request.
 
         Thread-safety: task state (do_request, order, result, ...) lives on
         THIS instance, so concurrent run() calls are SERIALIZED here -- two
@@ -937,7 +955,7 @@ class EthernityCloudRunner:
         try:
             return self.__run_exclusive(
                 resources, securelock_enclave, securelock_version, code,
-                node_address, trustedzone_enclave, max_retries, retry_delay)
+                node_address, trustedzone_enclave, max_retries, retry_delay, input_data)
         finally:
             self._run_lock.release()
 
@@ -951,8 +969,12 @@ class EthernityCloudRunner:
         trustedzone_enclave,
         max_retries,
         retry_delay,
+        input_data,
     ) -> None:
+        if input_data is not None and not isinstance(input_data, str):
+            raise TypeError("input_data must be a string")
         trustedzone = self._resolve_trustedzone(trustedzone_enclave)
+        self.input_data = input_data
         if not self.local_mode:
             self._resolve_storage()
         self.max_retries = max_retries
@@ -1034,6 +1056,23 @@ class EthernityCloudRunner:
         finally:
             self.running = False
 
+    def _finish(self, completed: str) -> None:
+        """The FINISHED event: SUCCESS when the enclave's task code is 0. A
+        non-zero code is the task's own failure (an exception in the dApp, a
+        checksum mismatch, ...): ERROR, with last_error naming the code and the
+        result kept, since its value carries the enclave's error report."""
+        self.progress = ECEvent.FINISHED
+        result = self.result or {}
+        if result.get("success"):
+            self.status = ECStatus.SUCCESS
+            self.logger.info(completed)
+            return
+        self.status = ECStatus.ERROR
+        self.last_error = (
+            f"The task failed in the enclave with {result.get('result_task_code')} "
+            f"({result.get('result_task_code_int')}); the result holds its error report.")
+        self.logger.error(self.last_error)
+
     def _run_local_attempt(self, code: str) -> None:
         """LOCAL mode: run the task against the ecld-test API, no blockchain.
 
@@ -1059,7 +1098,7 @@ class EthernityCloudRunner:
                 self.progress = event  # no chain interaction locally
             elif event == ECEvent.IN_PROGRESS:
                 self.progress = event
-                body = json.dumps({"payload": code}).encode("utf-8")
+                body = json.dumps({"payload": code, "input": self.input_data or None}).encode("utf-8")
                 req = urllib.request.Request(
                     self.local_endpoint + "/v1/task", data=body,
                     headers={"Content-Type": "application/json"},
@@ -1084,9 +1123,7 @@ class EthernityCloudRunner:
                     "value": resp["result"],
                 })
             elif event == ECEvent.FINISHED:
-                self.progress = ECEvent.FINISHED
-                self.status = ECStatus.SUCCESS
-                self.logger.info("Task completed (LOCAL mode).")
+                self._finish("Task completed (LOCAL mode).")
             self.processed_events.append(event.name)
 
     def _run_attempt(self, code: str, node_address: str, resources: Dict[str, int]) -> None:
@@ -1148,9 +1185,7 @@ class EthernityCloudRunner:
                     raise ValueError("Task processing failed.")
                 self.result = result
             elif event == ECEvent.FINISHED:
-                self.progress = ECEvent.FINISHED
-                self.status = ECStatus.SUCCESS
-                self.logger.info("Task completed successfully.")
+                self._finish("Task completed successfully.")
             self.processed_events.append(event.name)
     def run_session(
         self,
@@ -1177,6 +1212,7 @@ class EthernityCloudRunner:
             self._run_lock = threading.Lock()
         with self._run_lock:
             self.trustedZoneImage = self._resolve_trustedzone(trustedzone_enclave)
+            self.input_data = None
             self._resolve_storage()
             self._fault = None
             if resources is None:
