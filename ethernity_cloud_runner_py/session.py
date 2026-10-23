@@ -34,6 +34,13 @@ SESSION_INPUT_KEY = "etny-si"
 SESSION_OUTPUT_KEY = "etny-so"
 SESSION_WALLET_KEY = "etny-sw"
 SESSION_WIRE_VERSION = "v1"
+# An output row whose payload no endpoint serves yet, or serves under its CID
+# with other bytes, is read again on later polls for this long before it is
+# given up: the node pins the payload in the background and the gateway may
+# lag the row.
+PAYLOAD_RETRY_SECONDS = 600
+# _verify_output_row's answer for such a row.
+PAYLOAD_PENDING = object()
 MAX_SESSION_MESSAGES = 256
 # Mirror of the enclave's input-acceptance margin (M3): sending inside this
 # window would only earn a signed 'late' notice, so refuse client-side.
@@ -88,6 +95,9 @@ class EthernityCloudSession:
         # row: the signer every output row is checked against. None until
         # that row has been read and verified.
         self._attested_wallet: Optional[str] = None
+        # Row index -> when its payload was first found not readable; the row
+        # is retried until PAYLOAD_RETRY_SECONDS after that.
+        self._payload_waits: Dict[int, float] = {}
 
     # ----------------------------------------------------------------- helpers
 
@@ -232,7 +242,9 @@ class EthernityCloudSession:
         'etny-so' row is verified against it, its payload fetched, verified
         and decrypted. Returns only the NEW verified messages (also appended
         to self.outputs). An output row before any attestation is discarded:
-        its signer cannot be checked."""
+        its signer cannot be checked. A verified row whose payload is not
+        readable yet is kept, and the rows after it with it, for the next
+        poll, up to PAYLOAD_RETRY_SECONDS."""
         try:
             count = int(self._caller()._getMetadataCountForDPRequest(self.dp_req))
         except Exception as e:
@@ -252,13 +264,22 @@ class EthernityCloudSession:
             if key != SESSION_OUTPUT_KEY:
                 self._rows_seen = i + 1
                 continue
-            self._rows_seen = i + 1
             if self._attested_wallet is None:
+                self._rows_seen = i + 1
                 self.runner.logger.error(
                     f"[session] output row {i} precedes the task wallet attestation; its signer "
                     f"cannot be checked -- DISCARDING")
                 continue
             msg = self._verify_output_row(str(value or ""))
+            if msg is PAYLOAD_PENDING:
+                waited = time.time() - self._payload_waits.setdefault(i, time.time())
+                if waited < PAYLOAD_RETRY_SECONDS:
+                    break
+                self.runner.logger.error(
+                    f"[session] output row {i}: payload not readable in {int(waited)} s -- DISCARDING")
+                msg = None
+            self._rows_seen = i + 1
+            self._payload_waits.pop(i, None)
             if msg is not None:
                 self.outputs.append(msg)
                 fresh.append(msg)
@@ -296,22 +317,28 @@ class EthernityCloudSession:
         # 'ok' rows carry the reply; 'error' rows carry an encrypted
         # explanation of why the input was not processed -- fetch both.
         try:
-            content = self.runner.storage().get_file_content(cid)
-            raw = content if isinstance(content, bytes) else str(content).encode("utf-8")
-            if hashlib.sha256(raw).hexdigest() != sha_hex:
-                self.runner.logger.error(
-                    f"[session] output {seq}: content does not match the signed digest -- DISCARDING")
-                return None
-            decrypted = decrypt_nacl(self.runner.private_key,
-                                     raw.decode("utf-8") if isinstance(raw, bytes) else raw)
-            if not decrypted.get("success"):
-                self.runner.logger.error(f"[session] output {seq}: could not decrypt")
-                return None
-            msg["data"] = decrypted["data"]
+            raw = self._fetch_payload(cid)
         except Exception as e:
             self.runner.logger.warning(f"[session] output {seq}: payload not readable yet ({e})")
+            return PAYLOAD_PENDING
+        if raw is None or hashlib.sha256(raw).hexdigest() != sha_hex:
+            self.runner.logger.warning(
+                f"[session] output {seq}: payload not served under its CID yet; retrying")
+            return PAYLOAD_PENDING
+        decrypted = decrypt_nacl(self.runner.private_key, raw.decode("utf-8"))
+        if not decrypted.get("success"):
+            self.runner.logger.error(f"[session] output {seq}: could not decrypt -- DISCARDING")
             return None
+        msg["data"] = decrypted["data"]
         return msg
+
+    def _fetch_payload(self, cid: str) -> Optional[bytes]:
+        """The bytes an output row's CID names, or None when no endpoint
+        served them."""
+        content = self.runner.storage().get_file_content(cid)
+        if content is None:
+            return None
+        return content if isinstance(content, bytes) else str(content).encode("utf-8")
 
     def wait_outputs(self, count: int = 1, timeout: int = 300,
                      poll_seconds: int = 5) -> List[Dict[str, Any]]:
