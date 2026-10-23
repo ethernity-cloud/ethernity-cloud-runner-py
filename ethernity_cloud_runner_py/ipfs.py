@@ -6,11 +6,12 @@ from typing import Optional
 import requests  # type: ignore
 
 # Every blob the runner adds (challenge, code, input, session rows) is stored
-# as a CIDv1 raw sha256 block: `cid-version=1&raw-leaves=true` makes the CID
-# base32(0x01 0x55 0x12 0x20 || sha256(content)), so it can be computed from
-# the bytes alone, without an IPFS node. The node pins results with the same
-# recipe (mvp-pox-node utils.py cidv1_raw).
-RAW_BLOCK_PARAMS = {"cid-version": "1", "raw-leaves": "true"}
+# as CIDv1 raw sha256 blocks of at most RAW_BLOCK_MAX bytes, Kubo's largest
+# chunk: a blob of up to one block has the CID base32(0x01 0x55 0x12 0x20 ||
+# sha256(content)), computable from the bytes alone, without an IPFS node. The
+# node adds with the same parameters (mvp-pox-node utils.py add_bytes_raw).
+RAW_BLOCK_MAX = 1048576
+RAW_BLOCK_PARAMS = {"cid-version": "1", "raw-leaves": "true", "chunker": f"size-{RAW_BLOCK_MAX}"}
 
 # The bootnode's payload intake: a runner with no IPFS API of its own delivers
 # each artefact to POST {intake}/payload/<network>/<doRequestId>/<cid> after
@@ -33,7 +34,8 @@ READ_TIMEOUT = (10, 60)
 
 
 def cidv1_raw(content: bytes) -> str:
-    """The CID Kubo returns for `add` with RAW_BLOCK_PARAMS, from the bytes."""
+    """The CID Kubo returns for `add` with RAW_BLOCK_PARAMS of up to
+    RAW_BLOCK_MAX bytes, from the bytes."""
     digest = hashlib.sha256(content).digest()
     raw = bytes([0x01, 0x55, 0x12, 0x20]) + digest
     return "b" + base64.b32encode(raw).decode("ascii").lower().rstrip("=")
@@ -64,9 +66,19 @@ class IPFSClient:
         """Add one blob and return its CID, or None. An add the API does not
         answer within the timeout, or answers with a 5xx, is retried
         `attempts` times. A 401 or 403 raises at once: the API admits only a
-        caller with a writer token, which repeating the add cannot supply."""
+        caller with a writer token, which repeating the add cannot supply.
+
+        Through the intake, a blob above RAW_BLOCK_MAX raises ValueError: its
+        CID is a DAG root only an IPFS node computes, so the intake, which
+        checks the bytes against the CID the request names, would refuse it
+        after the request had been paid for."""
         content = self._data_bytes(data)
         if self.intake_url:
+            if len(content) > RAW_BLOCK_MAX:
+                raise ValueError(
+                    f"a {len(content)}-byte artefact is above the {RAW_BLOCK_MAX}-byte limit of the payload "
+                    f"intake; deliver it through set_storage_ipfs(url, token), an IPFS API of your own "
+                    f"or the public API with a writer token")
             cid = cidv1_raw(content)
             self.pending[cid] = content
             return cid

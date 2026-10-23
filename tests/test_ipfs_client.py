@@ -100,6 +100,27 @@ def test_intake_client_queues_the_bytes_without_a_request(monkeypatch):
     assert calls == []
 
 
+def test_adds_use_chunks_of_kubos_largest_block():
+    assert RAW_BLOCK_PARAMS["chunker"] == "size-1048576"
+
+
+def test_the_intake_takes_an_artefact_of_one_block(monkeypatch):
+    client = IPFSClient("https://ipfs.ethernity.cloud/api/v0",
+                        intake_url="https://ipfs.ethernity.cloud", network="bloxberg_testnet")
+    content = b"x" * ipfs.RAW_BLOCK_MAX
+    assert client.upload_to_ipfs(content) == cidv1_raw(content)
+
+
+def test_the_intake_refuses_an_artefact_above_one_block_before_any_request(monkeypatch):
+    calls = post_answering(monkeypatch)
+    client = IPFSClient("https://ipfs.ethernity.cloud/api/v0",
+                        intake_url="https://ipfs.ethernity.cloud", network="bloxberg_testnet")
+    with pytest.raises(ValueError, match="set_storage_ipfs"):
+        client.upload_to_ipfs(b"x" * (ipfs.RAW_BLOCK_MAX + 1))
+    assert client.pending == {}
+    assert calls == []
+
+
 def test_flush_pending_posts_to_the_intake_without_a_token(monkeypatch):
     calls = post_answering(monkeypatch, Response(200))
     client = IPFSClient("https://ipfs.ethernity.cloud/api/v0",
