@@ -174,11 +174,40 @@ def test_flush_pending_names_the_storage_an_unserved_network_needs(monkeypatch):
 
 def test_flush_pending_reports_any_other_refusal_as_the_intake_answered(monkeypatch):
     post_answering(
-        monkeypatch, Response(403, text='{"error": "the DO request does not name this cid"}'))
+        monkeypatch, Response(400, text='{"error": "the bytes do not hash to the cid"}'))
+    slept = record_sleeps(monkeypatch)
+    client = IPFSClient("https://ipfs.ethernity.cloud/api/v0",
+                        intake_url="https://ipfs.ethernity.cloud", network="bloxberg_testnet")
+    cid = client.upload_to_ipfs(b"payload")
+    with pytest.raises(RuntimeError) as failure:
+        client.flush_pending(7)
+    assert str(failure.value).startswith(f"intake refused {cid} for request 7: 400 ")
+    assert slept == []
+
+
+NOT_NAMED = Response(403, text='{"error": "the DO request does not name this cid"}')
+
+
+def test_flush_pending_waits_through_the_403_the_intake_answers_before_its_replica_sees_the_row(monkeypatch):
+    calls = post_answering(monkeypatch, NOT_NAMED, NOT_NAMED, Response(200))
+    slept = record_sleeps(monkeypatch)
+    client = IPFSClient("https://ipfs.ethernity.cloud/api/v0",
+                        intake_url="https://ipfs.ethernity.cloud", network="bloxberg_testnet")
+    client.upload_to_ipfs(b"payload")
+    client.flush_pending(7)
+    assert len(calls) == 3
+    assert slept == [5.0, 5.0]
+    assert client.pending == {}
+
+
+def test_a_403_that_persists_past_the_attempts_allowed_for_it_is_reported_with_the_attempts_made(monkeypatch):
+    calls = post_answering(monkeypatch, *([NOT_NAMED] * ipfs.INTAKE_NOT_NAMED_ATTEMPTS))
     record_sleeps(monkeypatch)
     client = IPFSClient("https://ipfs.ethernity.cloud/api/v0",
                         intake_url="https://ipfs.ethernity.cloud", network="bloxberg_testnet")
     cid = client.upload_to_ipfs(b"payload")
     with pytest.raises(RuntimeError) as failure:
         client.flush_pending(7)
-    assert str(failure.value).startswith(f"intake refused {cid} for request 7: 403 ")
+    assert str(failure.value).startswith(
+        f"intake did not accept {cid} for request 7 after {ipfs.INTAKE_NOT_NAMED_ATTEMPTS} attempts: 403 ")
+    assert len(calls) == ipfs.INTAKE_NOT_NAMED_ATTEMPTS

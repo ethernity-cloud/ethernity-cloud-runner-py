@@ -23,6 +23,10 @@ RAW_BLOCK_PARAMS = {"cid-version": "1", "raw-leaves": "true", "chunker": f"size-
 # the DO request is on chain; the intake accepts it only when that request
 # names the CID and the bytes hash to it (mvp-pox-node ipfs_intake.py).
 PUBLIC_INTAKE = "https://ipfs.ethernity.cloud"
+# The intake answers 403 with this text while its own RPC replica has not yet
+# seen the row that names the cid; the answer changes within seconds.
+INTAKE_NOT_NAMED = "does not name this cid"
+INTAKE_NOT_NAMED_ATTEMPTS = 12
 # The networks the intake serves, by the node agent's name for them: those the
 # bootnode's agent runs (mvp-pox-node registers an intake backend per network
 # handle). A runner on another network configures its storage itself.
@@ -165,16 +169,22 @@ class IPFSClient:
     def flush_pending(self, do_request: int, attempts: int = 3, delay: float = 5.0) -> None:
         """Deliver every queued blob to the intake for `do_request`. A blob the
         intake confirms (200) leaves the queue; one it refuses (4xx) raises at
-        once, since retrying the same bytes cannot change the answer, and the
-        404 for a network the intake does not serve names the storage such a
-        network needs; a connection failure or 5xx is retried `attempts`
-        times. No-op without an intake."""
+        once, since retrying the same bytes cannot change the answer, except
+        the 403 INTAKE_NOT_NAMED, which the intake answers while its own RPC
+        replica has not yet seen the row that names the cid (the row is on
+        chain, its receipt came back before the delivery) and which is retried
+        up to INTAKE_NOT_NAMED_ATTEMPTS times; the 404 for a network the
+        intake does not serve names the storage such a network needs; a
+        connection failure or 5xx is retried `attempts` times. No-op without
+        an intake."""
         if not self.intake_url or not self.pending:
             return
         for cid in list(self.pending):
             url = f"{self.intake_url}/payload/{self.network}/{do_request}/{cid}"
             last = None
-            for attempt in range(attempts):
+            allowed = attempts
+            attempt = 0
+            while attempt < allowed:
                 try:
                     response = requests.post(url, data=self.pending[cid], timeout=120,
                                              headers={"Content-Type": "application/octet-stream"})
@@ -191,17 +201,21 @@ class IPFSClient:
                             f"{cid} for request {do_request} stays undelivered: on this "
                             "network deliver through set_storage_ipfs(url, token), a Kubo "
                             "RPC API of your own or the public API with a writer token.")
-                    if 400 <= response.status_code < 500 and response.status_code != 409:
+                    not_named_yet = response.status_code == 403 and INTAKE_NOT_NAMED in response.text
+                    if not_named_yet:
+                        allowed = max(allowed, INTAKE_NOT_NAMED_ATTEMPTS)
+                    if 400 <= response.status_code < 500 and response.status_code != 409 and not not_named_yet:
                         raise RuntimeError(
                             f"intake refused {cid} for request {do_request}: "
                             f"{response.status_code} {response.text[:200]}")
                     last = f"{response.status_code} {response.text[:200]}"
-                if attempt + 1 < attempts:
+                attempt += 1
+                if attempt < allowed:
                     time.sleep(delay)
             else:
                 raise RuntimeError(
                     f"intake did not accept {cid} for request {do_request} after "
-                    f"{attempts} attempts: {last}")
+                    f"{allowed} attempts: {last}")
 
     def get_file_content(self, ipfs_hash: str) -> Optional[str]:
         """Read one blob as UTF-8: the configured API first, the public
