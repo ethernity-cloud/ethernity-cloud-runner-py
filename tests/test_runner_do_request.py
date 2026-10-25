@@ -13,7 +13,13 @@ def _runner_with_request_event(row_number):
     runner = EthernityCloudRunner("BLOXBERG", "TESTNET")
     runner.resources = RESOURCES
     runner.running = True
-    eth = SimpleNamespace(get_transaction_receipt=lambda tx_hash: {"status": 1})
+    runner.receipt_reads = 0
+
+    def get_transaction_receipt(tx_hash):
+        runner.receipt_reads += 1
+        return {"status": 1}
+
+    eth = SimpleNamespace(get_transaction_receipt=get_transaction_receipt)
     runner.contract = SimpleNamespace(add_do_request=lambda *args: TX,
                                       get_provider=lambda: SimpleNamespace(eth=eth))
     log = SimpleNamespace(args=SimpleNamespace(_rowNumber=row_number))
@@ -35,6 +41,15 @@ def test_the_do_request_id_is_the_row_number_of_the_request_event():
     assert runner.do_hash == TX
     assert runner.do_request == 12
     assert runner.do_request_id == 12
+
+
+def test_the_receipt_is_read_once_and_the_event_taken_from_it():
+    # A second read can land on an RPC replica that has not seen the
+    # transaction yet (bloxberg testnet, 2026-10-25: TransactionNotFound
+    # failed a task 16 s after its request was mined).
+    runner = _runner_with_request_event(4500)
+    assert runner.create_do_request("image", "code", "input", "") is True
+    assert runner.receipt_reads == 1
 
 
 def test_a_receipt_without_the_request_event_leaves_no_request_id():

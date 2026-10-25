@@ -427,12 +427,14 @@ class EthernityCloudRunner:
         if not transaction_hash:
             return False
         self.do_hash = transaction_hash
-        is_processed = self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100)
-        if not is_processed:
-            reason = self.get_reason(self.protocol_contract, transaction_hash)
+        # The receipt poll_transaction returns is the one the event is read
+        # from: a second read can land on an RPC replica that has not seen the
+        # transaction yet and raise TransactionNotFound.
+        receipt = self.poll_transaction(transaction_hash, max_attempts=100)
+        if not receipt or receipt['status'] != 1:
+            reason = self.get_reason(self.protocol_contract, transaction_hash) if receipt else "no receipt"
             self.logger.error(f"Unable to create DO request: {reason}")
             return False
-        receipt = self.contract.get_provider().eth.get_transaction_receipt(transaction_hash)
         # errors=DISCARD: a DO-request receipt carries other logs (ERC-20
         # Transfer, other protocol events) besides _addDORequestEV. web3's
         # default (WARN) prints a MismatchedABI warning for every non-matching
