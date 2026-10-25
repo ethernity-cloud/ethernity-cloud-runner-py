@@ -67,6 +67,42 @@ class OperatorFaultError(Exception):
     escrow of the failed order is refunded by the validator."""
 
 
+# A node whose DP request advertises DP_STARTED_ROW_CAPABILITY in its metadata4
+# adds an ORDER_STARTED_KEY row, 'v1:<order>:<block>', to that DP request when
+# it begins running an order. An order of such a node with no row
+# ORDER_START_WINDOW_BLOCKS blocks after it entered processing is treated as
+# abandoned by its node (an operator fault) and resubmitted.
+ORDER_STARTED_KEY = "etny-st"
+ORDER_START_WINDOW_BLOCKS = 10
+DP_STARTED_ROW_CAPABILITY = "startrow=v1"
+
+
+def started_row_advertised(metadata4) -> bool:
+    """Whether a DP request's metadata4 says its node adds started rows."""
+    return DP_STARTED_ROW_CAPABILITY in str(metadata4 or "").split(";")
+
+
+def started_row_order(value) -> Optional[int]:
+    """The order id a started row names, or None for a value of another shape."""
+    parts = str(value or "").strip().split(":")
+    if len(parts) != 3 or parts[0] != "v1":
+        return None
+    try:
+        int(parts[2])
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+def order_start_verdict(rows, order_id: int, block: int, window_end: int) -> str:
+    """The verdict on an order's start from its DP request's (key, value)
+    rows: 'started' when a started row names it, 'late' when `block` is past
+    `window_end` without one, else 'waiting'."""
+    if any(key == ORDER_STARTED_KEY and started_row_order(value) == order_id for key, value in rows):
+        return "started"
+    return "late" if block > window_end else "waiting"
+
+
 class EthernityCloudRunner:
     def __init__(self, network_name="BLOXBERG", network_type="TESTNET") -> None:
         install_web3_friendly_prefix_filter(suppress_codes=(-32000, -32010))
@@ -505,6 +541,12 @@ class EthernityCloudRunner:
                         continue
         return result
 
+    def _dp_request_rows(self, dp_request: int) -> List[tuple]:
+        """The (key, value) metadata rows of a DP request."""
+        caller = self.protocol_contract.caller()
+        count = int(caller._getMetadataCountForDPRequest(dp_request))
+        return [tuple(caller._getMetadataValueForDPRequest(dp_request, i)) for i in range(count)]
+
     def get_result_from_order(self, order_id: int) -> Optional[Dict[str, Any]]:
         """Get and verify result from order.
 
@@ -524,6 +566,17 @@ class EthernityCloudRunner:
         # The RPC is load-balanced over replicas that lag one another, so a read
         # of an order placed moments ago can revert on one that has not seen it.
         status = self.retry_operation(lambda: self.contract.get_status_from_order(order_id), max_retries)
+        # The node's start, checked when its DP request advertises the started
+        # row: the row must name this order within ORDER_START_WINDOW_BLOCKS.
+        caller = self.protocol_contract.caller()
+        dp_request = int(self.order[3])
+        window_end = None
+        try:
+            if started_row_advertised(caller._getDPRequestMetadata(dp_request)[4]):
+                window_end = self.protocol_contract.w3.eth.block_number + ORDER_START_WINDOW_BLOCKS
+        except Exception as e:
+            self.logger.debug(f"DP request {dp_request} not readable ({e}); the start of order {order_id} is not checked")
+        started = window_end is None
         tick = 0
         while self.is_running() and status != 2:
             if time.time() > deadline:
@@ -533,6 +586,23 @@ class EthernityCloudRunner:
                 )
                 self.logger.error(self._fault)
                 return None
+            if not started:
+                try:
+                    verdict = order_start_verdict(self._dp_request_rows(dp_request), order_id,
+                                                  self.protocol_contract.w3.eth.block_number, window_end)
+                except Exception as e:
+                    self.logger.debug(f"start check of order {order_id} skipped this tick ({e})")
+                    verdict = "waiting"
+                if verdict == "started":
+                    started = True
+                    self.logger.info(f"Order {order_id} started on its node")
+                elif verdict == "late":
+                    self._fault = (
+                        f"order {order_id} was not started by its node within "
+                        f"{ORDER_START_WINDOW_BLOCKS} blocks (operator gone)"
+                    )
+                    self.logger.error(self._fault)
+                    return None
             time.sleep(self.block_time)
             tick += 1
             # EVENT-FIRST: _orderClosedEV(_orderNumber) fires the moment the
