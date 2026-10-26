@@ -14,6 +14,7 @@ from ..abi.polygonProtocolAbi import contract as polygonAbi
 from ..abi.ECLDAbi import contract as ECLDAbi
 from ...enums import ECNetwork
 from ...errors import suppress_web3_friendly_prefix, raw_rpc_error_message, raw_rpc_error_code
+from ...rpc import rpc_session
 
 
 class protocolContract:
@@ -33,7 +34,8 @@ class protocolContract:
         self.max_fee_per_gas = self.network_config.MAX_FEE_PER_GAS
         self.max_priority_fee_per_gas = self.network_config.MAX_PRIORITY_FEE_PER_GAS
         _rpc_url = self.network_config.RPC_URL
-        self.provider = Web3(Web3.HTTPProvider(_rpc_url,request_kwargs=request_kwargs or {'timeout': 10}))
+        self.provider = Web3(Web3.HTTPProvider(_rpc_url, request_kwargs=request_kwargs or {'timeout': 10},
+                                               session=rpc_session()))
         if self.network_config.MIDDLEWARE == "POA":
             self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         self.signer = signer
