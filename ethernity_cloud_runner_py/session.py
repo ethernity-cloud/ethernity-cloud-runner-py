@@ -340,6 +340,25 @@ class EthernityCloudSession:
             return None
         return content if isinstance(content, bytes) else str(content).encode("utf-8")
 
+    def wait_output(self, seq: int, timeout: int = 300,
+                    poll_seconds: int = 5) -> Optional[Dict[str, Any]]:
+        """The verified output answering input `seq` (the row whose ack is
+        `seq`: an 'ok' reply, or an 'error' or 'late' notice), polled for
+        until it arrives or `timeout` seconds pass; None then. Outputs
+        answering other inputs that arrive meanwhile stay in self.outputs.
+        This is the wait for a request-reply exchange; wait_outputs returns
+        any new output, so there a late answer to an earlier input would be
+        taken for the current one's."""
+        def answer():
+            return next((m for m in self.outputs if m["ack"] == seq), None)
+
+        deadline = time.time() + timeout
+        while answer() is None and time.time() < deadline:
+            self.poll_outputs()
+            if answer() is None:
+                time.sleep(poll_seconds)
+        return answer()
+
     def wait_outputs(self, count: int = 1, timeout: int = 300,
                      poll_seconds: int = 5) -> List[Dict[str, Any]]:
         """Block until `count` new verified outputs arrive (or timeout)."""
