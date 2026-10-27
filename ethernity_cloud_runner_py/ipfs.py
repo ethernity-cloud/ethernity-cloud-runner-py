@@ -27,6 +27,21 @@ PUBLIC_INTAKE = "https://ipfs.ethernity.cloud"
 # seen the row that names the cid; the answer changes within seconds.
 INTAKE_NOT_NAMED = "does not name this cid"
 INTAKE_NOT_NAMED_ATTEMPTS = 12
+# A blob the DO request does not name yet is lodged with the intake under the
+# request owner's EIP-191 signature of owner_signature_message(network,
+# do_request) (this header; one signature serves every blob of the request),
+# so the bytes are at the bootnode before the row that names them is
+# committed: a runner that stops between the two leaves no row without bytes,
+# and the node reads the bytes the moment it reads the row (mvp-pox-node
+# ipfs_intake.py). An intake without the signed path answers a lodged blob
+# with the 403 INTAKE_NOT_NAMED; its row path still delivers, after the row.
+OWNER_SIGNATURE_HEADER = "X-Etny-Owner-Signature"
+
+
+def owner_signature_message(network: str, do_request: int) -> str:
+    """The text the owner of DO request `do_request` on `network` signs to
+    lodge blobs with the intake before the request names them."""
+    return f"etny-intake|{network}|{int(do_request)}"
 # The networks the intake serves, by the node agent's name for them: those the
 # bootnode's agent runs (mvp-pox-node registers an intake backend per network
 # handle). A runner on another network configures its storage itself.
@@ -216,6 +231,44 @@ class IPFSClient:
                 raise RuntimeError(
                     f"intake did not accept {cid} for request {do_request} after "
                     f"{allowed} attempts: {last}")
+
+    def deliver_signed(self, do_request: int, signature: str, cids=None, attempts: int = 3,
+                       delay: float = 5.0):
+        """Deliver queued blobs (`cids`, or every one) to the intake for
+        `do_request` before the request names them, under the request owner's
+        `signature` (OWNER_SIGNATURE_HEADER), each tried `attempts` times
+        `delay` seconds apart through connection failures and 5xx. Returns
+        (delivered, refused): the CIDs the intake took leave the queue; one it
+        did not take stays queued for flush_pending after the row, with the
+        answer in `refused` (cid -> text). Never raises for an intake answer.
+        Nothing without an intake."""
+        delivered, refused = [], {}
+        if not self.intake_url:
+            return delivered, refused
+        for cid in list(self.pending if cids is None else cids):
+            content = self.pending.get(cid)
+            if content is None:
+                continue
+            url = f"{self.intake_url}/payload/{self.network}/{do_request}/{cid}"
+            for attempt in range(1, attempts + 1):
+                try:
+                    response = requests.post(url, data=content, timeout=120,
+                                             headers={"Content-Type": "application/octet-stream",
+                                                      OWNER_SIGNATURE_HEADER: signature})
+                except requests.RequestException as e:
+                    refused[cid] = str(e)
+                else:
+                    if response.status_code == 200:
+                        del self.pending[cid]
+                        delivered.append(cid)
+                        refused.pop(cid, None)
+                        break
+                    refused[cid] = f"{response.status_code} {response.text[:200]}"
+                    if response.status_code < 500:
+                        break
+                if attempt < attempts:
+                    time.sleep(delay)
+        return delivered, refused
 
     def get_file_content(self, ipfs_hash: str) -> Optional[str]:
         """Read one blob as UTF-8: the configured API first, the public

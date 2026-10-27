@@ -29,6 +29,7 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 
 from .crypto import decrypt_nacl, encrypt, verify_certificate_signature
+from .ipfs import INTAKE_NOT_NAMED, owner_signature_message
 
 SESSION_INPUT_KEY = "etny-si"
 SESSION_OUTPUT_KEY = "etny-so"
@@ -98,6 +99,9 @@ class EthernityCloudSession:
         # Row index -> when its payload was first found not readable; the row
         # is retried until PAYLOAD_RETRY_SECONDS after that.
         self._payload_waits: Dict[int, float] = {}
+        # The owner's signature that lodges this session's inputs with the
+        # intake before their rows (_lodge_input); signed once, at the first.
+        self._owner_signature: Optional[str] = None
 
     # ----------------------------------------------------------------- helpers
 
@@ -218,6 +222,11 @@ class EthernityCloudSession:
         cid = self.runner.storage().upload_to_ipfs(ciphertext)
         if not cid:
             raise SessionError("the configured storage did not accept the input")
+        # The bytes reach the intake before the row that names them, under
+        # the owner's signature; an input is complete only once its row is on
+        # chain, so a client that stops before that leaves no row without
+        # bytes.
+        self._lodge_input(cid)
         digest = hashlib.sha256(
             ciphertext if isinstance(ciphertext, bytes) else str(ciphertext).encode("utf-8")
         ).hexdigest()
@@ -227,13 +236,40 @@ class EthernityCloudSession:
         receipt = self.runner.poll_transaction(tx_hash, max_attempts=60)
         if not receipt or receipt["status"] != 1:
             raise SessionError(f"input row transaction failed ({tx_hash})")
-        # With the public intake, the row is on chain now, so the bytes it
-        # names can be delivered.
+        # With the public intake, the row is on chain now, so bytes it names
+        # that were not lodged before it can be delivered; nothing is queued
+        # when they were.
         self.runner.storage().flush_pending(self.do_req)
         seq = self._input_seq
         self._input_seq += 1
         self.runner.logger.info(f"[session] input {seq} committed ({cid})")
         return seq
+
+    def _lodge_input(self, cid: str) -> bool:
+        """Lodge input `cid`'s queued bytes with the intake before the row
+        that names them, under the request owner's signature, made once per
+        session from the runner's key. True when the intake took them. False
+        when the bytes are to go after the row instead: no intake, no key, or
+        an intake without the signed path (its 403 INTAKE_NOT_NAMED). Raises
+        SessionError when the intake refused the lodged bytes otherwise, or
+        could not be reached: the row is not committed without its bytes in
+        place, and the input can be sent again."""
+        storage = self.runner.storage()
+        if not getattr(storage, "intake_url", "") or not self.runner.private_key:
+            return False
+        if self._owner_signature is None:
+            message = owner_signature_message(storage.network, self.do_req)
+            self._owner_signature = Account.sign_message(
+                encode_defunct(text=message), private_key=self.runner.private_key).signature.hex()
+        delivered, refused = storage.deliver_signed(self.do_req, self._owner_signature, [cid])
+        if cid in delivered:
+            return True
+        if INTAKE_NOT_NAMED in str(refused.get(cid, "")):
+            self.runner.logger.warning(f"[session] input {self._input_seq}: the intake takes no lodged bytes; "
+                                       f"delivered after its row")
+            return False
+        raise SessionError(f"input {self._input_seq} was not lodged with the intake ({refused.get(cid)}); "
+                           f"not committed, send it again")
 
     # ------------------------------------------------------------------ output
 
