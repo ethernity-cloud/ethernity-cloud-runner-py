@@ -35,6 +35,8 @@ from .enums import (
     UNSAFE_TRUSTEDZONE_SUFFIX,
     task_status_name,
 )
+import hashlib
+
 from .ipfs import IPFSClient, INTAKE_NETWORKS, PUBLIC_INTAKE, StorageLimitError
 from .utils import (
     format_date,
@@ -353,10 +355,10 @@ class EthernityCloudRunner:
         return self.bytes_to_hex(priv_key)
     def get_v3_image_metadata(self, challenge_hash: bytes) -> str:
         """Generate v3 image metadata."""
-        base64_encrypted_challenge = encrypt(challenge_hash, self.enclave_public_key)
-        challenge_ipfs_hash = self._upload_artefact(base64_encrypted_challenge)
+        challenge_ipfs_hash, _ = self._seal_artefact(challenge_hash)
         if challenge_ipfs_hash is None:
             raise ValueError("Failed to upload challenge to IPFS.")
+        self.challenge_ipfs_hash = challenge_ipfs_hash
         self.logger.info(f"Uploaded challenge to IPFS: {challenge_ipfs_hash}")
         public_key = self.get_current_wallet_public_key()
         return f"{TRUSTEDZONE_VERSION}:{self.enclave_image_ipfs_hash}:{self.securelock_enclave if not self.trustedZoneImage else self.trustedZoneImage}:{self.enclave_docker_compose_ipfs_hash}:{challenge_ipfs_hash}:{public_key}"
@@ -368,8 +370,7 @@ class EthernityCloudRunner:
         # against that repr and every payload fails with
         # PAYLOAD_CHECKSUM_ERROR (orders 1817-1819 on bloxberg testnet).
         script_checksum = sha256(code, True)
-        base64_encrypted_script = encrypt(code.encode("utf-8"), self.enclave_public_key)
-        self.script_hash = self._upload_artefact(base64_encrypted_script)
+        self.script_hash, _ = self._seal_artefact(code.encode("utf-8"))
         if self.script_hash is None:
             raise ValueError("Failed to upload encrypted code to IPFS.")
         self.logger.info(f"Uploaded encrypted code to IPFS: {self.script_hash}")
@@ -402,8 +403,7 @@ class EthernityCloudRunner:
             self.file_set_hash = ""
             return f"{version}::{ZERO_CHECKSUM}"
         input_checksum = sha256(input_data, True)
-        base64_encrypted_input = encrypt(input_data.encode("utf-8"), self.enclave_public_key)
-        self.file_set_hash = self._upload_artefact(base64_encrypted_input)
+        self.file_set_hash, _ = self._seal_artefact(input_data.encode("utf-8"))
         if self.file_set_hash is None:
             raise ValueError("Failed to upload encrypted input to IPFS.")
         self.logger.info(f"Uploaded encrypted input to IPFS: {self.file_set_hash}")
@@ -454,6 +454,8 @@ class EthernityCloudRunner:
         self.do_request = processed_logs[0].args._rowNumber
         self.logger.info(f"{transaction_hash} confirmed!")
         self.logger.info(f"Request {self.do_request} was created successfully!")
+        # An artefact the held cache carried is referenced on chain now.
+        self.storage().release_held([getattr(self, "challenge_ipfs_hash", None), self.script_hash, self.file_set_hash])
         # With the public intake, the artefacts named in the request are
         # delivered now that the request they belong to is on chain.
         self.storage().flush_pending(self.do_request)
@@ -899,12 +901,10 @@ class EthernityCloudRunner:
         """Upload and read through a Kubo RPC API: one of your own, or the
         public API (https://ipfs.ethernity.cloud/api/v0) with a writer token
         as `token`. The token is sent as the Authorization header of every
-        request. The blobs the intake did not take and the previous client
-        holds in its local cache (ipfs.StorageLimitError) are uploaded through
-        the new API at once; returns their outcome, (uploaded, failed)."""
-        held = dict(self.ipfs_client.held) if self.ipfs_client is not None else {}
+        request. The blobs the intake did not take, held in the runner's held
+        cache (ipfs.StorageLimitError), are uploaded through the new API at
+        once; returns their outcome, (uploaded, failed)."""
         self.ipfs_client = IPFSClient(ipfs_address, token)
-        self.ipfs_client.held.update(held)
         uploaded, failed = self.ipfs_client.upload_held()
         for cid in uploaded:
             self.logger.info(f"Held blob {cid} uploaded to the IPFS endpoint")
@@ -912,17 +912,42 @@ class EthernityCloudRunner:
             self.logger.warning(f"Held blob {cid} was not taken by the IPFS endpoint: {reason}")
         return uploaded, failed
 
-    def _upload_artefact(self, content):
-        """The CID of an artefact (challenge, code, input, session input)
-        through the configured storage, or None when it did not take it. A
-        blob the intake does not take (ipfs.INTAKE_MAX_BYTES) is held in the
-        client's local cache, logged at ERROR and raised as
-        ipfs.StorageLimitError, before any transaction names it."""
+    def _seal_artefact(self, plaintext: bytes):
+        """(cid, digest) of an artefact (challenge, code, input, session
+        input) sealed for the enclave's certificate, through the configured
+        storage; the digest is the ciphertext's sha256, hex. An artefact the
+        intake does not take (ipfs.INTAKE_MAX_BYTES) is held in the runner's
+        held cache under the key of its plaintext and the enclave key, logged
+        at ERROR and raised as ipfs.StorageLimitError before any transaction
+        names it; once an IPFS endpoint of the application's own has uploaded
+        it (set_storage_ipfs, or here when one is set), the same plaintext
+        sealed for the same enclave resolves to the held ciphertext's CID
+        without a new seal, which a new nonce would give a new CID."""
+        storage = self.storage()
+        enclave_key = self._data_bytes(self.enclave_public_key)
+        key = f"{hashlib.sha256(plaintext).hexdigest()}|{hashlib.sha256(enclave_key).hexdigest()}"
+        held = storage.held_entry(key)
+        if held is not None:
+            if held["uploaded"]:
+                return held["cid"], held["digest"]
+            if not storage.intake_url:
+                uploaded, _ = storage.upload_held()
+                if held["cid"] in uploaded:
+                    return held["cid"], held["digest"]
+            refused = StorageLimitError(held["cid"], held["size"], storage.intake_max_bytes, storage.held_cache.location())
+            self.logger.error(str(refused))
+            raise refused
+        ciphertext = self._data_bytes(encrypt(plaintext, self.enclave_public_key))
         try:
-            return self.storage().upload_to_ipfs(content)
+            cid = storage.upload_to_ipfs(ciphertext, held_key=key)
         except StorageLimitError as e:
             self.logger.error(str(e))
             raise
+        return cid, hashlib.sha256(ciphertext).hexdigest()
+
+    @staticmethod
+    def _data_bytes(value) -> bytes:
+        return value if isinstance(value, bytes) else str(value).encode("utf-8")
     def set_public_intake(self, base_url: str = PUBLIC_INTAKE) -> None:
         """Upload through the bootnode's payload intake and read through its
         public API: the storage a runner uses when neither this nor

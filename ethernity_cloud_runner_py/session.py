@@ -218,8 +218,10 @@ class EthernityCloudSession:
                 "only answer with a timeout notice; not sending")
         if not self.is_running():
             raise SessionError("session order is no longer processing")
-        ciphertext = encrypt(str(data).encode("utf-8"), self.runner.enclave_public_key)
-        cid = self.runner._upload_artefact(ciphertext)
+        # The input sealed for the enclave, its CID and digest through the
+        # configured storage; _seal_artefact raises when the storage does not
+        # take it, before any transaction.
+        cid, digest = self.runner._seal_artefact(str(data).encode("utf-8"))
         if not cid:
             raise SessionError("the configured storage did not accept the input")
         # The bytes reach the intake before the row that names them, under
@@ -227,9 +229,6 @@ class EthernityCloudSession:
         # chain, so a client that stops before that leaves no row without
         # bytes.
         self._lodge_input(cid)
-        digest = hashlib.sha256(
-            ciphertext if isinstance(ciphertext, bytes) else str(ciphertext).encode("utf-8")
-        ).hexdigest()
         value = f"{SESSION_WIRE_VERSION}:{self._input_seq}:{self.order_id}:{cid}:{digest}"
         tx_hash = self.runner.contract.add_metadata_to_request(
             self.do_req, SESSION_INPUT_KEY, value)
@@ -240,6 +239,8 @@ class EthernityCloudSession:
         # that were not lodged before it can be delivered; nothing is queued
         # when they were.
         self.runner.storage().flush_pending(self.do_req)
+        # An input the held cache carried is referenced on chain now.
+        self.runner.storage().release_held([cid])
         seq = self._input_seq
         self._input_seq += 1
         self.runner.logger.info(f"[session] input {seq} committed ({cid})")

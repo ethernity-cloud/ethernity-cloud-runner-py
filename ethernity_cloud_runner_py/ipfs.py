@@ -25,6 +25,8 @@ RAW_BLOCK_PARAMS = {"cid-version": "1", "raw-leaves": "true", "chunker": f"size-
 PUBLIC_INTAKE = "https://ipfs.ethernity.cloud"
 # The intake answers 403 with this text while its own RPC replica has not yet
 # seen the row that names the cid; the answer changes within seconds.
+from .held_cache import HeldCache
+
 INTAKE_NOT_NAMED = "does not name this cid"
 INTAKE_NOT_NAMED_ATTEMPTS = 12
 # A blob the DO request does not name yet is lodged with the intake under the
@@ -39,21 +41,22 @@ OWNER_SIGNATURE_HEADER = "X-Etny-Owner-Signature"
 # What the public intake takes per blob (mvp-pox-node ipfs_intake.py,
 # max_bytes); the limit of an intake of the application's own is given to
 # IPFSClient. A blob above it is not sent to the intake: it is held in the
-# client's local cache (IPFSClient.held, cid -> bytes), upload_to_ipfs raises
-# StorageLimitError before any transaction names the blob, and the held blobs
-# are uploaded by upload_held() once an IPFS endpoint of the application's own
-# is set (EthernityCloudRunner.set_storage_ipfs carries them over and calls it).
+# runner's held cache (held_cache.py, files under ~/.ethernity-cloud/held),
+# upload_to_ipfs raises StorageLimitError before any transaction names it,
+# upload_held() uploads the held blobs once an IPFS endpoint of the
+# application's own is set (EthernityCloudRunner.set_storage_ipfs calls it),
+# and release_held() forgets a blob once a transaction on chain names it.
 INTAKE_MAX_BYTES = 100 * 1024 * 1024
 
 
 class StorageLimitError(RuntimeError):
-    """A blob above what the intake takes; held in the client's local cache."""
+    """A blob above what the intake takes; held in the runner's held cache."""
 
-    def __init__(self, cid: str, size: int, limit: int) -> None:
+    def __init__(self, cid: str, size: int, limit: int, location: str) -> None:
         super().__init__(
             f"the intake takes a blob of up to {limit} bytes and this one is {size} bytes; it is held in "
-            f"the runner's local cache as {cid} and is uploaded when an IPFS endpoint of the application's "
-            f"own is set (set_storage_ipfs(url, token)); then run or send again")
+            f"{location} as {cid} and is uploaded when an IPFS endpoint of the application's own is set "
+            f"(set_storage_ipfs(url, token)); then run or send again")
         self.cid = cid
         self.size = size
         self.limit = limit
@@ -148,7 +151,7 @@ class IPFSClient:
 
     def __init__(
         self, api_url: str, token: str = "", intake_url: str = "", network: str = "",
-        intake_max_bytes: int = INTAKE_MAX_BYTES,
+        intake_max_bytes: int = INTAKE_MAX_BYTES, held_cache: Optional[HeldCache] = None,
     ) -> None:
         self.api_url = api_url
         self.headers = {}
@@ -159,30 +162,37 @@ class IPFSClient:
         self.intake_max_bytes = intake_max_bytes
         # cid -> bytes awaiting delivery to the intake.
         self.pending = {}
-        # cid -> bytes the intake does not take (above intake_max_bytes), held
-        # for the upload through an API of the application's own (upload_held).
-        self.held = {}
+        # The blobs the intake does not take (above intake_max_bytes), held on
+        # disk for the upload through an API of the application's own.
+        self.held_cache = held_cache or HeldCache()
 
     def _data_bytes(self, data):
         return data if isinstance(data, bytes) else str(data).encode("utf-8")
 
-    def upload_to_ipfs(self, data: str, attempts: int = 3, delay: float = 5.0) -> Optional[str]:
+    def upload_to_ipfs(self, data: str, attempts: int = 3, delay: float = 5.0,
+                       held_key: Optional[str] = None) -> Optional[str]:
         """Add one blob and return its CID, or None. An add the API does not
         answer within the timeout, or answers with a 5xx, is retried
         `attempts` times. A 401 or 403 raises at once: the API admits only a
         caller with a writer token, which repeating the add cannot supply.
 
         Through the intake the CID is computed here (unixfs_cid) and the bytes
-        are delivered by flush_pending once the request names the CID."""
+        are delivered by flush_pending once the request names the CID; a blob
+        above intake_max_bytes is held in the held cache under `held_key` (the
+        artefact key, or its CID) and raised as StorageLimitError."""
         content = self._data_bytes(data)
         if self.intake_url:
             cid = unixfs_cid(content)
             if len(content) > self.intake_max_bytes:
-                self.held[cid] = content
-                raise StorageLimitError(cid, len(content), self.intake_max_bytes)
+                self.held_cache.put(held_key or cid, cid, content, hashlib.sha256(content).hexdigest())
+                raise StorageLimitError(cid, len(content), self.intake_max_bytes, self.held_cache.location())
             self.pending[cid] = content
             return cid
+        return self._add(content, attempts, delay)
 
+    def _add(self, content, attempts: int = 3, delay: float = 5.0) -> Optional[str]:
+        """The API's add of `content` (bytes, or an open file read as it
+        goes); its CID, or None (upload_to_ipfs says how the answers count)."""
         add_url = f"{self.api_url}/add"
         for attempt in range(attempts):
             try:
@@ -262,25 +272,41 @@ class IPFSClient:
                     f"{allowed} attempts: {last}")
 
     def upload_held(self):
-        """Upload the held blobs through this client's API; each one the API
-        takes leaves the cache. Returns (uploaded, failed): the CIDs uploaded
-        and, per CID not uploaded, the reason. Nothing while this client
-        delivers through an intake, which does not take them."""
+        """Upload the held blobs through this client's API, each read from its
+        file as it goes; each one the API takes is marked uploaded and stays
+        held until release_held, so the run that references it finds it.
+        Returns (uploaded, failed): the CIDs uploaded and, per CID not
+        uploaded, the reason. Nothing while this client delivers through an
+        intake, which does not take them."""
         uploaded, failed = [], {}
         if self.intake_url:
             return uploaded, failed
-        for cid, content in list(self.held.items()):
+        for entry in self.held_cache.entries():
+            cid = entry["cid"]
+            if entry["uploaded"]:
+                continue
             try:
-                added = self.upload_to_ipfs(content)
+                with open(self.held_cache.path(cid), "rb") as fh:
+                    added = self._add(fh)
             except Exception as e:
                 failed[cid] = str(e)
                 continue
             if added != cid:
                 failed[cid] = f"the API named the bytes {added}"
                 continue
-            del self.held[cid]
+            self.held_cache.mark_uploaded(cid)
             uploaded.append(cid)
         return uploaded, failed
+
+    def held_entry(self, key: str):
+        """The held cache's entry under the artefact `key`, or None."""
+        return self.held_cache.get(key)
+
+    def release_held(self, cids) -> None:
+        """Forget the held blobs among `cids`: a transaction names them now."""
+        for cid in cids:
+            if cid and self.held_cache.by_cid(cid) is not None:
+                self.held_cache.release(cid)
 
     def deliver_signed(self, do_request: int, signature: str, cids=None, attempts: int = 3,
                        delay: float = 5.0):

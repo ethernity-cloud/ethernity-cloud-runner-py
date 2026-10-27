@@ -78,10 +78,16 @@ def test_a_task_without_input_sends_none(monkeypatch):
 
 
 class _Storage:
+    """An IPFS client stand-in: an API (no intake), nothing held."""
+    intake_url = ""
+
     def __init__(self):
         self.uploads = []
 
-    def upload_to_ipfs(self, data):
+    def held_entry(self, key):
+        return None
+
+    def upload_to_ipfs(self, data, held_key=None):
         self.uploads.append(data)
         return "QmInput"
 
