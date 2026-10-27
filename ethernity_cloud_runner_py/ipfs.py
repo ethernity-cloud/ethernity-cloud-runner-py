@@ -36,6 +36,27 @@ INTAKE_NOT_NAMED_ATTEMPTS = 12
 # ipfs_intake.py). An intake without the signed path answers a lodged blob
 # with the 403 INTAKE_NOT_NAMED; its row path still delivers, after the row.
 OWNER_SIGNATURE_HEADER = "X-Etny-Owner-Signature"
+# What the public intake takes per blob (mvp-pox-node ipfs_intake.py,
+# max_bytes); the limit of an intake of the application's own is given to
+# IPFSClient. A blob above it is not sent to the intake: it is held in the
+# client's local cache (IPFSClient.held, cid -> bytes), upload_to_ipfs raises
+# StorageLimitError before any transaction names the blob, and the held blobs
+# are uploaded by upload_held() once an IPFS endpoint of the application's own
+# is set (EthernityCloudRunner.set_storage_ipfs carries them over and calls it).
+INTAKE_MAX_BYTES = 100 * 1024 * 1024
+
+
+class StorageLimitError(RuntimeError):
+    """A blob above what the intake takes; held in the client's local cache."""
+
+    def __init__(self, cid: str, size: int, limit: int) -> None:
+        super().__init__(
+            f"the intake takes a blob of up to {limit} bytes and this one is {size} bytes; it is held in "
+            f"the runner's local cache as {cid} and is uploaded when an IPFS endpoint of the application's "
+            f"own is set (set_storage_ipfs(url, token)); then run or send again")
+        self.cid = cid
+        self.size = size
+        self.limit = limit
 
 
 def owner_signature_message(network: str, do_request: int) -> str:
@@ -127,6 +148,7 @@ class IPFSClient:
 
     def __init__(
         self, api_url: str, token: str = "", intake_url: str = "", network: str = "",
+        intake_max_bytes: int = INTAKE_MAX_BYTES,
     ) -> None:
         self.api_url = api_url
         self.headers = {}
@@ -134,8 +156,12 @@ class IPFSClient:
             self.headers = {"authorization": token}
         self.intake_url = intake_url.rstrip("/")
         self.network = network
+        self.intake_max_bytes = intake_max_bytes
         # cid -> bytes awaiting delivery to the intake.
         self.pending = {}
+        # cid -> bytes the intake does not take (above intake_max_bytes), held
+        # for the upload through an API of the application's own (upload_held).
+        self.held = {}
 
     def _data_bytes(self, data):
         return data if isinstance(data, bytes) else str(data).encode("utf-8")
@@ -151,6 +177,9 @@ class IPFSClient:
         content = self._data_bytes(data)
         if self.intake_url:
             cid = unixfs_cid(content)
+            if len(content) > self.intake_max_bytes:
+                self.held[cid] = content
+                raise StorageLimitError(cid, len(content), self.intake_max_bytes)
             self.pending[cid] = content
             return cid
 
@@ -231,6 +260,27 @@ class IPFSClient:
                 raise RuntimeError(
                     f"intake did not accept {cid} for request {do_request} after "
                     f"{allowed} attempts: {last}")
+
+    def upload_held(self):
+        """Upload the held blobs through this client's API; each one the API
+        takes leaves the cache. Returns (uploaded, failed): the CIDs uploaded
+        and, per CID not uploaded, the reason. Nothing while this client
+        delivers through an intake, which does not take them."""
+        uploaded, failed = [], {}
+        if self.intake_url:
+            return uploaded, failed
+        for cid, content in list(self.held.items()):
+            try:
+                added = self.upload_to_ipfs(content)
+            except Exception as e:
+                failed[cid] = str(e)
+                continue
+            if added != cid:
+                failed[cid] = f"the API named the bytes {added}"
+                continue
+            del self.held[cid]
+            uploaded.append(cid)
+        return uploaded, failed
 
     def deliver_signed(self, do_request: int, signature: str, cids=None, attempts: int = 3,
                        delay: float = 5.0):

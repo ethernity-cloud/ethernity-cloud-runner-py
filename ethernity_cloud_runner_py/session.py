@@ -219,7 +219,7 @@ class EthernityCloudSession:
         if not self.is_running():
             raise SessionError("session order is no longer processing")
         ciphertext = encrypt(str(data).encode("utf-8"), self.runner.enclave_public_key)
-        cid = self.runner.storage().upload_to_ipfs(ciphertext)
+        cid = self.runner._upload_artefact(ciphertext)
         if not cid:
             raise SessionError("the configured storage did not accept the input")
         # The bytes reach the intake before the row that names them, under

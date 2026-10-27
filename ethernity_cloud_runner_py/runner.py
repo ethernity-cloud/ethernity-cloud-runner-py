@@ -35,7 +35,7 @@ from .enums import (
     UNSAFE_TRUSTEDZONE_SUFFIX,
     task_status_name,
 )
-from .ipfs import IPFSClient, INTAKE_NETWORKS, PUBLIC_INTAKE
+from .ipfs import IPFSClient, INTAKE_NETWORKS, PUBLIC_INTAKE, StorageLimitError
 from .utils import (
     format_date,
     generate_random_hex_of_size,
@@ -354,7 +354,7 @@ class EthernityCloudRunner:
     def get_v3_image_metadata(self, challenge_hash: bytes) -> str:
         """Generate v3 image metadata."""
         base64_encrypted_challenge = encrypt(challenge_hash, self.enclave_public_key)
-        challenge_ipfs_hash = self.storage().upload_to_ipfs(base64_encrypted_challenge)
+        challenge_ipfs_hash = self._upload_artefact(base64_encrypted_challenge)
         if challenge_ipfs_hash is None:
             raise ValueError("Failed to upload challenge to IPFS.")
         self.logger.info(f"Uploaded challenge to IPFS: {challenge_ipfs_hash}")
@@ -369,7 +369,7 @@ class EthernityCloudRunner:
         # PAYLOAD_CHECKSUM_ERROR (orders 1817-1819 on bloxberg testnet).
         script_checksum = sha256(code, True)
         base64_encrypted_script = encrypt(code.encode("utf-8"), self.enclave_public_key)
-        self.script_hash = self.storage().upload_to_ipfs(base64_encrypted_script)
+        self.script_hash = self._upload_artefact(base64_encrypted_script)
         if self.script_hash is None:
             raise ValueError("Failed to upload encrypted code to IPFS.")
         self.logger.info(f"Uploaded encrypted code to IPFS: {self.script_hash}")
@@ -403,7 +403,7 @@ class EthernityCloudRunner:
             return f"{version}::{ZERO_CHECKSUM}"
         input_checksum = sha256(input_data, True)
         base64_encrypted_input = encrypt(input_data.encode("utf-8"), self.enclave_public_key)
-        self.file_set_hash = self.storage().upload_to_ipfs(base64_encrypted_input)
+        self.file_set_hash = self._upload_artefact(base64_encrypted_input)
         if self.file_set_hash is None:
             raise ValueError("Failed to upload encrypted input to IPFS.")
         self.logger.info(f"Uploaded encrypted input to IPFS: {self.file_set_hash}")
@@ -895,12 +895,34 @@ class EthernityCloudRunner:
         if not is_node:
             self.logger.error("The target address is not a valid node operator address")
         return is_node
-    def set_storage_ipfs(self, ipfs_address: str, token: str = "") -> None:
+    def set_storage_ipfs(self, ipfs_address: str, token: str = ""):
         """Upload and read through a Kubo RPC API: one of your own, or the
         public API (https://ipfs.ethernity.cloud/api/v0) with a writer token
         as `token`. The token is sent as the Authorization header of every
-        request."""
+        request. The blobs the intake did not take and the previous client
+        holds in its local cache (ipfs.StorageLimitError) are uploaded through
+        the new API at once; returns their outcome, (uploaded, failed)."""
+        held = dict(self.ipfs_client.held) if self.ipfs_client is not None else {}
         self.ipfs_client = IPFSClient(ipfs_address, token)
+        self.ipfs_client.held.update(held)
+        uploaded, failed = self.ipfs_client.upload_held()
+        for cid in uploaded:
+            self.logger.info(f"Held blob {cid} uploaded to the IPFS endpoint")
+        for cid, reason in failed.items():
+            self.logger.warning(f"Held blob {cid} was not taken by the IPFS endpoint: {reason}")
+        return uploaded, failed
+
+    def _upload_artefact(self, content):
+        """The CID of an artefact (challenge, code, input, session input)
+        through the configured storage, or None when it did not take it. A
+        blob the intake does not take (ipfs.INTAKE_MAX_BYTES) is held in the
+        client's local cache, logged at ERROR and raised as
+        ipfs.StorageLimitError, before any transaction names it."""
+        try:
+            return self.storage().upload_to_ipfs(content)
+        except StorageLimitError as e:
+            self.logger.error(str(e))
+            raise
     def set_public_intake(self, base_url: str = PUBLIC_INTAKE) -> None:
         """Upload through the bootnode's payload intake and read through its
         public API: the storage a runner uses when neither this nor
