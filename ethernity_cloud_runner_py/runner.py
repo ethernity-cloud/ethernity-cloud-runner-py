@@ -56,6 +56,12 @@ TRUSTEDZONE_VERSION = "v3"
 # A mainnet node defers a request by up to (registered nodes / 25) blocks to
 # spread orders.
 DEFAULT_ORDER_WAIT_SECONDS = 1800
+# How often the chain is read while a transaction's receipt, the order a node
+# places on the request, the order's close and the result blob are waited for:
+# each is then seen within seconds of its block, and a wait costs the block
+# time and nothing more. The reads are cheap (eth_getTransactionReceipt,
+# eth_getLogs over the blocks since the request, one struct read).
+CHAIN_POLL_SECONDS = 5
 
 
 class OperatorFaultError(Exception):
@@ -299,30 +305,32 @@ class EthernityCloudRunner:
             self.logger.error(f"Error getting transaction reason: {e}")
             return "Unknown error"
     def poll_transaction(self, tx_hash: str, max_attempts: int = 10) -> Optional[Dict]:
-        """Poll for transaction receipt with backoff."""
+        """The receipt of `tx_hash`, read every CHAIN_POLL_SECONDS for up to
+        `max_attempts` blocks (max_attempts * block_time seconds). None when
+        the transaction is not mined by then, or the run was cancelled."""
         provider = self.contract.get_provider().eth if self.contract else None
         if not provider:
             raise RuntimeError("No provider available.")
-        initial_delay = self.block_time
-        current_delay = initial_delay
-        backoff_factor = 1.5
         self.logger.info(f"Submitting transaction {tx_hash}")
-        for attempt in range(max_attempts):
-            if self.is_running():
-                try:
-                    receipt = provider.get_transaction_receipt(tx_hash)
-                    if receipt:
-                        return receipt
-                except TransactionNotFound:
-                    pass
-                self.logger.debug(f"Transaction {tx_hash} still processing, check attempt {attempt + 1}/{max_attempts}")
-            else:
+        deadline = time.monotonic() + max_attempts * self.block_time
+        attempt = 0
+        while True:
+            if not self.is_running():
                 self.logger.info("Transaction processing was cancelled")
                 return None
-            time.sleep(current_delay)
-            current_delay = min(current_delay * backoff_factor, 60)  # Max 60s
-        self.logger.error(f"Max attempts ({max_attempts}) reached for transaction {tx_hash}.")
-        return None
+            attempt += 1
+            try:
+                receipt = provider.get_transaction_receipt(tx_hash)
+                if receipt:
+                    return receipt
+            except TransactionNotFound:
+                pass
+            left = deadline - time.monotonic()
+            if left <= 0:
+                self.logger.error(f"Transaction {tx_hash} was not mined within {max_attempts} blocks.")
+                return None
+            self.logger.debug(f"Transaction {tx_hash} still processing, check {attempt}")
+            time.sleep(min(CHAIN_POLL_SECONDS, left))
     def wait_for_transaction_to_be_processed(self, contract: Contract, transaction_hash: str, max_attempts: int = 10) -> bool:
         """Wait for transaction to be mined and check status."""
         receipt = self.poll_transaction(transaction_hash, max_attempts)
@@ -607,7 +615,7 @@ class EthernityCloudRunner:
                     )
                     self.logger.error(self._fault)
                     return None
-            time.sleep(self.block_time)
+            time.sleep(CHAIN_POLL_SECONDS)
             tick += 1
             # EVENT-FIRST: _orderClosedEV(_orderNumber) fires the moment the
             # operator records the result -- one log scan per tick instead of
@@ -749,7 +757,7 @@ class EthernityCloudRunner:
                     return True
                 retry_count = 0
                 current_delay = initial_delay
-                time.sleep(self.block_time)
+                time.sleep(CHAIN_POLL_SECONDS)
             except Web3RPCError as e:
                 error_code = e.code if hasattr(e, 'code') else 'Unknown'
                 error_msg = raw_rpc_error_message(e) if hasattr(e, 'message') else str(e)
@@ -1010,7 +1018,7 @@ class EthernityCloudRunner:
             if time.time() >= until:
                 self.logger.warning(f"Result {result_cid} not readable after {attempt} attempts")
                 return None
-            time.sleep(min(self.block_time, max(1, until - time.time())))
+            time.sleep(min(CHAIN_POLL_SECONDS, max(1, until - time.time())))
         return None
 
     def retry_operation(self, func: callable, max_retries: int = 10, delay: Optional[int] = None, backoff_factor: float = 1.5) -> Any:
