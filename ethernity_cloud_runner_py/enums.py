@@ -184,8 +184,11 @@ class ECNetwork:
             NETWORK_FEE=5
             ENCLAVE_FEE=10
         class AMOY:
-            IMAGE_REGISTRY_CONTRACT_ADDRESS='0xeFA33c3976f31961285Ae4f5D10188616C912728'
-            PROTOCOL_ADDRESS='0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3'
+            # ECImageRegistryV3 of 2026-10-28 and the separate-ERC20
+            # EthernityImplementationV2 1.1 of the same day, on the storage and
+            # token of the previous implementation 0x1579b37C....
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706'
+            PROTOCOL_ADDRESS='0xB8f46D2B943fFbe2A061Ae8be087ef5055AD96A3'
             TOKEN_ADDRESS='0x9927809B61122B2af3f3b3A3303875e0687b8eE3'
             HEARTBEAT_CONTRACT_ADDRESS='0x2E27677fb67531eb09134fE331C27899f87ADe10'
             TOKEN_NAME='tECLD'
@@ -207,6 +210,13 @@ class ECNetwork:
             REWARD_TYPE=1
             NETWORK_FEE=5
             ENCLAVE_FEE=10
+
+        class AMOY_UNSAFE(AMOY):
+            # The chain and contracts of AMOY, with the trustedzones that run
+            # without a CAS (hardware SGX platforms the CAS cannot attest): a
+            # task chosen to run unsafe names this network.
+            INTEGRATION_TEST_IMAGE='ecld-pynithy-amoy-unsafe'
+            TRUSTEDZONE_IMAGE='ecld-pynithy-amoy-unsafe'
 
     class IOTEX:
         class TESTNET:
