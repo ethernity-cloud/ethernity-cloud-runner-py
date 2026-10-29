@@ -102,11 +102,19 @@ def test_mainnet_session_without_storage_is_refused_before_any_transaction():
 
 
 def test_a_testnet_the_intake_does_not_serve_is_refused_before_any_transaction():
-    runner = EthernityCloudRunner("POLYGON", "AMOY")
-    with pytest.raises(RuntimeError, match="serves bloxberg_testnet, bloxberg_testnet_unsafe, litvm_liteforge, litvm_liteforge_unsafe, ethereum_sepolia, ethereum_sepolia_unsafe, not POLYGON AMOY"):
+    runner = EthernityCloudRunner("IOTEX", "TESTNET")
+    with pytest.raises(RuntimeError, match="serves bloxberg_testnet, bloxberg_testnet_unsafe, polygon_amoy, polygon_amoy_unsafe, litvm_liteforge, litvm_liteforge_unsafe, ethereum_sepolia, ethereum_sepolia_unsafe, not IOTEX TESTNET"):
         runner.run(RESOURCES, "my-dapp-securelock", "v3", '___etny_result___("x")')
     assert runner.ipfs_client is None
     assert not runner.is_running()
+
+
+def test_amoy_and_its_unsafe_twin_resolve_the_default_intake():
+    for kind, network in (("AMOY", "polygon_amoy"), ("AMOY_UNSAFE", "polygon_amoy_unsafe")):
+        runner = EthernityCloudRunner("POLYGON", kind)
+        runner._resolve_storage()
+        assert runner.ipfs_client.network == network
+        assert runner.ipfs_client.intake_url == PUBLIC_INTAKE
 
 
 def test_the_unsafe_bloxberg_testnet_resolves_the_default_intake():
@@ -126,12 +134,12 @@ def test_mainnet_runner_with_its_own_kubo_resolves_it():
 def test_an_explicit_public_intake_on_a_network_it_does_not_serve_is_refused_before_any_transaction():
     """ecld-run's default (the intake) on a network without an intake route:
     the refusal comes before the DO request, not after it is on chain."""
-    runner = EthernityCloudRunner("POLYGON", "AMOY")
+    runner = EthernityCloudRunner("IOTEX", "TESTNET")
     runner.set_public_intake()
     with pytest.raises(RuntimeError) as failure:
         runner.run(RESOURCES, "my-dapp-securelock", "v3", '___etny_result___("x")')
     message = str(failure.value)
-    assert message.startswith("The bootnode's payload intake serves bloxberg_testnet, bloxberg_testnet_unsafe, litvm_liteforge, litvm_liteforge_unsafe, ethereum_sepolia, ethereum_sepolia_unsafe, not POLYGON AMOY")
+    assert message.startswith("The bootnode's payload intake serves bloxberg_testnet, bloxberg_testnet_unsafe, polygon_amoy, polygon_amoy_unsafe, litvm_liteforge, litvm_liteforge_unsafe, ethereum_sepolia, ethereum_sepolia_unsafe, not IOTEX TESTNET")
     assert "set_storage_ipfs(url, token)" in message
     assert not runner.is_running()
 

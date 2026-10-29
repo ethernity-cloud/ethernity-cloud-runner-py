@@ -69,8 +69,8 @@ def owner_signature_message(network: str, do_request: int) -> str:
 # The networks the intake serves, by the node agent's name for them: those the
 # bootnode's agent runs (mvp-pox-node registers an intake backend per network
 # handle). A runner on another network configures its storage itself.
-INTAKE_NETWORKS = ("bloxberg_testnet", "bloxberg_testnet_unsafe", "litvm_liteforge", "litvm_liteforge_unsafe",
-                   "ethereum_sepolia", "ethereum_sepolia_unsafe")
+INTAKE_NETWORKS = ("bloxberg_testnet", "bloxberg_testnet_unsafe", "polygon_amoy", "polygon_amoy_unsafe",
+                   "litvm_liteforge", "litvm_liteforge_unsafe", "ethereum_sepolia", "ethereum_sepolia_unsafe")
 
 # The public gateway a blob is read from when the configured API does not
 # answer: a mirror of the same content, reached without credentials.
