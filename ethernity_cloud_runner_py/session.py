@@ -54,12 +54,15 @@ SESSION_STATUS_NAMES = {
     3: "expired-unprocessed",
     4: "flooded",
     5: "unsupported-securelock",
+    6: "transferred",
+    7: "transfer-forced",
 }
 
 # Codes carried by 'error' output rows (msg["code"]): task codes for payload
 # failures (5 = no ___etny_on_input___ handler defined, 1 = handler raised)
-# and session notices 50-53 (malformed row, out-of-order seq, undecryptable
-# input, securelock build without session support). 0 for ok/late rows.
+# and session notices 50-54 (malformed row, out-of-order seq, undecryptable
+# input, securelock build without session support, a predecessor's cut input
+# the successor could not replay). 0 for ok/late rows.
 SESSION_ERROR_CODE_NAMES = {
     1: "handler-error",
     5: "handler-not-defined",
@@ -67,6 +70,7 @@ SESSION_ERROR_CODE_NAMES = {
     51: "input-out-of-order",
     52: "input-undecryptable",
     53: "unsupported-securelock",
+    54: "session-replay-unavailable",
 }
 
 

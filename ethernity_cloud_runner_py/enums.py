@@ -54,10 +54,18 @@ ECOrderTaskStatus = {
     # The CAS that provisioned the enclave presented a quote the enclave could
     # not bind to its own injected environment; the enclave terminated the
     # order for refund. Set by the trustedzone (etny_exec.py TaskStatus) and by
-    # the securelock alike. Codes 41-45 are not defined by any enclave and the
-    # node emits no task codes of its own, so nothing on the network produces
-    # them.
+    # the securelock alike.
     40: "CAS_ATTESTATION_FAULT",
+    # Codes the trustedzone alone asserts at a handover or a termination; none
+    # is a refund code. 41 and 42 are result-v5.json's serviceTransferredCode
+    # and serviceTransferForcedCode; 43 is the trustedzones' TaskStatus.TERMINATED.
+    # The trustedzone signs 41 or 42 from the outputs it holds at the handover,
+    # whichever control (close or transfer) it wrote.
+    41: "SERVICE_TRANSFERRED",       # the session was handed over to the successor's window
+                                     # with every forwarded input answered by its output
+    42: "SERVICE_TRANSFER_FORCED",   # the session was handed over with an input unanswered
+                                     # (the one in hand or any forwarded behind it)
+    43: "TERMINATED",                # a plain task ended by orderTerminatedAt while running
 }
 
 # Task codes attributed to the node operator rather than the submitted code:

@@ -24,6 +24,9 @@ contract = {
     # Deployed 2026-10-14 with Sepolia's PoX family.
     'address_ethereum_sepolia': '0x9927809B61122B2af3f3b3A3303875e0687b8eE3',
     'address_ethereum_sepolia_unsafe': '0x9927809B61122B2af3f3b3A3303875e0687b8eE3',
+    # The Amoy instance the securelocks commit to.
+    'address_polygon_amoy': '0x1DC58496ed1cA66FD1E0b51fA28A9E7451970843',
+    'address_polygon_amoy_unsafe': '0x1DC58496ed1cA66FD1E0b51fA28A9E7451970843',
     'abi': [   {'inputs': [], 'name': 'BadSignature', 'type': 'error'},
     {'inputs': [], 'name': 'EmptyCID', 'type': 'error'},
     {   'inputs': [   {'internalType': 'uint256', 'name': 'stored', 'type': 'uint256'},

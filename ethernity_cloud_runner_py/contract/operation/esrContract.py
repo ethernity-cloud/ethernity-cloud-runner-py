@@ -48,10 +48,22 @@ class ESRContract:
         if self.network_config.MIDDLEWARE == "POA":
             self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
-        address = registry_address or contract["address_bloxberg"]
+        address = registry_address or self.registry_address_for(network_name, network_type)
         self.contract = self.provider.eth.contract(
             address=to_checksum_address(address), abi=contract["abi"]
         )
+
+    @staticmethod
+    def registry_address_for(network_name: str, network_type: str) -> str:
+        """The ESR address of a network from the esrAbi table: the
+        address_<network>_<type> entry, else address_<network>. A network
+        with neither entry has no ESR this client can read."""
+        name, kind = network_name.lower(), network_type.lower()
+        address = contract.get(f"address_{name}_{kind}") or contract.get(f"address_{name}")
+        if not address:
+            raise ValueError(
+                f"no Enclave State Registry address for network {network_name}/{network_type}")
+        return address
 
     @staticmethod
     def key_hash(key: str) -> bytes:

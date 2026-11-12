@@ -1548,15 +1548,7 @@ class EthernityCloudRunner:
             entry = cache.get(wallet, key)
             if entry is not None:
                 try:
-                    from .contract.abi.esrAbi import contract as _esr_abi
-                    _registry = (
-                        _esr_abi.get(f"address_{self.network_name.lower()}_{self.network_type.lower()}")
-                        or _esr_abi.get(f"address_{self.network_name.lower()}")
-                    )
-                    esr = ESRContract(
-                        self.network_name, self.network_type,
-                        registry_address=_registry,
-                    )
+                    esr = ESRContract(self.network_name, self.network_type)
                     onchain = esr.get_state(wallet, key)
                     checked_on_chain = True
                     fresh = False
@@ -1638,13 +1630,7 @@ class EthernityCloudRunner:
             raise ValueError(
                 "esr_version/esr_wait_for_version need enclave_wallet "
                 "(no previous run to learn it from)")
-        from .contract.abi.esrAbi import contract as _esr_abi
-        _registry = (
-            _esr_abi.get(f"address_{self.network_name.lower()}_{self.network_type.lower()}")
-            or _esr_abi.get(f"address_{self.network_name.lower()}")
-        )
-        esr = ESRContract(
-            self.network_name, self.network_type, registry_address=_registry)
+        esr = ESRContract(self.network_name, self.network_type)
         onchain = esr.get_state(wallet, key)
         return {
             "wallet": wallet,
@@ -1673,13 +1659,7 @@ class EthernityCloudRunner:
         if not wallet:
             raise ValueError(
                 "esr_nonce needs enclave_wallet (no previous run to learn it from)")
-        from .contract.abi.esrAbi import contract as _esr_abi
-        _registry = (
-            _esr_abi.get(f"address_{self.network_name.lower()}_{self.network_type.lower()}")
-            or _esr_abi.get(f"address_{self.network_name.lower()}")
-        )
-        esr = ESRContract(
-            self.network_name, self.network_type, registry_address=_registry)
+        esr = ESRContract(self.network_name, self.network_type)
         return {"wallet": wallet, "nonce": esr.get_nonce(wallet, key)}
 
     def esr_wait_for_version(
