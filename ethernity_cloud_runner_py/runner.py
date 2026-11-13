@@ -60,8 +60,35 @@ DEFAULT_ORDER_WAIT_SECONDS = 1800
 # places on the request, the order's close and the result blob are waited for:
 # each is then seen within seconds of its block, and a wait costs the block
 # time and nothing more. The reads are cheap (eth_getTransactionReceipt,
-# eth_getLogs over the blocks since the request, one struct read).
+# eth_blockNumber and eth_getLogs over the blocks since the request in ranges
+# of at most GET_LOGS_MAX_BLOCKS, one struct read).
 CHAIN_POLL_SECONDS = 5
+# The widest block range one eth_getLogs call asks for. The LitVM LiteForge
+# RPC hosted by Zeeve (rpc.testnet.liteforge.zeeve.net) refuses a wider one:
+# "eth_getLogs range exceeds 3000 blocks; split the range".
+GET_LOGS_MAX_BLOCKS = 3000
+# Blocks kept free below the limit by the scan's last range, whose toBlock is
+# "latest": the head advances between the eth_blockNumber read that sized the
+# ranges and the eth_getLogs call (LiteForge mines about one block a second).
+GET_LOGS_TAIL_SLACK = 100
+
+
+def log_scan_ranges(from_block: int, head: int) -> list:
+    """The (fromBlock, toBlock) pairs an eth_getLogs scan from `from_block`
+    to the chain head `head` is split into: ranges of at most
+    GET_LOGS_MAX_BLOCKS blocks, none past `head`, while more than
+    GET_LOGS_MAX_BLOCKS - GET_LOGS_TAIL_SLACK blocks remain, then the rest,
+    whose toBlock is "latest" so that the replica serving the call bounds it
+    at its own head. A head below `from_block` (read from a replica behind the
+    one the request was anchored on) gives the one open range."""
+    ranges = []
+    start = from_block
+    while head - start + 1 > GET_LOGS_MAX_BLOCKS - GET_LOGS_TAIL_SLACK:
+        end = min(start + GET_LOGS_MAX_BLOCKS - 1, head)
+        ranges.append((start, end))
+        start = end + 1
+    ranges.append((start, "latest"))
+    return ranges
 
 
 class OperatorFaultError(Exception):
@@ -814,15 +841,23 @@ class EthernityCloudRunner:
         result = self.get_result_from_order(self.order_id)
         return result if result else None
     def _event_logs(self, signature: str, from_block: int) -> list:
-        """Stateless eth_getLogs scan for a protocol event. Used instead of
-        eth_newFilter subscriptions, which are stateful and break behind
-        load-balanced RPC endpoints."""
+        """Stateless eth_getLogs scan for a protocol event from `from_block`
+        to the head. Used instead of eth_newFilter subscriptions, which are
+        stateful and break behind load-balanced RPC endpoints. One call per
+        range of log_scan_ranges, the logs concatenated in block order: no
+        call spans more than GET_LOGS_MAX_BLOCKS, the Zeeve LiteForge RPC's
+        limit."""
         w3 = self.protocol_contract.w3
-        return w3.eth.get_logs({
-            "address": self.protocol_contract.address,
-            "fromBlock": from_block,
-            "topics": [w3.keccak(text=signature)],
-        })
+        topics = [w3.keccak(text=signature)]
+        logs = []
+        for range_from, range_to in log_scan_ranges(from_block, w3.eth.block_number):
+            logs.extend(w3.eth.get_logs({
+                "address": self.protocol_contract.address,
+                "fromBlock": range_from,
+                "toBlock": range_to,
+                "topics": topics,
+            }))
+        return logs
     def find_order(self, doreq: int) -> bool:
         """Find the order by request ID."""
         # EVENT-FIRST: one _orderPlacedEV log scan since the request block

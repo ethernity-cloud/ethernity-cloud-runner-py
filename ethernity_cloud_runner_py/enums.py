@@ -304,7 +304,10 @@ class ECNetwork:
             TOKEN_ADDRESS='0x95Aa17fCFaAB75e8ed7d7DF218045795dCeB9c50'
             HEARTBEAT_CONTRACT_ADDRESS='0x6D7F920958dfb9a13729723C1007b04eB7950E58'
             TOKEN_NAME='tECLD'
-            RPC_URL='https://liteforge.rpc.caldera.xyz/infra-partner-http'
+            # Hosted by Zeeve since 2026-11-12 (docs.litvm.com, "add to
+            # wallet"); its eth_getLogs serves at most 3000 blocks per call,
+            # the bound runner.py's GET_LOGS_MAX_BLOCKS applies.
+            RPC_URL='https://rpc.testnet.liteforge.zeeve.net/'
             RPC_DELAY=200
             CHAIN_ID=4441
             MIDDLEWARE=None
