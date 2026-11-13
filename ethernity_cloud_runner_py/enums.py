@@ -192,11 +192,12 @@ class ECNetwork:
             NETWORK_FEE=5
             ENCLAVE_FEE=10
         class AMOY:
-            # ECImageRegistryV3 of 2026-10-28 and the separate-ERC20
-            # EthernityImplementationV2 1.1 of the same day, on the storage and
-            # token of the previous implementation 0x1579b37C....
+            # ECImageRegistryV3 of 2026-10-28 and the EthernityImplementationV2
+            # 1.2 of 2026-11-12, on the storage and token of the implementations
+            # 1.1 0xB8f46D2B... and 0x1579b37C.... A DO request is escrowed by
+            # the implementation it was posted through, so only 1.2 is served.
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706'
-            PROTOCOL_ADDRESS='0xB8f46D2B943fFbe2A061Ae8be087ef5055AD96A3'
+            PROTOCOL_ADDRESS='0x3Aa1A0d7A8A9DaE9e13345D3261afe86D67326A4'
             TOKEN_ADDRESS='0x9927809B61122B2af3f3b3A3303875e0687b8eE3'
             HEARTBEAT_CONTRACT_ADDRESS='0x2E27677fb67531eb09134fE331C27899f87ADe10'
             TOKEN_NAME='tECLD'
