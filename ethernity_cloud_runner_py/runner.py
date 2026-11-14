@@ -267,6 +267,14 @@ class EthernityCloudRunner:
         chain and contracts of the network it is named after, with the
         trustedzones that run without a CAS."""
         return self.network_type.endswith(UNSAFE_NETWORK_SUFFIX)
+    def escrow_needs_allowance(self) -> bool:
+        """Whether the wallet approves the protocol on the token before a DO
+        request: the request's escrow is pulled with transferFrom when the
+        network's protocol address differs from its token address (the
+        EthernityImplementationV2 PoX on a separate ERC-20). A protocol that
+        is the token (the bloxberg mainnet PoX holds the ETNY balances) takes
+        the escrow from the caller's balance, and no allowance exists."""
+        return self.network_config.PROTOCOL_ADDRESS.lower() != self.network_config.TOKEN_ADDRESS.lower()
     def _resolve_trustedzone(self, trustedzone_enclave: Optional[str]) -> str:
         """The trustedzone a task runs on: `trustedzone_enclave` when given,
         else the network's. An -unsafe trustedzone runs without a CAS, and
@@ -1316,7 +1324,7 @@ class EthernityCloudRunner:
                     raise ConnectionError("Web3 connection failed.")
                 if not self.get_enclave_details():
                     raise ValueError("Unable to find enclave in registry")
-                if self.network_name != "BLOXBERG":
+                if self.escrow_needs_allowance():
                     self.logger.info("Checking allowance on the current wallet...")
                     allowance = self.token_contract.functions.allowance(self.signer.address, self.contract.get_protocol_address()).call()
                     if allowance < self.price:
@@ -1415,7 +1423,7 @@ class EthernityCloudRunner:
                     raise ConnectionError("Web3 connection failed.")
                 if not self.get_enclave_details():
                     raise ValueError("Unable to find enclave in registry")
-                if self.network_name != "BLOXBERG":
+                if self.escrow_needs_allowance():
                     allowance = self.token_contract.functions.allowance(
                         self.signer.address, self.contract.get_protocol_address()).call()
                     if allowance < self.price:

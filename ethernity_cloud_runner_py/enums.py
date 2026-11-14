@@ -111,7 +111,14 @@ class ECNetwork:
             # deployment of 2026-10-06, whose securelock names belong to their
             # publishers.
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0xa372a6e1Eb7Fcf343AF6b91E809b900C55001CD1'
-            PROTOCOL_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
+            # The EthernityImplementationV2 1.2 of 2026-11-14
+            # (pox-smart-contract-litvm), on its own EthernityCloudStorage
+            # 0xEE3aAa1A.... The token stays the legacy proxy 0x02882F03...,
+            # which is also the previous PoX and keeps the orders placed
+            # through it. The protocol is not the token, so a DO request's
+            # escrow is pulled with transferFrom and the wallet approves the
+            # implementation first (EthernityCloudRunner.escrow_needs_allowance).
+            PROTOCOL_ADDRESS='0x7E7C6eB435E3687CfDfe18C09C0340eb70567d7b'
             TOKEN_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
             HEARTBEAT_CONTRACT_ADDRESS='0x9B105aefF69Cd26050798d575db17ffc2eAC4E4d'
             TOKEN_NAME='tETNY'
