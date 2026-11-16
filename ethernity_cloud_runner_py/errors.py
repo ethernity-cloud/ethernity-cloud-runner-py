@@ -53,6 +53,7 @@ from web3.exceptions import Web3RPCError
 
 __all__ = [
     "raw_rpc_error_message",
+    "provider_message",
     "ECWeb3RPCError",
     "suppress_web3_friendly_prefix",
     "install_web3_friendly_prefix_filter",
@@ -71,6 +72,14 @@ def raw_rpc_error_message(e: Web3RPCError) -> str:
         return err.get("message") or getattr(e, "message", "") or str(e)
     except Exception:
         return getattr(e, "message", "") or str(e)
+
+def provider_message(e: BaseException) -> str:
+    """The message a failed RPC call is reported with: the node's raw
+    error.message for a Web3RPCError, str(e) for every other exception (a
+    requests timeout or connection failure, a response the ABI cannot decode)."""
+    if isinstance(e, Web3RPCError):
+        return raw_rpc_error_message(e)
+    return str(e)
 
 def raw_rpc_error_code(e: Web3RPCError):
         """

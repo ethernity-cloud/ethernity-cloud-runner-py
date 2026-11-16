@@ -11,7 +11,7 @@ from web3 import Web3
 from web3.contract.contract import Contract
 from web3.exceptions import TimeExhausted, TransactionNotFound, Web3RPCError
 from web3.logs import DISCARD
-from .errors import install_web3_friendly_prefix_filter, raw_rpc_error_message
+from .errors import install_web3_friendly_prefix_filter, raw_rpc_error_message, provider_message
 from .contract.abi.bloxbergAbi import contract as bloxbergAbi
 from .contract.abi.polygonProtocolAbi import contract as polygonAbi
 from .contract.abi.ECLDAbi import contract as ECLDAbi
@@ -71,6 +71,12 @@ GET_LOGS_MAX_BLOCKS = 3000
 # "latest": the head advances between the eth_blockNumber read that sized the
 # ranges and the eth_getLogs call (LiteForge mines about one block a second).
 GET_LOGS_TAIL_SLACK = 100
+# How many times a read a DO request depends on (the wallet's token balance,
+# its allowance for the protocol) is tried, and the seconds between the tries,
+# before the read's failure fails the request (_read_before_request): one RPC
+# request the provider drops does not refuse a request the chain would accept.
+PRE_REQUEST_READ_ATTEMPTS = 3
+PRE_REQUEST_READ_RETRY_SECONDS = 2
 
 
 def log_scan_ranges(from_block: int, head: int) -> list:
@@ -274,23 +280,37 @@ class EthernityCloudRunner:
         is the token (the bloxberg mainnet PoX holds the ETNY balances) takes
         the escrow from the caller's balance, and no allowance exists."""
         return self.network_config.PROTOCOL_ADDRESS.lower() != self.network_config.TOKEN_ADDRESS.lower()
+    def _read_before_request(self, read: callable) -> Any:
+        """A read a DO request depends on: `read` is tried
+        PRE_REQUEST_READ_ATTEMPTS times, PRE_REQUEST_READ_RETRY_SECONDS apart,
+        on any exception, and the last exception is raised after that."""
+        return self.retry_operation(read, max_retries=PRE_REQUEST_READ_ATTEMPTS,
+                                    delay=PRE_REQUEST_READ_RETRY_SECONDS, backoff_factor=1)
     def check_allowance(self) -> None:
         """The allowance step before a DO request, the same on every network
         whose protocol address differs from its token address
         (escrow_needs_allowance): the wallet's allowance for the protocol on
-        the token is read, and when it is below the request's escrow
-        (protocolContract.request_escrow, the amount the PoX pulls with
-        transferFrom) the protocol is approved for exactly the escrow and the
-        approval is waited for; an allowance at or above the escrow is left as
-        it is. Where the protocol is the token (the bloxberg mainnet) nothing
-        is read or approved. Raises ValueError when the approval is not
-        mined or reverts."""
+        the token is read (_read_before_request), and when it is below the
+        request's escrow (protocolContract.request_escrow, the amount the PoX
+        pulls with transferFrom) the protocol is approved for exactly the
+        escrow and the approval is waited for; an allowance at or above the
+        escrow is left as it is. Where the protocol is the token (the bloxberg
+        mainnet) nothing is read or approved. Raises RuntimeError naming the
+        token, the wallet, the protocol and the provider's message when no
+        read answers, ValueError when the approval is not mined or reverts."""
         if not self.escrow_needs_allowance():
             return
         self.logger.info("Checking allowance on the current wallet...")
         escrow = protocolContract.request_escrow(self.resources)
-        allowance = self.token_contract.functions.allowance(
-            self.signer.address, self.contract.get_protocol_address()).call()
+        wallet = self.signer.address
+        protocol = self.contract.get_protocol_address()
+        try:
+            allowance = self._read_before_request(
+                lambda: self.token_contract.functions.allowance(wallet, protocol).call())
+        except Exception as e:
+            raise RuntimeError(
+                f"could not read the {self.network_config.TOKEN_NAME} allowance of {wallet} "
+                f"for {protocol} at {self.contract.get_token_address()}: {provider_message(e)}") from e
         if allowance < Web3.to_wei(escrow, "ether"):
             self.logger.info(f"Approving allowance for {escrow} {self.network_config.TOKEN_NAME}")
             transaction_hash = self.contract.set_allowance(escrow)
@@ -302,9 +322,12 @@ class EthernityCloudRunner:
     def _check_balance(self) -> None:
         """The wallet's token balance against the request's escrow
         (protocolContract.request_escrow): a testnet wallet below it draws the
-        token's faucet, a mainnet wallet below it raises ValueError."""
+        token's faucet, a mainnet wallet below it raises ValueError. The
+        balance is read with _read_before_request; the RuntimeError of a read
+        no try answered (protocolContract.get_balance) is raised as it is, and
+        no faucet is drawn on it."""
         self.logger.info("Checking wallet balance...")
-        balance = int(self.contract.get_balance())
+        balance = int(self._read_before_request(self.contract.get_balance))
         escrow = protocolContract.request_escrow(self.resources)
         if balance < escrow:
             if self.network_type != "MAINNET":

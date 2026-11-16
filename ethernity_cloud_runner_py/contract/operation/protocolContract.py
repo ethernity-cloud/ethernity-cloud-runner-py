@@ -1,6 +1,6 @@
 from decimal import Decimal
 import os
-from typing import Any
+from typing import Any, Union
 from eth_account.messages import encode_defunct
 from eth_typing import Address, HexStr
 from web3 import Web3
@@ -13,7 +13,7 @@ import requests
 from ..abi.polygonProtocolAbi import contract as polygonAbi
 from ..abi.ECLDAbi import contract as ECLDAbi
 from ...enums import ECNetwork
-from ...errors import suppress_web3_friendly_prefix, raw_rpc_error_message, raw_rpc_error_code
+from ...errors import suppress_web3_friendly_prefix, raw_rpc_error_message, raw_rpc_error_code, provider_message
 from ...rpc import rpc_session
 
 
@@ -188,14 +188,20 @@ class protocolContract:
         return self.provider
     def get_current_wallet(self) -> Any:
         return self.signer
-    def get_balance(self) -> int:
+    def get_balance(self) -> Union[int, Decimal]:
+        """The wallet's balance on the token, in tokens, as Web3.from_wei
+        gives it: the int 0 for an empty wallet, a Decimal otherwise. A read
+        the RPC does not answer raises RuntimeError naming the token, the
+        wallet and the provider's message (errors.provider_message); no figure
+        stands in for the balance of a failed read."""
+        address = self.signer.address
         try:
-            address = self.signer.address
             balance = self.token_contract.functions.balanceOf(address).call()
-            return Web3.from_wei(balance, "ether")
         except Exception as e:
-            print(e)
-            return 0
+            raise RuntimeError(
+                f"could not read the {self.network_config.TOKEN_NAME} balance of {address} "
+                f"at {self.token_address}: {provider_message(e)}") from e
+        return Web3.from_wei(balance, "ether")
     def set_allowance(
         self, tokens: int
     ) -> HexStr:
