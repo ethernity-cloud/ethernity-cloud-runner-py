@@ -117,7 +117,8 @@ class ECNetwork:
             # which is also the previous PoX and keeps the orders placed
             # through it. The protocol is not the token, so a DO request's
             # escrow is pulled with transferFrom and the wallet approves the
-            # implementation first (EthernityCloudRunner.escrow_needs_allowance).
+            # implementation for it first, as on Polygon Amoy
+            # (EthernityCloudRunner.escrow_needs_allowance, check_allowance).
             PROTOCOL_ADDRESS='0x7E7C6eB435E3687CfDfe18C09C0340eb70567d7b'
             TOKEN_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
             HEARTBEAT_CONTRACT_ADDRESS='0x9B105aefF69Cd26050798d575db17ffc2eAC4E4d'

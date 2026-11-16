@@ -211,7 +211,6 @@ class EthernityCloudRunner:
         self.protocol_contract: Optional[Contract] = None
         self.image_registry_contract: Optional[ImageRegistryContract] = None
         self.resources: Optional[Dict[str, int]] = None
-        self.price: int = 0
         self.securelock_version: Optional[str] = None
     def set_network(self, network_name: str, network_type: str) -> None:
         """Set the network configuration."""
@@ -275,6 +274,44 @@ class EthernityCloudRunner:
         is the token (the bloxberg mainnet PoX holds the ETNY balances) takes
         the escrow from the caller's balance, and no allowance exists."""
         return self.network_config.PROTOCOL_ADDRESS.lower() != self.network_config.TOKEN_ADDRESS.lower()
+    def check_allowance(self) -> None:
+        """The allowance step before a DO request, the same on every network
+        whose protocol address differs from its token address
+        (escrow_needs_allowance): the wallet's allowance for the protocol on
+        the token is read, and when it is below the request's escrow
+        (protocolContract.request_escrow, the amount the PoX pulls with
+        transferFrom) the protocol is approved for exactly the escrow and the
+        approval is waited for; an allowance at or above the escrow is left as
+        it is. Where the protocol is the token (the bloxberg mainnet) nothing
+        is read or approved. Raises ValueError when the approval is not
+        mined or reverts."""
+        if not self.escrow_needs_allowance():
+            return
+        self.logger.info("Checking allowance on the current wallet...")
+        escrow = protocolContract.request_escrow(self.resources)
+        allowance = self.token_contract.functions.allowance(
+            self.signer.address, self.contract.get_protocol_address()).call()
+        if allowance < Web3.to_wei(escrow, "ether"):
+            self.logger.info(f"Approving allowance for {escrow} {self.network_config.TOKEN_NAME}")
+            transaction_hash = self.contract.set_allowance(escrow)
+            receipt = self.poll_transaction(transaction_hash, max_attempts=100)
+            if not receipt or receipt["status"] != 1:
+                raise ValueError("Allowance approval failed.")
+            self.logger.info("Allowance approved")
+        self.logger.info("Allowance check completed.")
+    def _check_balance(self) -> None:
+        """The wallet's token balance against the request's escrow
+        (protocolContract.request_escrow): a testnet wallet below it draws the
+        token's faucet, a mainnet wallet below it raises ValueError."""
+        self.logger.info("Checking wallet balance...")
+        balance = int(self.contract.get_balance())
+        escrow = protocolContract.request_escrow(self.resources)
+        if balance < escrow:
+            if self.network_type != "MAINNET":
+                self.logger.info("Insufficient wallet balance, using testnet faucet...")
+                self.contract.faucet()
+            else:
+                raise ValueError(f"Insufficient wallet balance. Required: {escrow}, Available: {balance}")
     def _resolve_trustedzone(self, trustedzone_enclave: Optional[str]) -> str:
         """The trustedzone a task runs on: `trustedzone_enclave` when given,
         else the network's. An -unsafe trustedzone runs without a CAS, and
@@ -1161,7 +1198,6 @@ class EthernityCloudRunner:
                 "validators": 1,
             }
         self.resources = resources
-        self.price = resources['taskPrice']
         if self.running:
             raise RuntimeError("A task is already running.")
         self.trustedZoneImage = trustedzone
@@ -1304,14 +1340,7 @@ class EthernityCloudRunner:
             event = self.event_queue.get()
             if event == ECEvent.INIT:
                 self.progress = ECEvent.INIT
-                self.logger.info("Checking wallet balance...")
-                balance = int(self.contract.get_balance())
-                if balance < self.price:
-                    if self.network_type != "MAINNET":
-                        self.logger.info("Insufficient wallet balance, using testnet faucet...")
-                        self.contract.faucet()
-                    else:
-                        raise ValueError(f"Insufficient wallet balance. Required: {self.price}, Available: {balance}")
+                self._check_balance()
                 self.logger.info("Verifying node address...")
                 self.node_address = normalize_node_address(node_address)
                 if not self.is_node_operator_address(self.node_address):
@@ -1324,17 +1353,7 @@ class EthernityCloudRunner:
                     raise ConnectionError("Web3 connection failed.")
                 if not self.get_enclave_details():
                     raise ValueError("Unable to find enclave in registry")
-                if self.escrow_needs_allowance():
-                    self.logger.info("Checking allowance on the current wallet...")
-                    allowance = self.token_contract.functions.allowance(self.signer.address, self.contract.get_protocol_address()).call()
-                    if allowance < self.price:
-                        self.logger.info(f"Approving allowance for {self.price} {self.network_config.TOKEN_NAME}")
-                        transaction_hash = self.contract.set_allowance(self.price)
-                        receipt = self.poll_transaction(transaction_hash, max_attempts=100)
-                        if not receipt or receipt['status'] != 1:
-                            raise ValueError("Allowance approval failed.")
-                        self.logger.info("Allowance approved")
-                    self.logger.info("Allowance check completed.")
+                self.check_allowance()
                 if not self.create_task(code):
                     raise ValueError("Unable to create a DO request")
             elif event == ECEvent.CREATED:
@@ -1391,7 +1410,6 @@ class EthernityCloudRunner:
                     "bandwidth": 1, "duration": 1, "validators": 1,
                 }
             self.resources = resources
-            self.price = resources["taskPrice"]
             self.status = ECStatus.RUNNING
             # get_enclave_details() and the submission steps below bail out
             # early unless is_running() holds; without this the registry lookup
@@ -1401,15 +1419,7 @@ class EthernityCloudRunner:
             # The session stays running after this returns, so the flag is
             # cleared only when submission fails; close() clears it otherwise.
             try:
-                self.logger.info("Checking wallet balance...")
-                balance = int(self.contract.get_balance())
-                if balance < self.price:
-                    if self.network_type != "MAINNET":
-                        self.logger.info("Insufficient wallet balance, using testnet faucet...")
-                        self.contract.faucet()
-                    else:
-                        raise ValueError(
-                            f"Insufficient wallet balance. Required: {self.price}, Available: {balance}")
+                self._check_balance()
                 self.logger.info("Verifying node address...")
                 self.node_address = normalize_node_address(node_address)
                 if not self.is_node_operator_address(self.node_address):
@@ -1423,14 +1433,7 @@ class EthernityCloudRunner:
                     raise ConnectionError("Web3 connection failed.")
                 if not self.get_enclave_details():
                     raise ValueError("Unable to find enclave in registry")
-                if self.escrow_needs_allowance():
-                    allowance = self.token_contract.functions.allowance(
-                        self.signer.address, self.contract.get_protocol_address()).call()
-                    if allowance < self.price:
-                        transaction_hash = self.contract.set_allowance(self.price)
-                        receipt = self.poll_transaction(transaction_hash, max_attempts=100)
-                        if not receipt or receipt["status"] != 1:
-                            raise ValueError("Allowance approval failed.")
+                self.check_allowance()
                 self._session_request = True
                 try:
                     if not self.create_task(code):

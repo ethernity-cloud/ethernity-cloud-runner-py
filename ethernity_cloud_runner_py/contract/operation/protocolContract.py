@@ -19,6 +19,37 @@ from ...rpc import rpc_session
 
 class protocolContract:
 
+    # The _addDORequest arguments, with the values a resources dict leaves out.
+    REQUEST_DEFAULTS = {
+        "cpu": 1,
+        "memory": 1,
+        "storage": 40,
+        "bandwidth": 1,
+        "duration": 1,
+        "validators": 1,
+        "taskPrice": 10,
+    }
+
+    @classmethod
+    def request_terms(cls, resources: dict) -> dict:
+        """The _addDORequest arguments of `resources`: its values for the keys
+        of REQUEST_DEFAULTS, the defaults for the keys it leaves out."""
+        return {key: resources.get(key, default) for key, default in cls.REQUEST_DEFAULTS.items()}
+
+    @classmethod
+    def request_escrow(cls, resources: dict) -> int:
+        """The escrow of a _addDORequest for `resources`: the task price of
+        every instance over the duration, taskPrice * validators * duration.
+        The EthernityImplementationV2 pulls it from the caller with
+        transferFrom (Ethernity12Extension._addDORequest:
+        _tokensToWeis(_maxPrice) * _instances * _duration); the bloxberg
+        mainnet PoX requires the caller's balance to cover it
+        (Ethernity.sol _addDORequest: balances[msg.sender] >= _maxPrice *
+        _instances * _duration * 10**18) and transfers _maxPrice * _duration
+        tokens of it to itself in the same call."""
+        terms = cls.request_terms(resources)
+        return terms["taskPrice"] * terms["validators"] * terms["duration"]
+
     def __init__(
         self, signer: Any, network_name="BLOXBERG", network_type="TESTNET", request_kwargs=None
     ) -> None:
@@ -166,11 +197,13 @@ class protocolContract:
             print(e)
             return 0
     def set_allowance(
-        self, task_price: int
-    ) -> bool:
-        task_price_amount = Web3.to_wei(task_price, "ether")
+        self, tokens: int
+    ) -> HexStr:
+        """Approves the protocol for `tokens` on the token: the wallet's
+        allowance for the protocol becomes that amount, in wei. Returns the
+        approval's transaction hash."""
         contract_fn = self.token_contract.functions.approve(
-            self.protocol_address, task_price_amount
+            self.protocol_address, Web3.to_wei(tokens, "ether")
         )
         return self._build_sign_send(contract_fn, 100000)
 
@@ -197,21 +230,15 @@ class protocolContract:
         resources: dict,
         gas_limit: None = None,
     ) -> HexStr:
-        cpu = resources.get("cpu", 1)
-        memory = resources.get("memory", 1)
-        storage = resources.get("storage", 40)
-        bandwidth = resources.get("bandwidth", 1)
-        duration = resources.get("duration", 1)
-        validators = resources.get("validators", 1)
-        task_price = resources.get("taskPrice", 10)
+        terms = self.request_terms(resources)
         contract_fn = self.protocol_contract.functions._addDORequest(
-            cpu,
-            memory,
-            storage,
-            bandwidth,
-            duration,
-            validators,
-            task_price,
+            terms["cpu"],
+            terms["memory"],
+            terms["storage"],
+            terms["bandwidth"],
+            terms["duration"],
+            terms["validators"],
+            terms["taskPrice"],
             image_metadata,
             payload_metadata,
             input_metadata,
