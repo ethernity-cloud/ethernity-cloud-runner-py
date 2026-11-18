@@ -111,15 +111,15 @@ class ECNetwork:
             # deployment of 2026-10-06, whose securelock names belong to their
             # publishers.
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0xa372a6e1Eb7Fcf343AF6b91E809b900C55001CD1'
-            # The EthernityImplementationV2 1.2 of 2026-11-14
-            # (pox-smart-contract-litvm), on its own EthernityCloudStorage
-            # 0xEE3aAa1A.... The token stays the legacy proxy 0x02882F03...,
-            # which is also the previous PoX and keeps the orders placed
-            # through it. The protocol is not the token, so a DO request's
-            # escrow is pulled with transferFrom and the wallet approves the
-            # implementation for it first, as on Polygon Amoy
+            # The EthernityImplementationV2 1.2 of pox-smart-contract-litvm
+            # deployed 2026-11-18, whose compute figures are whole GFLOPS, on
+            # the EthernityCloudStorage 0xEE3aAa1A... of 2026-11-14. The token
+            # stays the legacy proxy 0x02882F03..., which is also the PoX of
+            # the orders placed through it. The protocol is not the token, so
+            # a DO request's escrow is pulled with transferFrom and the wallet
+            # approves the implementation for it first, as on Polygon Amoy
             # (EthernityCloudRunner.escrow_needs_allowance, check_allowance).
-            PROTOCOL_ADDRESS='0x7E7C6eB435E3687CfDfe18C09C0340eb70567d7b'
+            PROTOCOL_ADDRESS='0x830c781F0352050343211B6BFA83600B3e77647C'
             TOKEN_ADDRESS='0x02882F03097fE8cD31afbdFbB5D72a498B41112c'
             HEARTBEAT_CONTRACT_ADDRESS='0x9B105aefF69Cd26050798d575db17ffc2eAC4E4d'
             TOKEN_NAME='tETNY'
@@ -201,11 +201,12 @@ class ECNetwork:
             ENCLAVE_FEE=10
         class AMOY:
             # ECImageRegistryV3 of 2026-10-28 and the EthernityImplementationV2
-            # 1.2 of 2026-11-12, on the storage and token of the implementations
-            # 1.1 0xB8f46D2B... and 0x1579b37C.... A DO request is escrowed by
-            # the implementation it was posted through, so only 1.2 is served.
+            # 1.2 deployed 2026-11-18, whose compute figures are whole GFLOPS,
+            # on the storage and token of the implementations 1.1 0xB8f46D2B...
+            # and 0x1579b37C.... A DO request is escrowed by the implementation
+            # it was posted through, so only this one is served.
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706'
-            PROTOCOL_ADDRESS='0x3Aa1A0d7A8A9DaE9e13345D3261afe86D67326A4'
+            PROTOCOL_ADDRESS='0xd1182deA61CDa785C320cdBE5888EaC4178cAAF2'
             TOKEN_ADDRESS='0x9927809B61122B2af3f3b3A3303875e0687b8eE3'
             HEARTBEAT_CONTRACT_ADDRESS='0x2E27677fb67531eb09134fE331C27899f87ADe10'
             TOKEN_NAME='tECLD'
