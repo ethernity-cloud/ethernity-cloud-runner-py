@@ -286,11 +286,13 @@ class protocolContract:
                             "stateMutability": "view", "type": "function"}]
 
     def is_node_operator(self, account: str) -> bool:
-        """Whether `account` holds a DP request on this PoX. A read the
-        contract or the RPC refuses is raised: it says nothing about the
-        account."""
+        """Whether `account` holds a DP request on this PoX. The read is made
+        from the address in its EIP-55 form, the only spelling web3 takes as
+        a call's `from`; `account` is an address in any spelling
+        utils.is_address admits. A read the contract or the RPC refuses is
+        raised: it says nothing about the account."""
         requests = self.protocol_contract.functions._getMyDPRequests().call(
-            {"from": account}
+            {"from": Web3.to_checksum_address(account)}
         )
         return len(requests) > 0
 

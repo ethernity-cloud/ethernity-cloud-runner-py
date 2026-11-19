@@ -999,16 +999,18 @@ class EthernityCloudRunner:
         self.reset()
     def node_check_failure(self, error: BaseException) -> str:
         """Why the read of a node's DP requests failed: a PoX its storage does
-        not list as an allowed caller is named as retired, with the storage
-        and the advice to upgrade the runner (the storage refuses every call
-        made through such a contract); any other failure is reported with
-        the contract and the provider's message."""
+        not list as an allowed caller is named as out of service, with the
+        storage and the advice to upgrade the runner (the storage refuses
+        every call made through such a contract, and its owner takes a
+        contract off the list when another one replaces it); any other
+        failure is reported with the contract and the provider's message."""
         address = self.contract.protocol_address
         admission = self.contract.storage_admission()
         if admission is not None and admission[1] is False:
-            return (f"The protocol contract {address} is retired: its storage {admission[0]} no longer "
-                    "admits it, so every call through it is refused. Upgrade ethernity-cloud-runner-py: "
-                    "this version carries an address a later contract replaced.")
+            return (f"The protocol contract {address} is out of service: its storage {admission[0]} does not "
+                    "list it as an allowed caller, so every call through it is refused. That is the state of "
+                    "a contract another one has replaced: upgrade ethernity-cloud-runner-py to a release that "
+                    "carries the network's current contract.")
         return (f"Could not verify the node address: the protocol contract {address} did not answer "
                 f"the read of the node's requests ({provider_message(error)}).")
 
