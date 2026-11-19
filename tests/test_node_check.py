@@ -4,20 +4,22 @@ _getMyDPRequests read as a call from the node's address
 (protocolContract.is_node_operator). An answer decides: a node with a DP
 request passes, one with none is not a node operator. A read the contract or
 the RPC refuses decides nothing about the node and raises RuntimeError with
-what it is: a PoX its storage no longer lists as an allowed caller
+what it is: a PoX its storage does not list as an allowed caller
 (EthernityCloudStorage.allowedCallers, read through the implementation's
 ethStorageAddress: protocolContract.storage_admission) as retired, with the
 advice to upgrade the runner; any other failure with the contract's address
-and the provider's message. No chain: the contracts and the provider are
-stand-ins."""
+and the provider's message (errors.provider_message: a revert by its
+message, not by the tuple of message and revert data web3 prints). No chain:
+the contracts and the provider are stand-ins."""
 from types import SimpleNamespace
 
 import pytest
 from requests.exceptions import ConnectionError as RequestsConnectionError
-from web3.exceptions import Web3RPCError
+from web3.exceptions import ContractLogicError, Web3RPCError
 
 from ethernity_cloud_runner_py.contract.operation.protocolContract import protocolContract
 from ethernity_cloud_runner_py.enums import ECNetwork
+from ethernity_cloud_runner_py.errors import provider_message
 from ethernity_cloud_runner_py.runner import EthernityCloudRunner
 
 WALLET = "0x" + "11" * 20
@@ -155,13 +157,26 @@ def test_no_address_passes_without_a_read_and_a_string_that_is_no_address_does_n
     assert runner.errors == ["Introduced address is not a valid wallet address."]
 
 
-def test_a_refused_read_on_a_pox_its_storage_no_longer_admits_is_a_retired_contract():
+def test_a_refused_read_on_a_pox_its_storage_does_not_admit_is_a_retired_contract():
     runner = _runner(_raises(_rpc_error("execution reverted")), admission=(STORAGE, False))
     with pytest.raises(RuntimeError) as raised:
         runner.is_node_operator_address(NODE)
     assert str(raised.value) == RETIRED
     assert runner.errors == [RETIRED]
     assert "not a valid node operator" not in RETIRED
+
+
+def test_a_revert_is_reported_by_its_message_not_by_the_tuple_web3_prints():
+    # The storage's refusal as web3 raises it on bloxberg: the guard's text and the revert data.
+    guard = "execution reverted: Allowed caller: caller is not allowed"
+    reverted = ContractLogicError(guard, "Reverted 0x08c379a0" + "00" * 100)
+    assert str(reverted).startswith("('execution reverted")
+    assert provider_message(reverted) == guard
+    runner = _runner(_raises(reverted), admission=None)
+    with pytest.raises(RuntimeError) as raised:
+        runner.is_node_operator_address(NODE)
+    assert str(raised.value) == _generic(guard)
+    assert runner.errors == [_generic(guard)]
 
 
 @pytest.mark.parametrize("admission", [(STORAGE, True), None])

@@ -998,11 +998,11 @@ class EthernityCloudRunner:
         """Cleanup resources."""
         self.reset()
     def node_check_failure(self, error: BaseException) -> str:
-        """Why the read of a node's DP requests failed: a PoX its storage no
-        longer lists as an allowed caller is named as retired (every call
-        through it is refused, and this runner's address for the network is
-        the one a later implementation replaced); any other failure is
-        reported with the contract and the provider's message."""
+        """Why the read of a node's DP requests failed: a PoX its storage does
+        not list as an allowed caller is named as retired, with the storage
+        and the advice to upgrade the runner (the storage refuses every call
+        made through such a contract); any other failure is reported with
+        the contract and the provider's message."""
         address = self.contract.protocol_address
         admission = self.contract.storage_admission()
         if admission is not None and admission[1] is False:

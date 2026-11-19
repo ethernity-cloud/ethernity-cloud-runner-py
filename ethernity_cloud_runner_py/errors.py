@@ -49,7 +49,7 @@ Notes
 
 import logging
 from typing import Optional, Iterable
-from web3.exceptions import Web3RPCError
+from web3.exceptions import ContractLogicError, Web3RPCError
 
 __all__ = [
     "raw_rpc_error_message",
@@ -75,10 +75,14 @@ def raw_rpc_error_message(e: Web3RPCError) -> str:
 
 def provider_message(e: BaseException) -> str:
     """The message a failed RPC call is reported with: the node's raw
-    error.message for a Web3RPCError, str(e) for every other exception (a
-    requests timeout or connection failure, a response the ABI cannot decode)."""
+    error.message for a Web3RPCError, the revert message for a
+    ContractLogicError (its str() is the tuple of that message and the revert
+    data), str(e) for every other exception (a requests timeout or connection
+    failure, a response the ABI cannot decode)."""
     if isinstance(e, Web3RPCError):
         return raw_rpc_error_message(e)
+    if isinstance(e, ContractLogicError) and e.message:
+        return e.message
     return str(e)
 
 def raw_rpc_error_code(e: Web3RPCError):

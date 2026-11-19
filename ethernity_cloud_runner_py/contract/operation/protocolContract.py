@@ -300,8 +300,8 @@ class protocolContract:
         implementation among its allowed callers; None when either read
         fails. The storage refuses every call, reads included, made through
         an implementation it does not list ("Allowed caller: caller is not
-        allowed"), which is the state of an implementation a later one
-        replaced."""
+        allowed"); its owner takes an implementation off the list when
+        another one replaces it."""
         try:
             pointer = self.provider.eth.contract(address=self.protocol_address, abi=self.STORAGE_POINTER_ABI)
             storage = pointer.functions.ethStorageAddress().call()
