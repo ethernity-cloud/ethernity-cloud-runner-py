@@ -114,6 +114,10 @@ This script connects the runner with the wallet's key, submits the task and poll
 
 A securelock published without a CAS (`<project>-unsafe`) runs on an `-unsafe` network, which you choose by name: `EthernityCloudRunner("BLOXBERG", "TESTNET_UNSAFE")` or `EthernityCloudRunner("LITVM", "LITEFORGE_UNSAFE")`. An `-unsafe` network has the chain and contracts of the network it is named after; its trustedzone is `etny-pynithy-testnet-unsafe` (`ecld-pynithy-litvm-testnet-unsafe` on LitVM), and a nodenithy dApp passes the `etny-nodenithy-...-unsafe` one. The runner runs an `-unsafe` trustedzone only on an `-unsafe` network and runs nothing else there, so a task that runs without a CAS always says so in the network it names.
 
+### Closing a session
+
+`session.close(wait=True, timeout=900)` writes the session's close row. With `wait` true it then waits until the order has closed and returns the order's result, the session summary. The answers to the session's inputs are output rows and arrive before the close; the order closes after the trustedzone has found those rows on chain and the node has sent the result, which takes at least one more block. An application that does not read the summary calls `session.close(wait=False)`, which returns once the close row is mined.
+
 The runner accepts a result only when the transaction the enclave signed is `_addResultToOrder` for this order, addressed to this network's protocol contract and signed for this chain, and its signer is the wallet derived from the task's challenge.
 
 ### `___etny_result___` function
@@ -141,7 +145,7 @@ A task the enclave reports with a non-zero task code, such as `BASE_EXCEPTION` f
 
 Every artefact (challenge, payload, input) is stored as an IPFS node with its default settings stores a file added with `--cid-version=1 --raw-leaves`: in blocks of 256 KiB, a single block as it is, several under a UnixFS tree. The runner computes that CID itself, so an artefact of any size is named in the request before it is uploaded, and the bootnode's payload intake takes it up to its 100 MiB body cap.
 
-The `ECEvent` steps, in order: `INIT` (the wallet balance, the node address and the enclave's registry entry are checked, the DO request is placed and the artefacts delivered), `CREATED` (waits for a node to place an order), `ORDER_PLACED` (the order is approved), `IN_PROGRESS` (the result is awaited and verified) and `FINISHED`. A failure on the operator's side (an order that times out, a result that does not verify, an operator-fault task code) resubmits the task as a new DO request up to `max_retries` times (an argument of `run()`, 2 by default) before `ERROR` is set.
+The `ECEvent` steps, in order: `INIT` (the wallet balance, the protocol contract, the node address and the enclave's registry entry are checked, the DO request is placed and the artefacts delivered), `CREATED` (waits for a node to place an order), `ORDER_PLACED` (the order is approved), `IN_PROGRESS` (the result is awaited and verified) and `FINISHED`. A protocol contract its storage does not list as an allowed caller, the state of a contract another one has replaced, fails the task at `INIT`, before any allowance is approved for it: `last_error` names the contract and its storage and advises upgrading `ethernity-cloud-runner-py`. A failure on the operator's side (an order that times out, a result that does not verify, an operator-fault task code) resubmits the task as a new DO request up to `max_retries` times (an argument of `run()`, 2 by default) before `ERROR` is set.
 
 ### Task resources
 

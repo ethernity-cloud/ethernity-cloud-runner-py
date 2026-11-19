@@ -1,4 +1,4 @@
-"""The reads a DO request depends on: the wallet's token balance
+"""The token reads a DO request depends on: the wallet's token balance
 (protocolContract.get_balance, EthernityCloudRunner._check_balance) and its
 allowance for the protocol (check_allowance). A read the RPC does not answer
 raises RuntimeError naming the token, the wallet and the provider's message,

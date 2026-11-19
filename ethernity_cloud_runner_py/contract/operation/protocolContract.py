@@ -276,6 +276,10 @@ class protocolContract:
         return self.protocol_contract.caller()._getResultFromOrder(order_id)
     def get_status_from_order(self, order_id: int) -> Any:
         return self.protocol_contract.caller()._getOrder(order_id)[4]
+    def get_orders_count(self) -> int:
+        """The number of orders placed on this PoX (_getOrdersCount). A read
+        the contract or the RPC refuses is raised."""
+        return self.protocol_contract.functions._getOrdersCount().call()
     # The reads storage_admission makes: the EthernityCloudStorage an
     # EthernityImplementationV2 names, and that storage's allow-list.
     STORAGE_POINTER_ABI = [{"inputs": [], "name": "ethStorageAddress",

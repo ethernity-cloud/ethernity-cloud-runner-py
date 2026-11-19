@@ -145,6 +145,7 @@ def _stubbed_runner(monkeypatch, network_name, network_type, allowance,
 
     runner.contract = SimpleNamespace(
         get_balance=lambda: balance,
+        get_orders_count=lambda: 0,
         get_protocol_address=lambda: protocol or runner.network_config.PROTOCOL_ADDRESS,
         set_allowance=set_allowance,
         faucet=faucet)

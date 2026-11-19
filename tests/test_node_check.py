@@ -14,9 +14,9 @@ revert by its message, not by the tuple of message and revert data web3
 prints). A run and a session whose check fails end with that message
 (_process_events, run_session). No chain: the runner-level cases use
 stand-in contracts, raising what web3 7.6 raises (ContractLogicError for a
-reverted eth_call, Web3RPCError for an RPC error that is no revert), and the
-storage_admission cases a real Web3 over a provider that answers eth_call
-from a table."""
+reverted eth_call, Web3RPCError for an RPC error that is no revert, requests'
+ConnectionError for a dropped connection), and the storage_admission cases a
+real Web3 over a provider that answers eth_call from a table."""
 from types import SimpleNamespace
 
 import pytest
@@ -208,21 +208,28 @@ def test_no_address_passes_without_a_read_and_a_string_that_is_no_address_does_n
     assert runner.errors == ["Introduced address is not a valid wallet address."]
 
 
-def test_a_refused_read_on_a_pox_its_storage_does_not_list_is_a_contract_out_of_service():
-    runner = _runner(_raises(_reverted()), admission=(STORAGE, False))
+# The ways the read is refused, as web3 7.6 raises them, each with the message it is reported with
+# (errors.provider_message).
+REFUSED_READS = [
+    (_reverted(), GUARD),
+    (_rpc_error("header not found"), "header not found"),
+    (RequestsConnectionError("Failed to fetch"), "Failed to fetch"),
+]
+
+
+@pytest.mark.parametrize("error", [error for error, _ in REFUSED_READS])
+def test_a_refused_read_on_a_pox_its_storage_does_not_list_is_a_contract_out_of_service(error):
+    runner = _runner(_raises(error), admission=(STORAGE, False))
     with pytest.raises(RuntimeError) as raised:
         runner.is_node_operator_address(NODE)
     assert str(raised.value) == OUT_OF_SERVICE
+    assert raised.value.__cause__ is error
     assert runner.errors == [OUT_OF_SERVICE]
     assert "not a valid node operator" not in OUT_OF_SERVICE
 
 
 @pytest.mark.parametrize("admission", [(STORAGE, True), None])
-@pytest.mark.parametrize("error, reason", [
-    (_reverted(), GUARD),
-    (_rpc_error("header not found"), "header not found"),
-    (RequestsConnectionError("Failed to fetch"), "Failed to fetch"),
-])
+@pytest.mark.parametrize("error, reason", REFUSED_READS)
 def test_a_refused_read_otherwise_names_the_contract_and_the_providers_message(admission, error, reason):
     runner = _runner(_raises(error), admission=admission)
     with pytest.raises(RuntimeError) as raised:
@@ -241,8 +248,8 @@ def test_a_revert_is_reported_by_its_message_not_by_the_tuple_web3_prints():
 # ---- a run and a session whose node check fails ----
 
 def _submitting_runner(monkeypatch, admission):
-    """A BLOXBERG TESTNET runner with a funded wallet whose node check read is refused; runner.calls lists
-    the read and every later step of a submission that is reached."""
+    """A BLOXBERG TESTNET runner with a funded wallet whose protocol check is answered and whose node check
+    read is refused; runner.calls lists that read and every later step of a submission that is reached."""
     runner = EthernityCloudRunner("BLOXBERG", "TESTNET")
     runner.running = True
     runner.resources = RESOURCES
@@ -256,6 +263,7 @@ def _submitting_runner(monkeypatch, admission):
     runner.contract = SimpleNamespace(
         protocol_address=POX,
         get_balance=lambda: 100,
+        get_orders_count=lambda: 163,
         get_protocol_address=lambda: POX,
         is_node_operator=is_node_operator,
         storage_admission=lambda: admission,

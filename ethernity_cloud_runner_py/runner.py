@@ -72,9 +72,10 @@ GET_LOGS_MAX_BLOCKS = 3000
 # ranges and the eth_getLogs call (LiteForge mines about one block a second).
 GET_LOGS_TAIL_SLACK = 100
 # How many times a read a DO request depends on (the wallet's token balance,
-# its allowance for the protocol) is tried, and the seconds between the tries,
-# before the read's failure fails the request (_read_before_request): one RPC
-# request the provider drops does not refuse a request the chain would accept.
+# the PoX's order count, the wallet's allowance for the protocol) is tried,
+# and the seconds between the tries, before the read's failure fails the
+# request (_read_before_request): one RPC request the provider drops does not
+# refuse a request the chain would accept.
 PRE_REQUEST_READ_ATTEMPTS = 3
 PRE_REQUEST_READ_RETRY_SECONDS = 2
 
@@ -997,22 +998,65 @@ class EthernityCloudRunner:
     def cleanup(self) -> None:
         """Cleanup resources."""
         self.reset()
-    def node_check_failure(self, error: BaseException) -> str:
-        """Why the read of a node's DP requests failed: a PoX its storage does
-        not list as an allowed caller is named as out of service, with the
-        storage and the advice to upgrade the runner (the storage refuses
-        every call made through such a contract, and its owner takes a
-        contract off the list when another one replaces it); any other
-        failure is reported with the contract and the provider's message."""
-        address = self.contract.protocol_address
+    def out_of_service_message(self) -> Optional[str]:
+        """The message that names the PoX as out of service, when its storage
+        answers that it does not list it as an allowed caller
+        (protocolContract.storage_admission): the storage refuses every call
+        made through such a contract, reads included, and its owner takes a
+        contract off the list when another one replaces it, so the message
+        carries the storage and the advice to upgrade the runner. None when
+        the storage lists the PoX or the admission is not read. Asked when a
+        read of the PoX fails (verify_protocol, node_check_failure)."""
         admission = self.contract.storage_admission()
         if admission is not None and admission[1] is False:
-            return (f"The protocol contract {address} is out of service: its storage {admission[0]} does not "
-                    "list it as an allowed caller, so every call through it is refused. That is the state of "
-                    "a contract another one has replaced: upgrade ethernity-cloud-runner-py to a release that "
-                    "carries the network's current contract.")
-        return (f"Could not verify the node address: the protocol contract {address} did not answer "
-                f"the read of the node's requests ({provider_message(error)}).")
+            return (f"The protocol contract {self.contract.protocol_address} is out of service: its storage "
+                    f"{admission[0]} does not list it as an allowed caller, so every call through it is "
+                    "refused. That is the state of a contract another one has replaced: upgrade "
+                    "ethernity-cloud-runner-py to a release that carries the network's current contract.")
+        return None
+
+    def verify_protocol(self) -> None:
+        """The protocol check before a DO request, made ahead of the node
+        check and the allowance step, so that no escrow is approved for a
+        PoX that cannot pull it: the PoX's order count is read
+        (protocolContract.get_orders_count), and an answer lets the
+        submission go on. A read that fails on a PoX out of service
+        (out_of_service_message) raises RuntimeError with that message at
+        once, since no later try is answered there. Any other failed read is
+        tried again as the balance and allowance reads are
+        (_read_before_request), and when no try answers RuntimeError names
+        the contract and the provider's message (errors.provider_message) of
+        the last one. Either error is chained from the read's own."""
+        self.logger.info("Checking the protocol contract...")
+
+        def read() -> Optional[tuple]:
+            """None once the order count is read; (message, error) for a read
+            that fails on a PoX out of service, which ends the tries; any
+            other failed read raises."""
+            try:
+                self.contract.get_orders_count()
+            except Exception as error:
+                out_of_service = self.out_of_service_message()
+                if out_of_service is not None:
+                    return out_of_service, error
+                raise RuntimeError(
+                    f"The protocol contract {self.contract.protocol_address} did not answer the read "
+                    f"of its order count ({provider_message(error)}).") from error
+            return None
+
+        refused = self._read_before_request(read)
+        if refused is not None:
+            message, error = refused
+            raise RuntimeError(message) from error
+
+    def node_check_failure(self, error: BaseException) -> str:
+        """Why the read of a node's DP requests failed: out_of_service_message's
+        text for a PoX its storage does not list as an allowed caller; any
+        other failure is reported with the contract and the provider's
+        message."""
+        return self.out_of_service_message() or (
+            f"Could not verify the node address: the protocol contract {self.contract.protocol_address} "
+            f"did not answer the read of the node's requests ({provider_message(error)}).")
 
     def is_node_operator_address(self, node_address: str) -> bool:
         """Whether `node_address` may be named as a run's node: True for no
@@ -1267,7 +1311,11 @@ class EthernityCloudRunner:
         )
         self.task_thread.start()
     def _populate_event_queue(self) -> None:
-        """Populate the event queue with predefined events."""
+        """Makes the event queue the events of one submission, INIT through
+        FINISHED, whatever it holds: the events a failed run or attempt did
+        not reach stay queued after it, where get_state() reports them as
+        remaining_events, and are dropped here, so every run and every
+        resubmission starts at INIT."""
         events = [
             ECEvent.INIT,
             ECEvent.CREATED,
@@ -1275,6 +1323,8 @@ class EthernityCloudRunner:
             ECEvent.IN_PROGRESS,
             ECEvent.FINISHED,
         ]
+        with self.event_queue.mutex:
+            self.event_queue.queue.clear()
         for event in events:
             self.event_queue.put(event)
     def _process_events(self, code: str, node_address: str, resources: Dict[str, int]) -> None:
@@ -1299,8 +1349,6 @@ class EthernityCloudRunner:
                         f"(retry {attempt}/{getattr(self, 'max_retries', 2)}) in {delay}s..."
                     )
                     time.sleep(delay)
-                    with self.event_queue.mutex:
-                        self.event_queue.queue.clear()
                     self._populate_event_queue()
                 except Exception as e:
                     self.progress = ECEvent.FINISHED
@@ -1390,6 +1438,7 @@ class EthernityCloudRunner:
             if event == ECEvent.INIT:
                 self.progress = ECEvent.INIT
                 self._check_balance()
+                self.verify_protocol()
                 self.logger.info("Verifying node address...")
                 self.node_address = normalize_node_address(node_address)
                 if not self.is_node_operator_address(self.node_address):
@@ -1469,6 +1518,7 @@ class EthernityCloudRunner:
             # cleared only when submission fails; close() clears it otherwise.
             try:
                 self._check_balance()
+                self.verify_protocol()
                 self.logger.info("Verifying node address...")
                 self.node_address = normalize_node_address(node_address)
                 if not self.is_node_operator_address(self.node_address):
