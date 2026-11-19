@@ -181,6 +181,22 @@ By providing these resource requirements in the `resources` object, the task exe
 
 When no node places an order on the request within the order wait (`runner.set_order_wait(seconds)`, default 1800), the runner cancels the request, which returns its escrow, and the task fails. If a node booked the request just before the cancel, the cancel is refused by the contract and the task goes on with that node's order.
 
+### The fee ceiling
+
+On a network with EIP-1559 fees (Polygon mainnet and Polygon Amoy, the IoTeX Testnet, Ethereum Sepolia, LitVM LiteForge) every transaction the runner sends (the token approval, the DO request, the approval of an order, the cancel of a request, a session's input and close rows, a testnet faucet draw) offers a `maxFeePerGas` of the latest block's base fee plus 10 %, plus the network's priority fee, and is sent only when that fee is within a ceiling. The ceiling is, in this order:
+
+- the value given to `runner.set_max_fee_per_gas(gwei)`, which is called before or after `connect()`;
+- the environment variable `ECLD_MAX_FEE_PER_GAS`, when it is set and not empty; it is read at each send;
+- the network's default, the `MAX_FEE_PER_GAS` of its `ECNetwork` entry: 500 gwei on Polygon mainnet, 64 on Polygon Amoy, 1500 on the IoTeX Testnet, 15 on Ethereum Sepolia and 2 on LitVM LiteForge.
+
+The setter takes a positive whole number of gwei as an `int` and raises `ValueError` for anything else; the variable holds one in decimal digits alone, at most 30 of them. Either is the ceiling on whichever of these networks the runner is on. The bloxberg networks send at a fixed gas price and read none of the three.
+
+A transaction whose fee is above the ceiling is not sent: the send raises `FeeCeilingError` (`ethernity_cloud_runner_py.errors`), whose message states the base fee, the fee computed, the ceiling and what set it. So does every send while the variable is the ceiling in force and holds anything but a positive whole number of gwei, or one of more digits than Python's `int()` converts; that message names the variable and its value. A token approval, a faucet draw or a DO request that is refused is not tried again: the run ends at once in `ERROR` with the message as `last_error`, and `run_session()` raises the error, as a session's `send_input()` and `close()` do for their rows. The approval of an order, which the placed order waits for, is tried again after a refusal as after any other failed send: up to 50 tries, the waits between them doubling from the network's block time to a minute, each refusal printed. A ceiling raised with `set_max_fee_per_gas` meanwhile holds from the next try, and a submission whose every try is refused ends with the message. The refused cancel of a request no node took is logged as an error; the request stays open with its escrow, and the run ends as one no node took. With the default on Polygon mainnet, whose priority fee is 32 gwei, a base fee up to 425.45 gwei is sent, and one of 426 gwei is refused with:
+
+```
+The network's base fee is 426 gwei; the maxFeePerGas computed for the transaction, 500.6 gwei (the base fee plus 10 %, plus the priority fee of 32 gwei), is above the fee ceiling of 500 gwei (the network's default), so the transaction was not sent. To send at this fee, raise the ceiling with EthernityCloudRunner.set_max_fee_per_gas(gwei) or, where that was not called, with the environment variable ECLD_MAX_FEE_PER_GAS (a whole number of gwei).
+```
+
 ### Storage and the result read
 
 A runner that configures no storage delivers the task's artefacts (the encrypted challenge, code and session inputs) through the bootnode's payload intake: each CID is computed locally and the bytes are posted to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>` once the DO request is on chain, with no token. The intake serves the networks the bootnode's agent runs, today the bloxberg testnet, Polygon Amoy, LitVM LiteForge and Ethereum Sepolia, each with its `-unsafe` twin (`ipfs.INTAKE_NETWORKS`). `set_public_intake()` configures the same storage explicitly, and takes the base URL of another intake.

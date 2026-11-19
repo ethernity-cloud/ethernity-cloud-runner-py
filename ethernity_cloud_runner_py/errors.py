@@ -55,6 +55,7 @@ __all__ = [
     "raw_rpc_error_message",
     "provider_message",
     "ECWeb3RPCError",
+    "FeeCeilingError",
     "suppress_web3_friendly_prefix",
     "install_web3_friendly_prefix_filter",
 ]
@@ -105,6 +106,24 @@ class ECWeb3RPCError(Web3RPCError):
     """
     def __str__(self) -> str:
         return raw_rpc_error_message(self)
+
+
+class FeeCeilingError(Exception):
+    """A transaction the fee ceiling refuses, raised before the transaction
+    is built, signed or sent, on a network whose table entry says EIP1559
+    (protocolContract.fee_ceiling resolves the ceiling). Either the
+    maxFeePerGas computed for the transaction is above the ceiling in force:
+    the message states the network's base fee, the fee computed, the ceiling,
+    what set it (EthernityCloudRunner.set_max_fee_per_gas, the environment
+    variable ECLD_MAX_FEE_PER_GAS or the network's default) and how to raise
+    it. Or the environment variable is the ceiling in force and does not hold
+    a positive whole number of gwei in at most 30 digits: the message names
+    the variable and its value.
+    protocolContract._build_sign_send raises it as it is, with no further
+    attempt, and a DO request it refuses is not sent again
+    (EthernityCloudRunner.create_do_request). The approval of an order, which
+    the placed order waits for, is tried again after it as after any other
+    failed send (EthernityCloudRunner.approve_order)."""
 
 
 # ---------- Filter (global) ----------

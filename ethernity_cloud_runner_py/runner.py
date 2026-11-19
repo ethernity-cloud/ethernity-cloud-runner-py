@@ -11,7 +11,7 @@ from web3 import Web3
 from web3.contract.contract import Contract
 from web3.exceptions import TimeExhausted, TransactionNotFound, Web3RPCError
 from web3.logs import DISCARD
-from .errors import install_web3_friendly_prefix_filter, raw_rpc_error_message, provider_message
+from .errors import install_web3_friendly_prefix_filter, raw_rpc_error_message, provider_message, FeeCeilingError
 from .contract.abi.bloxbergAbi import contract as bloxbergAbi
 from .contract.abi.polygonProtocolAbi import contract as polygonAbi
 from .contract.abi.ECLDAbi import contract as ECLDAbi
@@ -219,6 +219,9 @@ class EthernityCloudRunner:
         self.image_registry_contract: Optional[ImageRegistryContract] = None
         self.resources: Optional[Dict[str, int]] = None
         self.securelock_version: Optional[str] = None
+        # The fee ceiling set_max_fee_per_gas gave, in gwei, which connect()
+        # hands to the protocol contract; None where it gave none.
+        self.max_fee_per_gas: Optional[int] = None
     def set_network(self, network_name: str, network_type: str) -> None:
         """Set the network configuration."""
         self.network_name = network_name.upper()
@@ -248,7 +251,8 @@ class EthernityCloudRunner:
         if self.signer is None:
             raise RuntimeError("Private key must be set before connecting.")
         self.contract = protocolContract(
-            self.signer, self.network_name, self.network_type, request_kwargs={'timeout': 10}
+            self.signer, self.network_name, self.network_type, request_kwargs={'timeout': 10},
+            max_fee_per_gas=self.max_fee_per_gas,
         )
         self.protocol_abi = polygonAbi.get("abi")
         self.token_contract = self.contract.token_contract
@@ -261,6 +265,21 @@ class EthernityCloudRunner:
         request before the request is cancelled and its escrow returned
         (default DEFAULT_ORDER_WAIT_SECONDS)."""
         self.order_wait_seconds = float(seconds)
+    def set_max_fee_per_gas(self, gwei: int) -> None:
+        """The fee ceiling of this runner's transactions on a network whose
+        table entry says EIP1559: `gwei`, a positive whole number of gwei,
+        taken ahead of the environment variable ECLD_MAX_FEE_PER_GAS and of
+        the network's default (the entry's MAX_FEE_PER_GAS). A transaction
+        whose maxFeePerGas is above the ceiling in force is not sent and
+        raises errors.FeeCeilingError (protocolContract.fee_ceiling). Callable
+        before connect(), which hands the value to the protocol contract, and
+        after it. Raises ValueError naming `gwei` for anything but an int
+        above zero."""
+        if isinstance(gwei, bool) or not isinstance(gwei, int) or gwei <= 0:
+            raise ValueError(f"The fee ceiling is a positive whole number of gwei, given as an int, not {gwei!r}.")
+        self.max_fee_per_gas = gwei
+        if self.contract is not None:
+            self.contract.max_fee_per_gas = gwei
     def set_log_level(self, level: str) -> None:
         """Set the logging level."""
         self.log_level = ECLog[level.upper()]
@@ -527,7 +546,9 @@ class EthernityCloudRunner:
         node_address = Web3.to_checksum_address(node_address) if node_address else ""
         def send_tx():
             return self.contract.add_do_request(image_metadata, code_metadata, input_metadata, node_address, self.resources)
-        transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2)
+        # A request the fee ceiling refuses is not sent again: the refusal
+        # ends the tries and the submission.
+        transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2, final=(FeeCeilingError,))
         if not transaction_hash:
             return False
         self.do_hash = transaction_hash
@@ -1194,13 +1215,16 @@ class EthernityCloudRunner:
             time.sleep(min(CHAIN_POLL_SECONDS, max(1, until - time.time())))
         return None
 
-    def retry_operation(self, func: callable, max_retries: int = 10, delay: Optional[int] = None, backoff_factor: float = 1.5) -> Any:
-        """Retry a function with exponential backoff."""
+    def retry_operation(self, func: callable, max_retries: int = 10, delay: Optional[int] = None, backoff_factor: float = 1.5, final: tuple = ()) -> Any:
+        """Retry a function with exponential backoff. An exception of a type
+        in `final` is raised as it is, with no further try and no wait."""
         delay = delay or self.block_time
         current_delay = delay
         for attempt in range(max_retries):
             try:
                 return func()
+            except final:
+                raise
             except Exception as e:
                 self.logger.warning(f"Retry {attempt + 1}/{max_retries}: {e}")
                 if attempt == max_retries - 1:

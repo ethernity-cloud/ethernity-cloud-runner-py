@@ -1,5 +1,6 @@
 from decimal import Decimal
 import os
+import re
 from typing import Any, Union
 from eth_account.messages import encode_defunct
 from eth_typing import Address, HexStr
@@ -13,8 +14,19 @@ import requests
 from ..abi.polygonProtocolAbi import contract as polygonAbi
 from ..abi.ECLDAbi import contract as ECLDAbi
 from ...enums import ECNetwork
-from ...errors import suppress_web3_friendly_prefix, raw_rpc_error_message, raw_rpc_error_code, provider_message
+from ...errors import suppress_web3_friendly_prefix, raw_rpc_error_message, raw_rpc_error_code, provider_message, FeeCeilingError
 from ...rpc import rpc_session
+
+# The environment variable that names the fee ceiling, a positive whole number
+# of gwei, where EthernityCloudRunner.set_max_fee_per_gas gave none
+# (protocolContract.fee_ceiling).
+MAX_FEE_PER_GAS_ENV = "ECLD_MAX_FEE_PER_GAS"
+
+
+def _gwei(wei: int) -> str:
+    """`wei` in gwei as exact decimal text, without trailing zeros."""
+    whole, fraction = divmod(wei, 10**9)
+    return f"{whole}.{fraction:09d}".rstrip("0").rstrip(".")
 
 
 class protocolContract:
@@ -51,7 +63,8 @@ class protocolContract:
         return terms["taskPrice"] * terms["validators"] * terms["duration"]
 
     def __init__(
-        self, signer: Any, network_name="BLOXBERG", network_type="TESTNET", request_kwargs=None
+        self, signer: Any, network_name="BLOXBERG", network_type="TESTNET", request_kwargs=None,
+        max_fee_per_gas=None,
     ) -> None:
 
         # Access the network class (e.g., ECNetwork.BLOXBERG)
@@ -62,7 +75,9 @@ class protocolContract:
         self.chain_id = self.network_config.CHAIN_ID
         self.token_address =  self.network_config.TOKEN_ADDRESS
         self.protocol_address = self.network_config.PROTOCOL_ADDRESS
-        self.max_fee_per_gas = self.network_config.MAX_FEE_PER_GAS
+        # The fee ceiling EthernityCloudRunner.set_max_fee_per_gas gave, in
+        # gwei; None where it gave none (fee_ceiling).
+        self.max_fee_per_gas = max_fee_per_gas
         self.max_priority_fee_per_gas = self.network_config.MAX_PRIORITY_FEE_PER_GAS
         _rpc_url = self.network_config.RPC_URL
         self.provider = Web3(Web3.HTTPProvider(_rpc_url, request_kwargs=request_kwargs or {'timeout': 10},
@@ -80,6 +95,30 @@ class protocolContract:
         return self.token_address
     def get_protocol_address(self) -> Address:
         return self.protocol_address
+    def fee_ceiling(self) -> tuple:
+        """(wei, source): the ceiling a transaction's maxFeePerGas is checked
+        against on a network whose table entry says EIP1559, and what set it,
+        in the words the refusal's message gives it. In this order: the value
+        EthernityCloudRunner.set_max_fee_per_gas gave (self.max_fee_per_gas,
+        gwei); the environment variable ECLD_MAX_FEE_PER_GAS when it is set
+        and not empty, read at each send, a positive whole number of gwei in
+        ASCII digits alone, at most 30 of them, as ethernity-cloud-sdk-py
+        reads the same variable (any other value raises FeeCeilingError
+        naming the variable and the value); the table entry's
+        MAX_FEE_PER_GAS."""
+        if self.max_fee_per_gas is not None:
+            return self.max_fee_per_gas * 10**9, "set with set_max_fee_per_gas"
+        value = os.environ.get(MAX_FEE_PER_GAS_ENV)
+        if value:
+            gwei = int(value) if re.fullmatch(r"[0-9]{1,30}", value) else 0
+            if not gwei:
+                raise FeeCeilingError(
+                    f"The environment variable {MAX_FEE_PER_GAS_ENV} is {value!r}, which is not a positive "
+                    "whole number of gwei, so the transaction was not sent. Set it to the fee ceiling in "
+                    "whole gwei, or unset it to send within the network's default.")
+            return gwei * 10**9, f"set by the environment variable {MAX_FEE_PER_GAS_ENV}"
+        return (Web3.to_wei(self.network_config.MAX_FEE_PER_GAS, self.network_config.GAS_PRICE_MEASURE),
+                "the network's default")
     def __transaction_object(self, nonce=None) -> TxParams:
         """The fee and nonce fields of a transaction. It carries no gas limit:
         build_transaction then asks the node for the call's estimate, which
@@ -87,15 +126,25 @@ class protocolContract:
         Sepolia, whose schedule prices a new storage slot several times the
         local EVM's). The type is the hex string "0x2": build_transaction
         passes the field to eth_estimateGas as given, and Tenderly's gateway
-        refuses the number 2."""
+        refuses the number 2. On a network whose table entry says EIP1559 a
+        maxFeePerGas above fee_ceiling() raises FeeCeilingError; another
+        network sends at the entry's GAS_PRICE and reads no ceiling."""
         if nonce is None:
             nonce = self.provider.eth.get_transaction_count(self.signer.address, "pending")
 
         if self.network_config.EIP1559 == True:
+            ceiling, source = self.fee_ceiling()
             latest_block = self.provider.eth.get_block("latest")
             max_fee_per_gas = int(latest_block.baseFeePerGas * 1.1) + self.provider.to_wei(self.network_config.MAX_PRIORITY_FEE_PER_GAS, self.network_config.GAS_PRICE_MEASURE) # 10% increase in previous block gas price + priority fee
-            if max_fee_per_gas > self.provider.to_wei(self.network_config.MAX_FEE_PER_GAS, self.network_config.GAS_PRICE_MEASURE):
-                raise Exception("Network base fee is too high!")
+            if max_fee_per_gas > ceiling:
+                priority_fee = self.provider.to_wei(self.network_config.MAX_PRIORITY_FEE_PER_GAS, self.network_config.GAS_PRICE_MEASURE)
+                raise FeeCeilingError(
+                    f"The network's base fee is {_gwei(latest_block.baseFeePerGas)} gwei; the maxFeePerGas "
+                    f"computed for the transaction, {_gwei(max_fee_per_gas)} gwei (the base fee plus 10 %, "
+                    f"plus the priority fee of {_gwei(priority_fee)} gwei), is above the fee ceiling of "
+                    f"{_gwei(ceiling)} gwei ({source}), so the transaction was not sent. To send at this fee, "
+                    "raise the ceiling with EthernityCloudRunner.set_max_fee_per_gas(gwei) or, where that was "
+                    f"not called, with the environment variable {MAX_FEE_PER_GAS_ENV} (a whole number of gwei).")
 
             transaction_options = {
                 "type": "0x2",
@@ -118,7 +167,9 @@ class protocolContract:
     def _build_sign_send(self, contract_fn: ContractFunction, gas: int) -> HexStr:
         """
         Build, sign, and send a transaction with retry logic and special handling
-        for nonce-related Web3RPCError codes (-32000, -32010).
+        for nonce-related Web3RPCError codes (-32000, -32010). A FeeCeilingError
+        is printed like any other failure of an attempt and raised as it is,
+        with no further attempt.
         """
         max_attempts = 20
         current_nonce = None
@@ -175,6 +226,8 @@ class protocolContract:
                 if isinstance(e, requests.exceptions.Timeout):
                     print(f"Attempt {attempt + 1}: Timeout, retrying...")
                     continue
+                elif isinstance(e, FeeCeilingError):
+                    raise
                 else:
                     raise Exception(f"Unable to send transaction: {str(e)}")
 
@@ -218,15 +271,6 @@ class protocolContract:
     ) -> bool:
         contract_fn = self.token_contract.functions.faucet()
         return self._build_sign_send(contract_fn, 100000)
-    def get_eip1559_gas_options(self) -> dict[str, int]:
-        max_fee_per_gas = int(os.getenv("MAX_FEE_PER_GAS", 0)) * 10**9
-        max_priority_fee_per_gas = int(os.getenv("MAX_PRIORITY_FEE_PER_GAS", 0)) * 10**9
-        options = {
-            "gas_limit": int(os.getenv("GAS_LIMIT", 200000)),
-            "max_fee_per_gas": max_fee_per_gas,
-            "max_priority_fee_per_gas": max_priority_fee_per_gas,
-        }
-        return options
     def add_do_request(
         self,
         image_metadata: str,
