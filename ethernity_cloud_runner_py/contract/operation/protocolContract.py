@@ -276,15 +276,39 @@ class protocolContract:
         return self.protocol_contract.caller()._getResultFromOrder(order_id)
     def get_status_from_order(self, order_id: int) -> Any:
         return self.protocol_contract.caller()._getOrder(order_id)[4]
+    # The reads storage_admission makes: the EthernityCloudStorage an
+    # EthernityImplementationV2 names, and that storage's allow-list.
+    STORAGE_POINTER_ABI = [{"inputs": [], "name": "ethStorageAddress",
+                            "outputs": [{"name": "", "type": "address"}],
+                            "stateMutability": "view", "type": "function"}]
+    ALLOWED_CALLERS_ABI = [{"inputs": [{"name": "", "type": "address"}], "name": "allowedCallers",
+                            "outputs": [{"name": "", "type": "bool"}],
+                            "stateMutability": "view", "type": "function"}]
+
     def is_node_operator(self, account: str) -> bool:
+        """Whether `account` holds a DP request on this PoX. A read the
+        contract or the RPC refuses is raised: it says nothing about the
+        account."""
+        requests = self.protocol_contract.functions._getMyDPRequests().call(
+            {"from": account}
+        )
+        return len(requests) > 0
+
+    def storage_admission(self):
+        """(storage, admitted): the EthernityCloudStorage this implementation
+        names (ethStorageAddress) and whether that storage lists the
+        implementation among its allowed callers; None when either read
+        fails. The storage refuses every call, reads included, made through
+        an implementation it does not list ("Allowed caller: caller is not
+        allowed"), which is the state of an implementation a later one
+        replaced."""
         try:
-            requests = self.protocol_contract.functions._getMyDPRequests().call(
-                {"from": account}
-            )
-            return len(requests) > 0
-        except Exception as ex:
-            print(ex)
-            return False
+            pointer = self.provider.eth.contract(address=self.protocol_address, abi=self.STORAGE_POINTER_ABI)
+            storage = pointer.functions.ethStorageAddress().call()
+            allow_list = self.provider.eth.contract(address=storage, abi=self.ALLOWED_CALLERS_ABI)
+            return storage, bool(allow_list.functions.allowedCallers(self.protocol_address).call())
+        except Exception:
+            return None
     def sign_message(self, message: str) -> Any:
         if isinstance(message, bytes):
             message = message.decode("utf-8")

@@ -997,14 +997,38 @@ class EthernityCloudRunner:
     def cleanup(self) -> None:
         """Cleanup resources."""
         self.reset()
+    def node_check_failure(self, error: BaseException) -> str:
+        """Why the read of a node's DP requests failed: a PoX its storage no
+        longer lists as an allowed caller is named as retired (every call
+        through it is refused, and this runner's address for the network is
+        the one a later implementation replaced); any other failure is
+        reported with the contract and the provider's message."""
+        address = self.contract.protocol_address
+        admission = self.contract.storage_admission()
+        if admission is not None and admission[1] is False:
+            return (f"The protocol contract {address} is retired: its storage {admission[0]} no longer "
+                    "admits it, so every call through it is refused. Upgrade ethernity-cloud-runner-py: "
+                    "this version carries an address a later contract replaced.")
+        return (f"Could not verify the node address: the protocol contract {address} did not answer "
+                f"the read of the node's requests ({provider_message(error)}).")
+
     def is_node_operator_address(self, node_address: str) -> bool:
-        """Check if address is a node operator."""
+        """Whether `node_address` may be named as a run's node: True for no
+        address and for an address holding a DP request on the PoX, False for
+        a string that is no address and for an address without a DP request.
+        A read of the requests that fails raises RuntimeError with
+        node_check_failure's message: it says nothing about the node."""
         if is_null_or_empty(node_address):
             return True
         if not is_address(node_address):
             self.logger.error("Introduced address is not a valid wallet address.")
             return False
-        is_node = self.contract.is_node_operator(node_address)
+        try:
+            is_node = self.contract.is_node_operator(node_address)
+        except Exception as error:
+            message = self.node_check_failure(error)
+            self.logger.error(message)
+            raise RuntimeError(message) from error
         if not is_node:
             self.logger.error("The target address is not a valid node operator address")
         return is_node
