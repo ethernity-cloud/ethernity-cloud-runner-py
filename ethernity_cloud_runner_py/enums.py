@@ -111,7 +111,7 @@ class ECNetwork:
             # deployment of 2026-10-06, whose securelock names belong to their
             # publishers.
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0xa372a6e1Eb7Fcf343AF6b91E809b900C55001CD1'
-            # The EthernityImplementationV2 1.2 of pox-smart-contract-litvm
+            # The PoX 2.0 implementation of pox-smart-contract-litvm
             # deployed 2026-11-18, whose compute figures are whole GFLOPS, on
             # the EthernityCloudStorage 0xEE3aAa1A... of 2026-11-14. The token
             # stays the legacy proxy 0x02882F03..., which is also the PoX of
@@ -204,9 +204,9 @@ class ECNetwork:
             NETWORK_FEE=5
             ENCLAVE_FEE=10
         class AMOY:
-            # ECImageRegistryV3 of 2026-10-28 and the EthernityImplementationV2
-            # 1.2 deployed 2026-11-18, whose compute figures are whole GFLOPS,
-            # on the storage and token of the implementations 1.1 0xB8f46D2B...
+            # ECImageRegistryV3 of 2026-10-28 and the PoX 2.0 implementation
+            # deployed 2026-11-18, whose compute figures are whole GFLOPS, on
+            # the storage and token of the implementations 1.1 0xB8f46D2B...
             # and 0x1579b37C.... A DO request is escrowed by the implementation
             # it was posted through, so only this one is served.
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706'

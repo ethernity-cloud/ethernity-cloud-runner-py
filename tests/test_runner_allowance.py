@@ -6,7 +6,7 @@ is below the escrow (protocolContract.request_escrow: taskPrice * validators *
 duration tokens), the protocol is approved for exactly the escrow and the
 approval waited for; where the protocol is the token (the bloxberg mainnet PoX
 takes the escrow from the caller's balance) nothing is read or approved. The
-bloxberg testnet names the PoX 1.2 beside the legacy proxy, which stays the
+bloxberg testnet names the PoX 2.0 beside the legacy proxy, which stays the
 token, and walks the step by the code and amounts Polygon Amoy does. No chain:
 the contracts, the registry and the session are stand-ins."""
 from types import SimpleNamespace
@@ -20,10 +20,10 @@ from ethernity_cloud_runner_py.contract.operation.protocolContract import protoc
 from ethernity_cloud_runner_py.enums import ECEvent, ECNetwork, ECStatus
 from ethernity_cloud_runner_py.runner import EthernityCloudRunner
 
-BLOXBERG_TESTNET_POX_1_2 = "0x830c781F0352050343211B6BFA83600B3e77647C"
+BLOXBERG_TESTNET_POX_2_0 = "0x830c781F0352050343211B6BFA83600B3e77647C"
 BLOXBERG_TESTNET_TOKEN = "0x02882F03097fE8cD31afbdFbB5D72a498B41112c"
 BLOXBERG_MAINNET_POX = "0x549A6E06BB2084100148D50F51CF77a3436C3Ae7"
-AMOY_POX_1_2 = "0xd1182deA61CDa785C320cdBE5888EaC4178cAAF2"
+AMOY_POX_2_0 = "0xd1182deA61CDa785C320cdBE5888EaC4178cAAF2"
 AMOY_TOKEN = "0x9927809B61122B2af3f3b3A3303875e0687b8eE3"
 TX = "0x" + "ab" * 32
 WALLET = "0x" + "11" * 20
@@ -53,17 +53,17 @@ def _networks():
                 yield network_name, type_name, entry
 
 
-def test_the_bloxberg_testnet_table_names_the_pox_1_2_beside_the_legacy_token():
-    assert ECNetwork.BLOXBERG.TESTNET.PROTOCOL_ADDRESS == BLOXBERG_TESTNET_POX_1_2
+def test_the_bloxberg_testnet_table_names_the_pox_2_0_beside_the_legacy_token():
+    assert ECNetwork.BLOXBERG.TESTNET.PROTOCOL_ADDRESS == BLOXBERG_TESTNET_POX_2_0
     assert ECNetwork.BLOXBERG.TESTNET.TOKEN_ADDRESS == BLOXBERG_TESTNET_TOKEN
-    assert ECNetwork.BLOXBERG.TESTNET_UNSAFE.PROTOCOL_ADDRESS == BLOXBERG_TESTNET_POX_1_2
+    assert ECNetwork.BLOXBERG.TESTNET_UNSAFE.PROTOCOL_ADDRESS == BLOXBERG_TESTNET_POX_2_0
     assert ECNetwork.BLOXBERG.TESTNET_UNSAFE.TOKEN_ADDRESS == BLOXBERG_TESTNET_TOKEN
 
 
-def test_the_amoy_table_names_the_pox_1_2_beside_the_tecld_token():
-    assert ECNetwork.POLYGON.AMOY.PROTOCOL_ADDRESS == AMOY_POX_1_2
+def test_the_amoy_table_names_the_pox_2_0_beside_the_tecld_token():
+    assert ECNetwork.POLYGON.AMOY.PROTOCOL_ADDRESS == AMOY_POX_2_0
     assert ECNetwork.POLYGON.AMOY.TOKEN_ADDRESS == AMOY_TOKEN
-    assert ECNetwork.POLYGON.AMOY_UNSAFE.PROTOCOL_ADDRESS == AMOY_POX_1_2
+    assert ECNetwork.POLYGON.AMOY_UNSAFE.PROTOCOL_ADDRESS == AMOY_POX_2_0
     assert ECNetwork.POLYGON.AMOY_UNSAFE.TOKEN_ADDRESS == AMOY_TOKEN
 
 
@@ -208,14 +208,14 @@ def test_the_bloxberg_mainnet_reads_no_allowance(monkeypatch, submission):
     assert runner.calls == []
 
 
-def test_the_bloxberg_testnet_approves_its_pox_1_2_on_the_token(monkeypatch):
+def test_the_bloxberg_testnet_approves_its_pox_2_0_on_the_token(monkeypatch):
     runner = _init_step(monkeypatch, "BLOXBERG", "TESTNET", allowance=0)
-    assert runner.calls == [("allowance", WALLET, BLOXBERG_TESTNET_POX_1_2), ("approve", PRICE), ("wait", TX)]
+    assert runner.calls == [("allowance", WALLET, BLOXBERG_TESTNET_POX_2_0), ("approve", PRICE), ("wait", TX)]
 
 
-def test_amoy_approves_its_pox_1_2_on_the_token(monkeypatch):
+def test_amoy_approves_its_pox_2_0_on_the_token(monkeypatch):
     runner = _init_step(monkeypatch, "POLYGON", "AMOY", allowance=0)
-    assert runner.calls == [("allowance", WALLET, AMOY_POX_1_2), ("approve", PRICE), ("wait", TX)]
+    assert runner.calls == [("allowance", WALLET, AMOY_POX_2_0), ("approve", PRICE), ("wait", TX)]
 
 
 @pytest.mark.parametrize("network_name, network_type", SEPARATE_PROTOCOL_NETWORKS)
@@ -271,14 +271,14 @@ def test_a_resubmission_approves_the_escrow_again(monkeypatch):
     runner._populate_event_queue()
     runner._process_events("code", "", TERMED)
     assert runner.status == ECStatus.ERROR
-    walk = [("allowance", WALLET, BLOXBERG_TESTNET_POX_1_2), ("approve", TERMED_ESCROW), ("wait", TX)]
+    walk = [("allowance", WALLET, BLOXBERG_TESTNET_POX_2_0), ("approve", TERMED_ESCROW), ("wait", TX)]
     assert runner.calls == walk + walk
 
 
 def test_a_testnet_wallet_below_the_escrow_draws_the_faucet_first(monkeypatch):
     runner = _init_step(monkeypatch, "BLOXBERG", "TESTNET", allowance=0, resources=TERMED, balance=TERMED_ESCROW - 1)
     assert runner.calls[0] == ("faucet",)
-    assert runner.calls[1:] == [("allowance", WALLET, BLOXBERG_TESTNET_POX_1_2), ("approve", TERMED_ESCROW), ("wait", TX)]
+    assert runner.calls[1:] == [("allowance", WALLET, BLOXBERG_TESTNET_POX_2_0), ("approve", TERMED_ESCROW), ("wait", TX)]
 
 
 def test_a_mainnet_wallet_below_the_escrow_fails_the_submission(monkeypatch):

@@ -53,7 +53,7 @@ class protocolContract:
         """The escrow of a _addDORequest for `resources`: the task price of
         every instance over the duration, taskPrice * validators * duration.
         The EthernityImplementationV2 pulls it from the caller with
-        transferFrom (Ethernity12Extension._addDORequest:
+        transferFrom (Ethernity20Extension._addDORequest:
         _tokensToWeis(_maxPrice) * _instances * _duration); the bloxberg
         mainnet PoX requires the caller's balance to cover it
         (Ethernity.sol _addDORequest: balances[msg.sender] >= _maxPrice *
