@@ -932,7 +932,7 @@ class EthernityCloudRunner:
         self.storage().release_held([getattr(self, "challenge_ipfs_hash", None), self.script_hash, self.file_set_hash])
         # With the public intake, the artefacts named in the request, those
         # its task queued, are delivered now that the request is on chain.
-        self.storage().flush_pending(self.do_request, self._task_blobs)
+        self.storage().flush_pending(self.do_request, operation=self._task_blobs)
         return True
     def parse_order_result(self, result: str) -> Dict[str, Any]:
         """Parse order result string."""

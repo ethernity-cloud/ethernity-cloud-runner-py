@@ -150,7 +150,7 @@ def test_a_delivery_posts_the_blobs_of_its_own_operation_alone(monkeypatch):
     task, session = object(), object()
     challenge, code = client.upload_to_ipfs(b"challenge", operation=task), client.upload_to_ipfs(b"code", operation=task)
     held_input = client.upload_to_ipfs(b"input", operation=session)
-    client.flush_pending(REQUEST, task)
+    client.flush_pending(REQUEST, operation=task)
     assert _posted(calls) == [(str(REQUEST), challenge), (str(REQUEST), code)]
     assert client.pending == {session: {held_input: b"input"}}
 
@@ -170,6 +170,18 @@ def test_a_signed_lodge_and_a_drop_take_the_blobs_of_their_own_operation_alone(m
     assert client.pending == {}
 
 
+def test_flush_pending_takes_the_attempts_and_the_delay_where_0_5_38_took_them(monkeypatch):
+    """flush_pending(do_request, attempts, delay), positional, delivers the blobs queued without an
+    operation."""
+    calls = post_answering(monkeypatch, Response(503, text="unavailable"), Response(503, text="unavailable"))
+    slept = record_sleeps(monkeypatch)
+    client = _client()
+    cid = client.upload_to_ipfs(b"queued without an operation")
+    with pytest.raises(RuntimeError, match=f"^intake did not accept {cid} for request {REQUEST} after 2 attempts"):
+        client.flush_pending(REQUEST, 2, 7)
+    assert len(calls) == 2 and slept == [7]
+
+
 def test_a_blob_another_thread_delivered_meanwhile_is_passed_over(monkeypatch):
     """The delivery's list of its operation's blobs was taken before another thread delivered one of them:
     that blob is not posted again, and nothing is raised."""
@@ -185,7 +197,7 @@ def test_a_blob_another_thread_delivered_meanwhile_is_passed_over(monkeypatch):
         return Response(200)
 
     monkeypatch.setattr(ipfs.requests, "post", post)
-    client.flush_pending(REQUEST, operation)
+    client.flush_pending(REQUEST, operation=operation)
     assert posted == [first, second]
     assert client.pending == {}
 

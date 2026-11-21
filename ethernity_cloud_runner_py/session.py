@@ -330,7 +330,7 @@ class EthernityCloudSession:
         # that were not lodged before it can be delivered, with those of an
         # earlier input of the handle whose row had no receipt then; nothing
         # is queued when they were lodged.
-        storage.flush_pending(self.do_req, self._blobs)
+        storage.flush_pending(self.do_req, operation=self._blobs)
         # An input the held cache carried is referenced on chain now.
         storage.release_held([cid])
         seq = self._input_seq

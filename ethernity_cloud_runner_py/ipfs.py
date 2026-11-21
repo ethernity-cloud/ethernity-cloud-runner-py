@@ -248,8 +248,8 @@ class IPFSClient:
                 time.sleep(delay)
         return None
 
-    def flush_pending(self, do_request: int, operation: Hashable = None, attempts: int = 3,
-                      delay: float = 5.0) -> None:
+    def flush_pending(self, do_request: int, attempts: int = 3, delay: float = 5.0,
+                      operation: Hashable = None) -> None:
         """Deliver the blobs `operation` queued to the intake for
         `do_request`; the blobs of every other operation stay as they are. A
         blob the intake confirms (200) leaves the queue; one it refuses (4xx)
