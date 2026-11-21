@@ -72,10 +72,10 @@ def test_the_bloxberg_mainnet_protocol_is_its_token():
     assert ECNetwork.BLOXBERG.MAINNET.TOKEN_ADDRESS == BLOXBERG_MAINNET_POX
 
 
-def test_the_bloxberg_mainnet_is_the_one_entry_whose_protocol_is_its_token():
+def test_the_bloxberg_pox_1_0_entries_are_the_ones_whose_protocol_is_its_token():
     same = [(network_name, type_name) for network_name, type_name, entry in _networks()
             if entry.PROTOCOL_ADDRESS.lower() == entry.TOKEN_ADDRESS.lower()]
-    assert same == [("BLOXBERG", "MAINNET")]
+    assert same == [("BLOXBERG", "MAINNET"), ("BLOXBERG", "TESTNET_POX10")]
 
 
 @pytest.mark.parametrize("network_name, network_type", SEPARATE_PROTOCOL_NETWORKS)

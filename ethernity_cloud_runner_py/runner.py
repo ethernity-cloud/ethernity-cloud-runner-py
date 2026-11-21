@@ -297,8 +297,9 @@ class EthernityCloudRunner:
         request: the request's escrow is pulled with transferFrom when the
         network's protocol address differs from its token address (the
         EthernityImplementationV2 PoX on a separate ERC-20). A protocol that
-        is the token (the bloxberg mainnet PoX holds the ETNY balances) takes
-        the escrow from the caller's balance, and no allowance exists."""
+        is the token (the bloxberg mainnet PoX holds the ETNY balances, its
+        copy of BLOXBERG TESTNET_POX10 the tE10 ones) takes the escrow from
+        the caller's balance, and no allowance exists."""
         return self.network_config.PROTOCOL_ADDRESS.lower() != self.network_config.TOKEN_ADDRESS.lower()
     def _read_before_request(self, read: callable) -> Any:
         """A read a DO request depends on: `read` is tried
@@ -314,10 +315,11 @@ class EthernityCloudRunner:
         request's escrow (protocolContract.request_escrow, the amount the PoX
         pulls with transferFrom) the protocol is approved for exactly the
         escrow and the approval is waited for; an allowance at or above the
-        escrow is left as it is. Where the protocol is the token (the bloxberg
-        mainnet) nothing is read or approved. Raises RuntimeError naming the
-        token, the wallet, the protocol and the provider's message when no
-        read answers, ValueError when the approval is not mined or reverts."""
+        escrow is left as it is. Where the protocol is the token (BLOXBERG
+        MAINNET and TESTNET_POX10) nothing is read or approved. Raises
+        RuntimeError naming the token, the wallet, the protocol and the
+        provider's message when no read answers, ValueError when the approval
+        is not mined or reverts."""
         if not self.escrow_needs_allowance():
             return
         self.logger.info("Checking allowance on the current wallet...")
@@ -339,22 +341,39 @@ class EthernityCloudRunner:
                 raise ValueError("Allowance approval failed.")
             self.logger.info("Allowance approved")
         self.logger.info("Allowance check completed.")
+    def token_has_faucet(self) -> bool:
+        """Whether a wallet below a request's escrow draws the token's
+        faucet(): on every network but a MAINNET type and an entry whose
+        TOKEN_FAUCET is False (BLOXBERG TESTNET_POX10, whose token has no
+        faucet())."""
+        return self.network_type != "MAINNET" and getattr(self.network_config, "TOKEN_FAUCET", True)
     def _check_balance(self) -> None:
         """The wallet's token balance against the request's escrow
-        (protocolContract.request_escrow): a testnet wallet below it draws the
-        token's faucet, a mainnet wallet below it raises ValueError. The
-        balance is read with _read_before_request; the RuntimeError of a read
-        no try answered (protocolContract.get_balance) is raised as it is, and
-        no faucet is drawn on it."""
+        (protocolContract.request_escrow): a wallet below it draws the token's
+        faucet where the token has one (token_has_faucet) and raises
+        ValueError elsewhere. On a MAINNET type the message states the escrow
+        and the balance; on a testnet whose token has no faucet it also names
+        the token, the wallet and the amount a transfer has to bring, and no
+        transaction is sent. The balance is read with _read_before_request;
+        the RuntimeError of a read no try answered
+        (protocolContract.get_balance) is raised as it is, and no faucet is
+        drawn on it."""
         self.logger.info("Checking wallet balance...")
         balance = int(self._read_before_request(self.contract.get_balance))
         escrow = protocolContract.request_escrow(self.resources)
         if balance < escrow:
-            if self.network_type != "MAINNET":
+            if self.token_has_faucet():
                 self.logger.info("Insufficient wallet balance, using testnet faucet...")
                 self.contract.faucet()
-            else:
+            elif self.network_type == "MAINNET":
                 raise ValueError(f"Insufficient wallet balance. Required: {escrow}, Available: {balance}")
+            else:
+                token = self.network_config.TOKEN_NAME
+                raise ValueError(
+                    f"Insufficient wallet balance. Required: {escrow}, Available: {balance}. The token {token} "
+                    f"({self.network_config.TOKEN_ADDRESS}) of {self.network_name} {self.network_type} has no "
+                    f"faucet: the wallet {self.signer.address} needs a transfer of {escrow - balance} {token} "
+                    "or more before the request.")
     def _resolve_trustedzone(self, trustedzone_enclave: Optional[str]) -> str:
         """The trustedzone a task runs on: `trustedzone_enclave` when given,
         else the network's. An -unsafe trustedzone runs without a CAS, and

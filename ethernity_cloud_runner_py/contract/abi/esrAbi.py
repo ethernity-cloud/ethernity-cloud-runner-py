@@ -19,6 +19,10 @@ contract = {
     'address_bloxberg': '0x4Bf5cDE3BFD73dd10B707f8B123Ba631D2EBEAD2',
     'address_bloxberg_testnet': '0x0Ea1728EAE108FD3B9340ae91451348E2Cc6b4E4',
     'address_bloxberg_testnet_unsafe': '0x0Ea1728EAE108FD3B9340ae91451348E2Cc6b4E4',
+    # BLOXBERG TESTNET_POX10: its trustedzones bake the bloxberg testnet's
+    # registry. ESRContract.registry_address_for reads this entry ahead of
+    # address_bloxberg.
+    'address_bloxberg_testnet_pox10': '0x0Ea1728EAE108FD3B9340ae91451348E2Cc6b4E4',
     'address_litvm_liteforge': '0x709052Fe77Af543d3d9FE2Ac06a15c635c8D4Be5',
     'address_litvm_liteforge_unsafe': '0x709052Fe77Af543d3d9FE2Ac06a15c635c8D4Be5',
     # Deployed 2026-10-14 with Sepolia's PoX family.

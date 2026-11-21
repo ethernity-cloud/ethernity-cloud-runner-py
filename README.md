@@ -40,6 +40,8 @@ Ethernity Cloud runs on several networks; set up your wallet for the one you int
 
 A testnet that has an ethernity-cas validator set -- the bloxberg testnet and LitVM LiteForge -- comes in two kinds. `EthernityCloudRunner("BLOXBERG", "TESTNET")` and `("LITVM", "LITEFORGE")` run the securelock in an enclave the set attests, on nodes whose platform it can attest (DCAP), and the set validates the order in full, as on mainnet. `("BLOXBERG", "TESTNET_UNSAFE")` and `("LITVM", "LITEFORGE_UNSAFE")` are the `-unsafe` networks beside them: the same chain and contracts, for hardware SGX platforms the CAS cannot attest (EPID-only, SGX1); their enclaves are debug-signed and self-signed from their measurement, so a result proves which image ran, not that an enclave ran it, and the validators judge such an order without the challenge-derived signer check. The securelock and trustedzone of an `-unsafe` network carry `-unsafe` in their registered names (see "Choosing the trustedzone"). Mainnet has no `-unsafe` network.
 
+The bloxberg testnet and Polygon Amoy each also hold a PoX 1.0 network, a copy of its mainnet's PoX 1.0 contracts: `EthernityCloudRunner("BLOXBERG", "TESTNET_POX10")` and `EthernityCloudRunner("POLYGON", "AMOY_POX10")` (see "The testnet PoX 1.0 networks").
+
 ### 4. Code execution
 
 To execute a new task using the Ethernity Cloud Runner, follow the template provided below. Insert your code into the designated section; the runner delivers the task's artefacts, submits the task on chain and verifies the result.
@@ -114,6 +116,33 @@ This script connects the runner with the wallet's key, submits the task and poll
 
 A securelock published without a CAS (`<project>-unsafe`) runs on an `-unsafe` network, which you choose by name: `EthernityCloudRunner("BLOXBERG", "TESTNET_UNSAFE")` or `EthernityCloudRunner("LITVM", "LITEFORGE_UNSAFE")`. An `-unsafe` network has the chain and contracts of the network it is named after; its trustedzone is `etny-pynithy-testnet-unsafe` (`ecld-pynithy-litvm-testnet-unsafe` on LitVM), and a nodenithy dApp passes the `etny-nodenithy-...-unsafe` one. The runner runs an `-unsafe` trustedzone only on an `-unsafe` network and runs nothing else there, so a task that runs without a CAS always says so in the network it names.
 
+### The testnet PoX 1.0 networks
+
+Two testnet networks run the PoX 1.0 contracts of the mainnets, beside the PoX 2.0 networks of the same chains (`("BLOXBERG", "TESTNET")`, `("POLYGON", "AMOY")`). The runner uses each as it uses the mainnet it copies.
+
+| | `EthernityCloudRunner("BLOXBERG", "TESTNET_POX10")` | `EthernityCloudRunner("POLYGON", "AMOY_POX10")` |
+|---|---|---|
+| Network | `bloxberg_testnet_pox10`, a copy of the bloxberg mainnet's contracts | `polygon_amoy_pox10`, a copy of Polygon mainnet's contracts |
+| Chain | 8995, `https://bloxberg.ethernity.cloud` | 80002, `https://polygon-amoy-bor-rpc.publicnode.com` |
+| PoX | `0x69A7bEB5Da2d3dA711d52E491D71e51296b08745` | `0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02` |
+| Token | the PoX itself: tE10 ("PoX10 Test ETNY") | tECLD `0x9927809B61122B2af3f3b3A3303875e0687b8eE3`, the token of `("POLYGON", "AMOY")` |
+| Image registry | `0x7dBC1b591cc3b7136D863bc7430C6Db50E929665` | `0xa2EE2a9118d0011AF05a6196c862D37d8c29F8eC` |
+| Trustedzone | `etny-pynithy-testnet-pox10`; a nodenithy dApp passes `etny-nodenithy-testnet-pox10` | `ecld-pynithy-amoy-pox10`; a nodenithy dApp passes `ecld-nodenithy-amoy-pox10` |
+| Token approval | none: the PoX holds the balances | the PoX is approved for the request's escrow |
+| A wallet below the escrow | the task fails at `INIT`, before any transaction | draws the token's `faucet()`, which gives 1000 tECLD to a wallet holding less than 100 |
+| Fees | the fixed gas price of the bloxberg networks | EIP-1559, default ceiling 64 gwei |
+| Enclave State Registry | `0x0Ea1728EAE108FD3B9340ae91451348E2Cc6b4E4`, the bloxberg testnet's | none |
+
+The tE10 token has no faucet and no mint: it reaches a wallet by a transfer from a wallet that holds it. A run from a wallet that holds less than the request's escrow (`taskPrice * validators * duration`) ends in `ERROR` with:
+
+```
+Insufficient wallet balance. Required: 30, Available: 29. The token tE10 (0x69A7bEB5Da2d3dA711d52E491D71e51296b08745) of BLOXBERG TESTNET_POX10 has no faucet: the wallet 0x1111111111111111111111111111111111111111 needs a transfer of 1 tE10 or more before the request.
+```
+
+`run_session()` raises the same message as a `ValueError`.
+
+The trustedzones of both networks are signed for production and take their sessions from Scontain's CAS, as the mainnets' do; neither network has an `-unsafe` network. Neither is among `ipfs.INTAKE_NETWORKS`: while the storage is the bootnode's payload intake, which is the default, `run()`, `run_session()` and `attach_session(order_id, securelock_enclave)` refuse before any transaction, so call `set_storage_ipfs(url, token)` first (see "Storage and the result read").
+
 ### Closing a session
 
 `session.close(wait=True, timeout=900)` writes the session's close row. With `wait` true it then waits until the order has closed and returns the order's result, the session summary. The answers to the session's inputs are output rows and arrive before the close; the order closes after the trustedzone has found those rows on chain and the node has sent the result, which takes at least one more block. An application that does not read the summary calls `session.close(wait=False)`, which returns once the close row is mined.
@@ -187,7 +216,7 @@ On a network with EIP-1559 fees (Polygon mainnet and Polygon Amoy, the IoTeX Tes
 
 - the value given to `runner.set_max_fee_per_gas(gwei)`, which is called before or after `connect()`;
 - the environment variable `ECLD_MAX_FEE_PER_GAS`, when it is set and not empty; it is read at each send;
-- the network's default, the `MAX_FEE_PER_GAS` of its `ECNetwork` entry: 500 gwei on Polygon mainnet, 64 on Polygon Amoy, 1500 on the IoTeX Testnet, 15 on Ethereum Sepolia and 2 on LitVM LiteForge.
+- the network's default, the `MAX_FEE_PER_GAS` of its `ECNetwork` entry: 500 gwei on Polygon mainnet, 64 on Polygon Amoy (its PoX 1.0 network included), 1500 on the IoTeX Testnet, 15 on Ethereum Sepolia and 2 on LitVM LiteForge.
 
 The setter takes a positive whole number of gwei as an `int` and raises `ValueError` for anything else; the variable holds one in decimal digits alone, at most 30 of them. Either is the ceiling on whichever of these networks the runner is on. The bloxberg networks send at a fixed gas price and read none of the three.
 

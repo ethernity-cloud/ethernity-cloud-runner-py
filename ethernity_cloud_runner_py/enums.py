@@ -174,6 +174,44 @@ class ECNetwork:
             NETWORK_FEE=5
             ENCLAVE_FEE=10
 
+        class TESTNET_POX10:
+            # The bloxberg testnet PoX 1.0 network, bloxberg_testnet_pox10: a
+            # copy of the bloxberg mainnet's PoX 1.0 contracts on the same
+            # chain (8995), deployed 2026-11-21 from block 30867912. The PoX
+            # proxy is its own token, as MAINNET's is, so a DO request's
+            # escrow is taken from the caller's balance and no allowance is
+            # approved (EthernityCloudRunner.escrow_needs_allowance). The
+            # token (name "PoX10 Test ETNY", symbol tE10) has no faucet() and
+            # no mint: TOKEN_FAUCET is False, and a wallet below a request's
+            # escrow is refused with the amount it lacks
+            # (EthernityCloudRunner._check_balance). The image registry is a
+            # V1 ECImageRegistry. The trustedzones are signed --production and
+            # take their sessions from Scontain's CAS, as MAINNET's do.
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0x7dBC1b591cc3b7136D863bc7430C6Db50E929665'
+            PROTOCOL_ADDRESS='0x69A7bEB5Da2d3dA711d52E491D71e51296b08745'
+            TOKEN_ADDRESS='0x69A7bEB5Da2d3dA711d52E491D71e51296b08745'
+            HEARTBEAT_CONTRACT_ADDRESS='0x4426C87484038F9B720a6012A1191DA73bDa0ad3'
+            TOKEN_NAME='tE10'
+            TOKEN_FAUCET=False
+            RPC_URL='https://bloxberg.ethernity.cloud'
+            RPC_DELAY=200
+            CHAIN_ID=8995
+            MIDDLEWARE='POA'
+            BLOCK_TIME=5
+            MINIMUM_GAS_AT_START=100000000000
+            GAS_PRICE_MEASURE='wei'
+            EIP1559=False
+            GAS_PRICE=2000000
+            GAS_LIMIT=2000000
+            MAX_FEE_PER_GAS=0
+            MAX_PRIORITY_FEE_PER_GAS=0
+            TASK_EXECUTION_PRICE_DEFAULT=1
+            INTEGRATION_TEST_IMAGE='etny-pynithy-testnet-pox10'
+            TRUSTEDZONE_IMAGE='etny-pynithy-testnet-pox10'
+            REWARD_TYPE=1
+            NETWORK_FEE=5
+            ENCLAVE_FEE=10
+
     class POLYGON:
         class MAINNET:
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0x689f3806874d3c8A973f419a4eB24e6fBA7E830F'
@@ -239,6 +277,41 @@ class ECNetwork:
             # task chosen to run unsafe names this network.
             INTEGRATION_TEST_IMAGE='ecld-pynithy-amoy-unsafe'
             TRUSTEDZONE_IMAGE='ecld-pynithy-amoy-unsafe'
+
+        class AMOY_POX10:
+            # The Polygon Amoy PoX 1.0 network, polygon_amoy_pox10: a copy of
+            # Polygon mainnet's PoX 1.0 contracts on Amoy (80002), deployed
+            # 2026-11-21 from block 53417996, on the storage 0x20B9fDBD....
+            # The token is AMOY's test ECLD, whose faucet() gives 1000 tECLD
+            # to a wallet holding less than 100; the PoX is apart from it, so
+            # the wallet approves the PoX for a request's escrow, as on
+            # MAINNET. The image registry is a V1 ECImageRegistry. The
+            # trustedzones are signed --production and take their sessions
+            # from Scontain's CAS, as MAINNET's do. The RPC, the chain id and
+            # the fee values are AMOY's.
+            IMAGE_REGISTRY_CONTRACT_ADDRESS='0xa2EE2a9118d0011AF05a6196c862D37d8c29F8eC'
+            PROTOCOL_ADDRESS='0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02'
+            TOKEN_ADDRESS='0x9927809B61122B2af3f3b3A3303875e0687b8eE3'
+            HEARTBEAT_CONTRACT_ADDRESS='0x937F74419E31c1200e86B6D2439D9f12b3Fa12c9'
+            TOKEN_NAME='tECLD'
+            RPC_URL='https://polygon-amoy-bor-rpc.publicnode.com'
+            RPC_DELAY=200
+            CHAIN_ID=80002
+            MIDDLEWARE='POA'
+            BLOCK_TIME=2
+            MINIMUM_GAS_AT_START=100000000000000000
+            GAS_PRICE_MEASURE='gwei'
+            EIP1559=True
+            GAS_PRICE=0
+            GAS_LIMIT=0
+            MAX_FEE_PER_GAS=64
+            MAX_PRIORITY_FEE_PER_GAS=32
+            TASK_EXECUTION_PRICE_DEFAULT=1
+            INTEGRATION_TEST_IMAGE='ecld-pynithy-amoy-pox10'
+            TRUSTEDZONE_IMAGE='ecld-pynithy-amoy-pox10'
+            REWARD_TYPE=1
+            NETWORK_FEE=5
+            ENCLAVE_FEE=10
 
     class IOTEX:
         class TESTNET:
