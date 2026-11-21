@@ -25,7 +25,9 @@ import pytest
 import test_set_network
 from ethernity_cloud_runner_py.enums import ECStatus
 from ethernity_cloud_runner_py.errors import FeeCeilingError, RunEndedError
-from ethernity_cloud_runner_py.runner import CLOSED_WHILE_WAITING, EthernityCloudRunner
+from ethernity_cloud_runner_py.runner import (CLOSED_WHILE_WAITING, NOT_CONNECTED, RUN_ENDED, RUN_ENDED_REQUEST,
+                                              RUN_ENDED_REQUEST_SENT, EthernityCloudRunner, _Run)
+from test_runner_do_request import TX as REQUEST_TX, _runner_with_request_event
 
 from test_set_network import (  # noqa: F401 (chain is the fixture the cases ask for)
     AMOY, AMOY_POX10, KEY, ORDER, RESOURCES, SECURELOCK, WALLET, _expected, _run, _runner, chain,
@@ -386,7 +388,7 @@ def _settles_on_its_close_row(chain):
 def _summarizing(runner):
     """The runner's final result read answers SUMMARY; returns the order ids it was asked for."""
     asked = []
-    runner.get_result_from_order = lambda order_id: asked.append(order_id) or dict(SUMMARY)
+    runner.get_result_from_order = lambda order_id, order=None, challenge=None: asked.append(order_id) or dict(SUMMARY)
     return asked
 
 
@@ -443,3 +445,68 @@ def test_a_runner_stays_in_progress_for_the_handles_it_still_holds(chain):
     assert second.close(wait=True) == SUMMARY
     change(runner)
     assert runner.is_running() is False
+
+
+# ---- a session submission close() ended after its DO request was sent ----
+
+def test_the_run_of_the_calling_thread_keeps_the_request_it_sent(monkeypatch, tmp_path):
+    monkeypatch.setenv("ETHERNITY_CLOUD_HELD_DIR", str(tmp_path / "held"))
+    runner = _runner_with_request_event(41)
+    run = _Run(runner.contract)
+    runner._calling.run = runner._run = run
+    assert runner.create_do_request("image", "code", "input", "") is True
+    assert (run.request_hash, run.request_id) == (REQUEST_TX, 41)
+
+
+@pytest.mark.parametrize("request_id", [41, None], ids=["read from the receipt", "only sent"])
+@pytest.mark.parametrize("error", [ValueError("Task approval failed."), RunEndedError(RUN_ENDED)],
+                         ids=["the step's error", "the send refused"])
+def test_a_submission_close_ended_after_its_request_was_sent_names_the_request_and_the_way_back(request_id, error):
+    """What close() does to the submission is to end it as the runner's run in progress; the step the
+    submission was in then fails."""
+    runner = EthernityCloudRunner(*AMOY)
+    with pytest.raises(RunEndedError) as ended:
+        with runner._submission() as run:
+            run.request_hash, run.request_id = REQUEST_TX, request_id
+            runner._run = None
+            raise error
+    added = (RUN_ENDED_REQUEST.format(request_id=41, request_hash=REQUEST_TX) if request_id is not None
+             else RUN_ENDED_REQUEST_SENT.format(request_hash=REQUEST_TX))
+    assert str(ended.value) == RUN_ENDED + added
+    assert (ended.value.request_id, ended.value.request_hash) == (request_id, REQUEST_TX)
+    assert ended.value.__cause__ is error
+    assert "runner.contract.cancel_do_request(id)" in str(ended.value) and "list_sessions()" in str(ended.value)
+
+
+def test_a_submission_close_ended_before_its_request_raises_as_it_did():
+    runner = EthernityCloudRunner(*AMOY)
+    refused = RunEndedError(RUN_ENDED)
+    with pytest.raises(RunEndedError) as ended:
+        with runner._submission():
+            runner._run = None
+            raise refused
+    assert ended.value is refused and ended.value.request_id is None
+
+
+# ---- run(), run_session() and attach_session() on a runner without a contract ----
+
+UNCONNECTED_CALLS = {
+    "run()": lambda runner: runner.run(RESOURCES, SECURELOCK, "v3", "code"),
+    "run_session()": lambda runner: runner.run_session(RESOURCES, SECURELOCK, "v3", "code"),
+    "attach_session()": lambda runner: runner.attach_session(ORDER),
+}
+
+
+@pytest.mark.parametrize("closed", [True, False], ids=["closed", "never connected"])
+@pytest.mark.parametrize("call", list(UNCONNECTED_CALLS))
+def test_a_runner_without_a_contract_refuses_a_run_and_a_session_before_anything(chain, call, closed):
+    runner = _runner(AMOY, connect=closed)
+    if closed:
+        runner.close()
+    del chain.log[:]
+    with pytest.raises(RuntimeError) as refused:
+        UNCONNECTED_CALLS[call](runner)
+    assert str(refused.value) == NOT_CONNECTED.format(call=call)
+    assert runner.task_thread is None and runner.running is False
+    assert chain.log == []
+    assert not runner._run_lock.locked()

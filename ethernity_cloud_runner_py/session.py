@@ -33,15 +33,16 @@ runner's handles.
 """
 
 import hashlib
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-import requests
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
 from .crypto import decrypt_nacl, encrypt, verify_certificate_signature
 from .ipfs import INTAKE_NOT_NAMED, owner_signature_message
+from .rpc import read_again
 
 SESSION_INPUT_KEY = "etny-si"
 SESSION_OUTPUT_KEY = "etny-so"
@@ -58,11 +59,6 @@ MAX_SESSION_MESSAGES = 256
 # Mirror of the enclave's input-acceptance margin (M3): sending inside this
 # window would only earn a signed 'late' notice, so refuse client-side.
 SEND_CUTOFF_SECONDS = 600
-# How many times a read of the session's order, request and input rows is
-# made while the RPC does not answer it (requests.RequestException), and the
-# seconds between the tries (EthernityCloudSession._read).
-SESSION_READ_ATTEMPTS = 3
-SESSION_READ_RETRY_SECONDS = 2
 
 SESSION_STATUS_NAMES = {
     0: "closed",
@@ -96,9 +92,14 @@ class SessionError(Exception):
 
 
 class EthernityCloudSession:
-    def __init__(self, runner, order_id: int):
+    def __init__(self, runner, order_id: int, challenge: Optional[bytes] = None):
+        """The handle of session order `order_id` of `runner`. `challenge` is
+        the challenge of the session's request, which run_session() knows and
+        attach_session() does not: close(wait=True) checks the summary's
+        signer against it when given."""
         self.runner = runner
         self.order_id = int(order_id)
+        self._challenge = challenge
         # What the runner holds as the handle is made, kept for the handle's
         # life: the protocol contract its rows go through (a network, a PoX
         # and a signer), the web3 contract its reads are made on, the
@@ -121,6 +122,8 @@ class EthernityCloudSession:
         # Retried: a replica of a load-balanced RPC that has not seen an order
         # placed moments ago reverts the read.
         order = runner.retry_operation(lambda: self._protocol_contract.caller()._getOrder(self.order_id))
+        # The order's struct, which close(wait=True) reads the result with.
+        self._order = order
         self.do_req = int(order[2])
         self.dp_req = int(order[3])
         doreq = self._read(lambda: self._protocol_contract.caller()._getDORequest(self.do_req))
@@ -142,6 +145,9 @@ class EthernityCloudSession:
         # The owner's signature that lodges this session's inputs with the
         # intake before their rows (_lodge_input); signed once, at the first.
         self._owner_signature: Optional[str] = None
+        # Held by poll_outputs: one thread at a time reads the rows, so a row
+        # is taken, and its message delivered, once.
+        self._poll_lock = threading.Lock()
 
     # ----------------------------------------------------------------- helpers
 
@@ -168,18 +174,10 @@ class EthernityCloudSession:
 
     @staticmethod
     def _read(read: Callable[[], Any]) -> Any:
-        """`read()`, made again while the RPC does not answer it
-        (requests.RequestException: no connection, no answer within
-        rpc.RPC_TIMEOUT), up to SESSION_READ_ATTEMPTS times
-        SESSION_READ_RETRY_SECONDS apart; the last such error, and any other
-        error at once, is raised."""
-        for attempt in range(1, SESSION_READ_ATTEMPTS + 1):
-            try:
-                return read()
-            except requests.exceptions.RequestException:
-                if attempt == SESSION_READ_ATTEMPTS:
-                    raise
-            time.sleep(SESSION_READ_RETRY_SECONDS)
+        """`read()`, made again while the RPC does not serve it
+        (rpc.read_again); the last such error, and any other error at once,
+        is raised."""
+        return read_again(read)
 
     def _count_my_inputs(self) -> int:
         """Resume seq from chain state so a reattached session continues
@@ -374,9 +372,16 @@ class EthernityCloudSession:
         to self.outputs). An output row before any attestation is discarded:
         its signer cannot be checked. A verified row whose payload is not
         readable yet is kept, and the rows after it with it, for the next
-        poll, up to PAYLOAD_RETRY_SECONDS. SessionError on a handle the
+        poll, up to PAYLOAD_RETRY_SECONDS. One thread at a time reads the rows
+        (_poll_lock), so on_output, wait_output, wait_outputs and close of
+        other threads take each message once. SessionError on a handle the
         runner's close() detached."""
         self._require_attached()
+        with self._poll_lock:
+            return self._poll_rows()
+
+    def _poll_rows(self) -> List[Dict[str, Any]]:
+        """poll_outputs' read of the new rows, under its lock."""
         try:
             count = int(self._caller()._getMetadataCountForDPRequest(self.dp_req))
         except Exception as e:
@@ -530,7 +535,11 @@ class EthernityCloudSession:
     def close(self, wait: bool = True, timeout: int = 900) -> Optional[Dict[str, Any]]:
         """Commit the close row; optionally wait for the order to settle and
         return the final task result (the session summary). The row goes
-        through the contract the handle was made with. SessionError on a
+        through the contract the handle was made with. The summary is read
+        with the handle's own order and challenge
+        (EthernityCloudRunner.get_result_from_order), so an attached handle
+        returns it too, its signer not checked against a challenge the
+        attaching process does not know. SessionError on a
         handle the runner's close() detached, before the row and during the
         wait: nothing is sent. Once a close(wait=True) has returned the
         summary, the handle is out of the runner's handles
@@ -561,10 +570,11 @@ class EthernityCloudSession:
                 pass
             self.poll_outputs()
             time.sleep(5)
-        # Final drain, then the ordinary result path (summary + transcript).
+        # Final drain, then the ordinary result path (summary + transcript),
+        # with the handle's own order and challenge.
         self.poll_outputs()
         try:
-            summary = self.runner.get_result_from_order(self.order_id)
+            summary = self.runner.get_result_from_order(self.order_id, order=self._order, challenge=self._challenge)
         except Exception as e:
             self.runner.logger.warning(f"[session] final result not readable: {e}")
             summary = None

@@ -392,7 +392,7 @@ def _session_submission(monkeypatch, runner):
     runner.check_order_for_task = check_order_for_task
     runner.approve_task = lambda: True
     monkeypatch.setattr(session_module, "EthernityCloudSession",
-                        lambda runner, order_id: SimpleNamespace(order_id=order_id))
+                        lambda runner, order_id, challenge=None: SimpleNamespace(order_id=order_id))
     return runner.run_session(runner.resources, "securelock", "v3", "code")
 
 

@@ -135,7 +135,15 @@ class RunEndedError(RuntimeError):
     contract its runner retired (protocolContract.retire): at close(), and at
     a set_network() or a set_private_key() that built another one. It is
     raised as it is, with no further attempt (protocolContract._build_sign_send,
-    EthernityCloudRunner.retry_operation)."""
+    EthernityCloudRunner.retry_operation). `request_id` and `request_hash`
+    name the DO request a session submission close() ended had sent, its id
+    once read from the receipt and its transaction hash; None when it sent
+    none."""
+
+    def __init__(self, message: str, request_id: Optional[int] = None, request_hash: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+        self.request_hash = request_hash
 
 
 # ---------- Filter (global) ----------

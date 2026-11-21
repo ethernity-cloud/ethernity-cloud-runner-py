@@ -27,6 +27,16 @@ MAX_FEE_PER_GAS_ENV = "ECLD_MAX_FEE_PER_GAS"
 # The wait before the next attempt of a send whose nonce, fee or gas estimate
 # read the RPC did not serve (protocolContract._build_sign_send).
 SEND_READ_RETRY_SECONDS = 1
+# How many times a signed transaction is handed to the node while the RPC
+# does not answer the hand-over, and the seconds between two hand-overs
+# (protocolContract._hand_over).
+HANDOVER_ATTEMPTS = 5
+HANDOVER_RETRY_SECONDS = 2
+# What nodes answer to a transaction they hold already, in lower case: geth
+# and bor ("already known", formerly "known transaction"), Nethermind
+# ("AlreadyKnown"), OpenEthereum and Parity, bloxberg's ("Transaction with the
+# same hash was already imported.").
+ALREADY_HELD = ("already known", "alreadyknown", "known transaction", "already imported")
 
 
 def _gwei(wei: int) -> str:
@@ -200,12 +210,14 @@ class protocolContract:
         is printed like any other failure of an attempt and raised as it is,
         with no further attempt. A contract retire() ended raises
         RunEndedError: before an attempt reads the nonce and the fee, and
-        again, under the lock retire() takes, right before the signed
-        transaction is handed to the node. A read the transaction is built
+        again, under the lock retire() takes, right before each hand-over of
+        the signed transaction to the node. A read the transaction is built
         from that the RPC does not serve (requests.RequestException: no
         connection, no answer within rpc.RPC_TIMEOUT, an HTTP error status)
         ends the attempt, and the next attempt, after SEND_READ_RETRY_SECONDS,
-        reads again.
+        reads again. The signed transaction is handed over by _hand_over; when
+        none of its hand-overs is answered, the send raises and builds no
+        other transaction, since the node may hold that one.
         """
         max_attempts = 20
         current_nonce = None
@@ -224,16 +236,8 @@ class protocolContract:
                 signed_tx = self.provider.eth.account.sign_transaction(
                     tx, private_key=self.signer._private_key
                 )
-                with self._send_lock:
-                    self._refuse_retired()
-                    handed_over = True
-                    # Suppress Web3's friendly prefix for this call only
-                    with suppress_web3_friendly_prefix():
-                        tx_hash = self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
-
-                hex_tx_hash = self.provider.to_hex(tx_hash)
-
-                return hex_tx_hash
+                handed_over = True
+                return self._hand_over(signed_tx)
 
             except Web3RPCError as e:
                 node_message = raw_rpc_error_message(e)
@@ -263,19 +267,64 @@ class protocolContract:
 
             except Exception as e:
                 print(f"Attempt {attempt + 1}: Exception encountered: {str(e)}")
-                if isinstance(e, requests.exceptions.Timeout):
-                    print(f"Attempt {attempt + 1}: Timeout, retrying...")
-                    continue
-                elif isinstance(e, requests.exceptions.RequestException) and not handed_over:
-                    print(f"Attempt {attempt + 1}: the RPC did not serve a read of the transaction, retrying...")
-                    time.sleep(SEND_READ_RETRY_SECONDS)
-                    continue
-                elif isinstance(e, (FeeCeilingError, RunEndedError)):
+                if isinstance(e, (FeeCeilingError, RunEndedError)):
                     raise
-                else:
-                    raise Exception(f"Unable to send transaction: {str(e)}")
+                if isinstance(e, requests.exceptions.RequestException) and not handed_over:
+                    print(f"Attempt {attempt + 1}: the RPC did not serve a read of the transaction, retrying...")
+                    # A read that timed out has waited its timeout already.
+                    if not isinstance(e, requests.exceptions.Timeout):
+                        time.sleep(SEND_READ_RETRY_SECONDS)
+                    continue
+                raise Exception(f"Unable to send transaction: {str(e)}")
 
         raise Exception("Max retries exceeded for transaction send")
+
+    def _hand_over(self, signed_tx: Any) -> HexStr:
+        """Hands the signed transaction to the node and returns its hash. A
+        hand-over the RPC does not answer (requests.RequestException: no
+        connection, a connection reset, no answer within rpc.RPC_TIMEOUT, an
+        HTTP error status such as 429, 503 or 504) is made again with the same
+        signed bytes, up to HANDOVER_ATTEMPTS times HANDOVER_RETRY_SECONDS
+        apart: the same bytes are the same transaction, so a node that took an
+        earlier hand-over whose answer was lost is not given a second
+        transaction. The transaction is the node's, and its hash is returned,
+        when the node answers that it holds it already (ALREADY_HELD), and when,
+        after a hand-over whose answer was lost, it answers that its nonce is
+        used and the transaction is found by its hash (it was mined). Each
+        hand-over is made under the lock retire() takes, after the retirement
+        check. The last RequestException, and any other node error, is
+        raised."""
+        tx_hash = self.provider.to_hex(signed_tx.hash)
+        lost = False
+        for attempt in range(1, HANDOVER_ATTEMPTS + 1):
+            with self._send_lock:
+                self._refuse_retired()
+                try:
+                    # Suppress Web3's friendly prefix for this call only
+                    with suppress_web3_friendly_prefix():
+                        return self.provider.to_hex(self.provider.eth.send_raw_transaction(signed_tx.raw_transaction))
+                except requests.exceptions.RequestException as e:
+                    if attempt == HANDOVER_ATTEMPTS:
+                        raise
+                    print(f"Hand-over {attempt} of {tx_hash} not answered ({type(e).__name__}: {e}); handing the "
+                          "same transaction over again...")
+                    lost = True
+                except Web3RPCError as e:
+                    message = raw_rpc_error_message(e).lower()
+                    if any(phrase in message for phrase in ALREADY_HELD):
+                        return tx_hash
+                    if lost and "nonce too low" in message and self._holds(tx_hash):
+                        return tx_hash
+                    raise
+            time.sleep(HANDOVER_RETRY_SECONDS)
+
+    def _holds(self, tx_hash: HexStr) -> bool:
+        """Whether the node finds the transaction `tx_hash`; False when the
+        read fails."""
+        try:
+            return self.provider.eth.get_transaction(tx_hash) is not None
+        except Exception:
+            return False
 
     def get_signer(self) -> Any:
         return self.signer

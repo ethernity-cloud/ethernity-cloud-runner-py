@@ -22,6 +22,7 @@ from .contract.abi.ECLDAbi import contract as ECLDAbi
 from .contract.operation.imageRegistryContract import ImageRegistryContract
 from .contract.operation.protocolContract import protocolContract
 from .contract.operation.esrContract import ESRContract
+from .rpc import read_again, rpc_answers
 from .state_cache import StateCache, parse_result_envelope
 from binascii import hexlify
 from nacl.public import Box, PrivateKey, PublicKey
@@ -101,6 +102,21 @@ CLOSED_WHILE_WAITING = ("The runner was closed with close() while {call} waited 
 # send (_sender) and for the handle it would return (_hold_session).
 RUN_ENDED = ("The runner was closed with close() while this run or session submission was in progress: it has "
              "ended, and nothing more of it is sent.")
+# What the errors.RunEndedError of a session submission close() ended adds
+# when the submission's DO request was sent, which holds its escrow once
+# mined: RUN_ENDED_REQUEST when its id was read from the receipt,
+# RUN_ENDED_REQUEST_SENT when only its transaction was sent; RECOVER is how
+# the escrow comes back.
+RECOVER = ("on a connected runner of the same network and wallet, runner.contract.cancel_do_request(id) returns "
+           "the escrow while no node has taken the request; once a node has placed an order on it, "
+           "list_sessions() names the order and attach_session(order_id) gives a handle that closes it.")
+RUN_ENDED_REQUEST = " Its DO request {request_id} was sent in transaction {request_hash} and holds its escrow: " + RECOVER
+RUN_ENDED_REQUEST_SENT = (" Its DO request was sent in transaction {request_hash}: once mined, the request holds its "
+                          "escrow and its id is the _rowNumber of the transaction's _addDORequestEV event; " + RECOVER)
+# The message of the RuntimeError of run(), run_session() and attach_session()
+# on a runner without a protocol contract: one never connected, or closed.
+NOT_CONNECTED = ("{call} needs a connected runner: this one holds no protocol contract (it was not connected, or "
+                 "it was closed with close()). Give it a key with set_private_key() and call connect() first.")
 
 
 def log_scan_ranges(from_block: int, head: int) -> list:
@@ -172,11 +188,15 @@ class _Run:
     """One run() of a runner, or one run_session() or attach_session() call.
     `contract` is the protocol contract the runner held when it began, the
     one its transactions go through (EthernityCloudRunner._sender); `ended`
-    is set once the thread that works for it has left it."""
+    is set once the thread that works for it has left it. `request_hash` and
+    `request_id` are the transaction hash and the id of the DO request it
+    sent, once create_do_request has them; None before."""
 
     def __init__(self, contract: Optional[protocolContract]) -> None:
         self.contract = contract
         self.ended = threading.Event()
+        self.request_hash: Optional[str] = None
+        self.request_id: Optional[int] = None
 
 
 class EthernityCloudRunner:
@@ -331,7 +351,7 @@ class EthernityCloudRunner:
             contract = None
             if self.contract is not None:
                 contract = self._protocol_contract(name, kind, self.signer)
-                if not contract.get_provider().is_connected():
+                if not rpc_answers(contract.get_provider()):
                     raise ConnectionError("Failed to connect to Web3 provider.")
             # An intake client posts under its network key, so one built for
             # the network left is built again for this one.
@@ -450,15 +470,25 @@ class EthernityCloudRunner:
         raised as errors.RunEndedError, with the error of the step the call
         was in as its cause: a read through a contract close() dropped, or a
         wait close() stopped, which reports its step as failed. When the call
-        is over the runner has no run in progress."""
+        had sent its DO request, the RunEndedError names it (RUN_ENDED_REQUEST,
+        RUN_ENDED_REQUEST_SENT, and its request_id and request_hash) and how
+        its escrow comes back. When the call is over the runner has no run in
+        progress."""
         run = _Run(self.contract)
         self._run = run
         self._calling.run = run
         try:
             yield run
         except Exception as error:
-            if self._run is not run and not isinstance(error, RunEndedError):
-                raise RunEndedError(RUN_ENDED) from error
+            if self._run is not run:
+                if run.request_hash is None and isinstance(error, RunEndedError):
+                    raise
+                message = RUN_ENDED
+                if run.request_id is not None:
+                    message += RUN_ENDED_REQUEST.format(request_id=run.request_id, request_hash=run.request_hash)
+                elif run.request_hash is not None:
+                    message += RUN_ENDED_REQUEST_SENT.format(request_hash=run.request_hash)
+                raise RunEndedError(message, run.request_id, run.request_hash) from error
             raise
         finally:
             if self._run is run:
@@ -547,8 +577,7 @@ class EthernityCloudRunner:
                 if self.signer is None:
                     raise RuntimeError("Private key must be set before connecting.")
                 self._hold_contract(self._protocol_contract(self.network_name, self.network_type, self.signer))
-                provider = self.contract.get_provider()
-                if not provider.is_connected():
+                if not rpc_answers(self.contract.get_provider()):
                     raise ConnectionError("Failed to connect to Web3 provider.")
     def set_order_wait(self, seconds: float) -> None:
         """How long a task waits for a node to place an order on its DO
@@ -805,10 +834,12 @@ class EthernityCloudRunner:
             self.logger.error(f"Transaction failed: {reason}")
         return False
     def check_web3_connection(self) -> bool:
-        """Check if Web3 is connected and wallet is set."""
+        """Whether the RPC answers (rpc.rpc_answers, asked again while it does
+        not, and not again in the thread of a run close() ended) and the
+        contract holds a wallet."""
         try:
             provider = self.contract.get_provider() if self.contract else None
-            if not provider or not provider.is_connected():
+            if not provider or not rpc_answers(provider, self._ended_run):
                 return False
             wallet_address = self.contract.get_current_wallet()
             return bool(wallet_address)
@@ -881,7 +912,11 @@ class EthernityCloudRunner:
         self.logger.info(f"Uploaded encrypted input to IPFS: {self.file_set_hash}")
         return f"{version}:{self.file_set_hash}:{input_checksum}"
     def create_do_request(self, image_metadata: str, code_metadata: str, input_metadata: str, node_address: Address) -> bool:
-        """Create a DO request on the contract."""
+        """Create a DO request on the contract. The run the calling thread
+        works for (a run() or a session submission) records the request's
+        transaction hash once it is sent and its id once read from the
+        receipt (_Run.request_hash, _Run.request_id)."""
+        run = getattr(self._calling, "run", None)
         if not self.contract:
             raise RuntimeError("Contract not initialized.")
         self.logger.info("Submitting transaction for DO request")
@@ -901,6 +936,8 @@ class EthernityCloudRunner:
         if not transaction_hash:
             return False
         self.do_hash = transaction_hash
+        if run is not None:
+            run.request_hash = transaction_hash
         # The receipt poll_transaction returns is the one the event is read
         # from: a second read can land on an RPC replica that has not seen the
         # transaction yet and raise TransactionNotFound.
@@ -926,6 +963,8 @@ class EthernityCloudRunner:
                 f"_addDORequestEV event; refusing to proceed without the request id.")
             return False
         self.do_request = processed_logs[0].args._rowNumber
+        if run is not None:
+            run.request_id = self.do_request
         self.logger.info(f"{transaction_hash} confirmed!")
         self.logger.info(f"Request {self.do_request} was created successfully!")
         # An artefact the held cache carried is referenced on chain now.
@@ -1026,17 +1065,27 @@ class EthernityCloudRunner:
         count = int(caller._getMetadataCountForDPRequest(dp_request))
         return [tuple(caller._getMetadataValueForDPRequest(dp_request, i)) for i in range(count)]
 
-    def get_result_from_order(self, order_id: int) -> Optional[Dict[str, Any]]:
+    def get_result_from_order(self, order_id: int, order: Optional[Any] = None,
+                              challenge: Optional[bytes] = None) -> Optional[Dict[str, Any]]:
         """Get and verify result from order.
+
+        `order` is the order's struct (_getOrder) and `challenge` the
+        challenge of its request: when `order` is not given, those of the
+        task the runner has in hand (self.order, self.challenge_hash). A
+        session handle gives its own (EthernityCloudSession.close); an
+        attached handle knows no challenge, and its result's signer is then
+        not checked against one.
 
         On failure this returns None and, when the failure is attributable to
         the node operator (timeout, unusable output, operator-fault task code),
         records the reason in self._fault so the caller can retry with a new
         DO request."""
+        if order is None:
+            order, challenge = self.order, self.challenge_hash
         decrypted_data: Dict[str, Any] = {}
         max_retries = 10
         self._fault = None
-        self.logger.info(f"Operator {self.order[1]} is processing task {order_id}")
+        self.logger.info(f"Operator {order[1]} is processing task {order_id}")
         # An honest node holds an order at most its duration plus the node
         # agent's own result wait (~62 min); past that the operator is hung or
         # offline and the order will never leave PROCESSING on its own.
@@ -1048,7 +1097,7 @@ class EthernityCloudRunner:
         # The node's start, checked when its DP request advertises the started
         # row: the row must name this order within ORDER_START_WINDOW_BLOCKS.
         caller = self.protocol_contract.caller()
-        dp_request = int(self.order[3])
+        dp_request = int(order[3])
         window_end = None
         try:
             if started_row_advertised(caller._getDPRequestMetadata(dp_request)[4]):
@@ -1136,8 +1185,8 @@ class EthernityCloudRunner:
             self.logger.error("Tokens will be refunded after validation.")
             return None
         self.logger.info("Verifying ZK proof")
-        if self.challenge_hash:
-            wallet = generate_wallet(self.challenge_hash.decode("utf-8"), transaction_result["enclave_challenge"])
+        if challenge:
+            wallet = generate_wallet(challenge.decode("utf-8"), transaction_result["enclave_challenge"])
             if not wallet or wallet != transaction_result["from"]:
                 self.logger.error("Integrity check failed, signer wallet address is wrong")
                 self.logger.error("Tokens will be refunded after validation. Please try again.")
@@ -1446,15 +1495,17 @@ class EthernityCloudRunner:
         """Whether `node_address` may be named as a run's node: True for no
         address and for an address holding a DP request on the PoX, False for
         a string that is no address and for an address without a DP request.
-        A read of the requests that fails raises RuntimeError with
-        node_check_failure's message: it says nothing about the node."""
+        The read of the requests is asked again while the RPC does not serve
+        it (rpc.read_again); a read that fails after that, or is refused (a
+        revert), raises RuntimeError with node_check_failure's message: it says
+        nothing about the node."""
         if is_null_or_empty(node_address):
             return True
         if not is_address(node_address):
             self.logger.error("Introduced address is not a valid wallet address.")
             return False
         try:
-            is_node = self.contract.is_node_operator(node_address)
+            is_node = read_again(lambda: self.contract.is_node_operator(node_address), self._ended_run)
         except Exception as error:
             message = self.node_check_failure(error)
             self.logger.error(message)
@@ -1649,9 +1700,11 @@ class EthernityCloudRunner:
         a session of the runner is in progress raises RuntimeError("A task is
         already running.") and changes nothing of it; one made while the
         thread of a run close() ended is still at work raises RuntimeError
-        after RUN_END_WAIT_SECONDS (_await_closed_run), and one that waited
-        for the lock while close() was called raises CLOSED_WHILE_WAITING.
-        For parallel tasks use one runner instance per task."""
+        after RUN_END_WAIT_SECONDS (_await_closed_run), one that waited
+        for the lock while close() was called raises CLOSED_WHILE_WAITING,
+        and one on a runner without a protocol contract (not connected, or
+        closed) raises NOT_CONNECTED before it writes anything; LOCAL mode
+        needs none. For parallel tasks use one runner instance per task."""
         closes = self._closes
         if not self._run_lock.acquire(blocking=False):
             self.logger.info(
@@ -1683,9 +1736,11 @@ class EthernityCloudRunner:
         if input_data is not None and not isinstance(input_data, str):
             raise TypeError("input_data must be a string")
         trustedzone = self._resolve_trustedzone(trustedzone_enclave)
-        self.input_data = input_data
         if not self.local_mode:
             self._resolve_storage()
+            if self.contract is None:
+                raise RuntimeError(NOT_CONNECTED.format(call="run()"))
+        self.input_data = input_data
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self._fault = None
@@ -1936,10 +1991,13 @@ class EthernityCloudRunner:
         runner held when it began, and a close() during it ends it with
         errors.RunEndedError, whose cause is the error of the step it was in.
         RuntimeError("A task is already running.")
-        while a run() of the runner is in progress, RuntimeError from
+        while a run() of the runner is in progress, RuntimeError (NOT_CONNECTED)
+        on a runner without a protocol contract, RuntimeError from
         _await_closed_run while the thread of a run close() ended is still
         at work, and CLOSED_WHILE_WAITING when close() was called while the
-        call waited for the runner's lock. The handle returned stays among
+        call waited for the runner's lock. When close() ends the call after
+        its DO request was sent, the errors.RunEndedError names the request
+        and how its escrow comes back (_submission). The handle returned stays among
         the runner's handles, and the runner in progress, until its
         close(wait=True) has returned the session's summary or the runner's
         close(); a call that fails leaves the runner in progress only for
@@ -1952,9 +2010,12 @@ class EthernityCloudRunner:
             self._await_closed_run("run_session()")
             if self._run is not None:
                 raise RuntimeError("A task is already running.")
-            self.trustedZoneImage = self._resolve_trustedzone(trustedzone_enclave)
-            self.input_data = None
+            trustedzone = self._resolve_trustedzone(trustedzone_enclave)
             self._resolve_storage()
+            if self.contract is None:
+                raise RuntimeError(NOT_CONNECTED.format(call="run_session()"))
+            self.trustedZoneImage = trustedzone
+            self.input_data = None
             self._fault = None
             if resources is None:
                 resources = {
@@ -1998,7 +2059,7 @@ class EthernityCloudRunner:
                     if not self.approve_task():
                         raise ValueError("Task approval failed.")
                     self.logger.info(f"Session order {self.order_id} is processing")
-                    session = EthernityCloudSession(self, self.order_id)
+                    session = EthernityCloudSession(self, self.order_id, challenge=self.challenge_hash)
                     self._hold_session(run, session)
                 except BaseException:
                     # The flag stays set for the handles the runner holds,
@@ -2029,9 +2090,12 @@ class EthernityCloudRunner:
         call that waited for a close() raises CLOSED_WHILE_WAITING and reads
         nothing; a call that waited for anything else attaches once that is
         done. RuntimeError("A task is already running.") while a run() of the
-        runner is in progress, RuntimeError from _await_closed_run while the
-        thread of a run close() ended is still at work, errors.RunEndedError
-        when close() ends the call, as run_session() raises it. The handle
+        runner is in progress, RuntimeError (NOT_CONNECTED) on a runner
+        without a protocol contract, RuntimeError from _await_closed_run while
+        the thread of a run close() ended is still at work,
+        errors.RunEndedError when close() ends the call, as run_session()
+        raises it. The reads of the order and of its request are asked again
+        while the RPC does not serve them (rpc.read_again). The handle
         returned stays among the runner's handles, and the runner in
         progress, until its close(wait=True) has returned the session's
         summary or the runner's close(); a call that fails leaves the runner
@@ -2052,10 +2116,12 @@ class EthernityCloudRunner:
                     f"the wallet {held[2]}; order {order_id} was asked for on {asked_on[0]} {asked_on[1]} with "
                     f"the wallet {asked_on[2]}, and an order id names an order of one network and one wallet. "
                     "Call attach_session() again for the order meant.")
-            order = self.protocol_contract.caller()._getOrder(int(order_id))
+            if self.contract is None:
+                raise RuntimeError(NOT_CONNECTED.format(call="attach_session()"))
+            order = read_again(lambda: self.protocol_contract.caller()._getOrder(int(order_id)))
             if str(order[0]).lower() != str(self.signer.address).lower():
                 raise ValueError("Order does not belong to this wallet")
-            meta = self.protocol_contract.caller()._getDORequestMetadata(int(order[2]))
+            meta = read_again(lambda: self.protocol_contract.caller()._getDORequestMetadata(int(order[2])))
             if str(meta[3] or "").split(":")[0] != "v3s":
                 raise ValueError("Order is not an interactive session")
             with self._submission() as run:
@@ -2313,7 +2379,8 @@ class EthernityCloudRunner:
             "checked_on_chain": checked_on_chain,
         }
     def _esr_onchain(self, key: str, enclave_wallet: Optional[str] = None) -> Dict[str, Any]:
-        """FREE on-chain {wallet, version, cid} for an ESR key (one eth_call).
+        """FREE on-chain {wallet, version, cid} for an ESR key (one eth_call,
+        asked again while the RPC does not serve it: rpc.read_again).
 
         Wallet resolution mirrors esr_read: explicit `enclave_wallet`, else the
         wallet learned from previous result envelopes for this enclave."""
@@ -2324,7 +2391,7 @@ class EthernityCloudRunner:
                 "esr_version/esr_wait_for_version need enclave_wallet "
                 "(no previous run to learn it from)")
         esr = ESRContract(self.network_name, self.network_type)
-        onchain = esr.get_state(wallet, key)
+        onchain = read_again(lambda: esr.get_state(wallet, key))
         return {
             "wallet": wallet,
             "version": int(onchain.get("version", 0) or 0),
@@ -2338,8 +2405,9 @@ class EthernityCloudRunner:
 
     def esr_nonce(self, key: str, enclave_wallet: Optional[str] = None) -> Dict[str, Any]:
         """Last accepted idempotency nonce for `key` -- {wallet, nonce}, free
-        (a single eth_call), no task, no gas. nonce 0 means no guarded commit
-        was ever made.
+        (a single eth_call, asked again while the RPC does not serve it:
+        rpc.read_again), no task, no gas. nonce 0 means no guarded commit was
+        ever made.
 
         The nonce is PUBLIC on-chain data: the registry records it next to the
         version, so a web3 app reads the latest accepted value here and
@@ -2353,7 +2421,7 @@ class EthernityCloudRunner:
             raise ValueError(
                 "esr_nonce needs enclave_wallet (no previous run to learn it from)")
         esr = ESRContract(self.network_name, self.network_type)
-        return {"wallet": wallet, "nonce": esr.get_nonce(wallet, key)}
+        return {"wallet": wallet, "nonce": read_again(lambda: esr.get_nonce(wallet, key))}
 
     def esr_wait_for_version(
         self,

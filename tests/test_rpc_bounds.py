@@ -7,10 +7,12 @@ the runner: the receipt poll, the image registry read, a send's reads, a
 session handle's reads and the ESR version wait read again after a read the
 RPC did not answer. The hanging RPC is a socket on 127.0.0.1 that accepts and
 never answers; every other provider is a stand-in."""
+import json
 import logging
 import socket
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +23,7 @@ from web3.providers.base import BaseProvider
 
 import ethernity_cloud_runner_py.contract.operation.protocolContract as protocol_module
 import ethernity_cloud_runner_py.runner as runner_module
-import ethernity_cloud_runner_py.session as session_module
+import ethernity_cloud_runner_py.rpc as rpc_module
 from ethernity_cloud_runner_py.contract.operation.esrContract import ESRContract
 from ethernity_cloud_runner_py.contract.operation.imageRegistryContract import ImageRegistryContract
 from ethernity_cloud_runner_py.contract.operation.protocolContract import protocolContract
@@ -47,13 +49,15 @@ def test_every_provider_sends_each_request_once_with_the_rpc_timeout_through_the
     for contract in _contracts():
         provider = contract.provider.provider
         assert provider.exception_retry_configuration is None
-        assert dict(provider.get_request_kwargs())["timeout"] == RPC_TIMEOUT == (3, 10)
+        assert provider.cache_allowed_requests is True and provider.cacheable_requests == {"eth_chainId"}
+        assert dict(provider.get_request_kwargs())["timeout"] == RPC_TIMEOUT == (5, 10)
         session = provider._request_session_manager.cache_and_return_session(provider.endpoint_uri)
         assert session.get_adapter(provider.endpoint_uri).max_retries.connect == RPC_CONNECT_RETRIES
 
 
 def test_one_request_at_its_longest_and_a_poll_interval_fit_in_the_wait_for_a_closed_run():
-    assert RPC_REQUEST_MAX_SECONDS == 3 * 3 + 1 + 10 == 20
+    """A connect timeout of 5 s, which a slow TLS handshake passes, tried twice: 2 * 5 s + 0 s + 10 s."""
+    assert RPC_REQUEST_MAX_SECONDS == 2 * 5 + 0 + 10 == 20
     assert RUN_END_WAIT_SECONDS > RPC_REQUEST_MAX_SECONDS + CHAIN_POLL_SECONDS
 
 
@@ -100,6 +104,52 @@ def test_a_read_of_an_rpc_that_never_answers_is_one_request_and_ends_at_the_read
     took = time.monotonic() - started
     assert len(hanging_rpc) == 1
     assert took < 1.5
+
+
+@pytest.fixture
+def answering_rpc(monkeypatch):
+    """POLYGON AMOY's RPC is a JSON-RPC server on 127.0.0.1 answering eth_chainId (80002), web3_clientVersion
+    and eth_call (a zero word); the list given lists the methods asked, in order."""
+    asked = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *arguments):
+            pass
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            asked.append(request["method"])
+            result = {"eth_chainId": hex(80002), "web3_clientVersion": "test/1.0"}.get(
+                request["method"], "0x" + "00" * 32)
+            body = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(ECNetwork.POLYGON.AMOY, "RPC_URL", f"http://127.0.0.1:{server.server_address[1]}")
+    yield asked
+    server.shutdown()
+    server.server_close()
+
+
+def test_a_provider_keeps_the_chain_id_and_asks_every_other_request_each_time(answering_rpc):
+    """web3 asks eth_chainId before every eth_call; the provider asks it at its first call (and once more, as
+    web3 sets up its cache) and keeps the answer, while web3_clientVersion, the question whether the RPC
+    answers, is asked each time."""
+    contract = protocolContract(SIGNER, *AMOY)
+    for _ in range(5):
+        assert contract.get_orders_count() == 0
+    for _ in range(3):
+        assert contract.get_provider().is_connected() is True
+    assert answering_rpc.count("eth_call") == 5
+    assert answering_rpc.count("eth_chainId") <= 2
+    assert answering_rpc.count("web3_clientVersion") == 3
 
 
 # ---- what the runner reads again ----
@@ -212,7 +262,7 @@ def _session(caller):
 
 def test_a_session_handle_reads_its_request_and_its_inputs_again_after_reads_the_rpc_did_not_answer(monkeypatch):
     """The handle resumes at the seq after the input row on chain, as a reattached session must."""
-    monkeypatch.setattr(session_module, "SESSION_READ_RETRY_SECONDS", 0)
+    monkeypatch.setattr(rpc_module, "RPC_READ_RETRY_SECONDS", 0)
     caller = _SessionCaller(["_getDORequest", "_getMetadataCountForRequest", "_getMetadataValueForRequest"])
     session = _session(caller)
     assert session.do_req == 12 and session.duration_hours == 1
@@ -221,7 +271,7 @@ def test_a_session_handle_reads_its_request_and_its_inputs_again_after_reads_the
 
 
 def test_a_session_handle_is_running_through_an_order_read_the_rpc_did_not_answer(monkeypatch):
-    monkeypatch.setattr(session_module, "SESSION_READ_RETRY_SECONDS", 0)
+    monkeypatch.setattr(rpc_module, "RPC_READ_RETRY_SECONDS", 0)
     caller = _SessionCaller()
     session = _session(caller)
     caller.unanswered.append("_getOrder")
@@ -230,10 +280,10 @@ def test_a_session_handle_is_running_through_an_order_read_the_rpc_did_not_answe
 
 
 def test_a_session_handle_tries_a_read_the_rpc_does_not_answer_a_bounded_number_of_times(monkeypatch):
-    monkeypatch.setattr(session_module, "SESSION_READ_RETRY_SECONDS", 0)
+    monkeypatch.setattr(rpc_module, "RPC_READ_RETRY_SECONDS", 0)
     caller = _SessionCaller()
     session = _session(caller)
-    caller.unanswered.extend(["_getOrder"] * session_module.SESSION_READ_ATTEMPTS)
+    caller.unanswered.extend(["_getOrder"] * rpc_module.RPC_READ_ATTEMPTS)
     assert session.is_running() is False
     assert caller.unanswered == []
 

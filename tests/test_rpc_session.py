@@ -25,7 +25,7 @@ def test_a_connection_that_cannot_be_made_is_tried_again_with_a_growing_wait():
         retry = retry.increment(method="POST", url="/", error=NewConnectionError(None, "connection refused"))
         waits.append(retry.get_backoff_time())
     assert not retry.is_exhausted()
-    assert tuple(waits) == RPC_CONNECT_WAITS_SECONDS == (0, 1)
+    assert tuple(waits) == RPC_CONNECT_WAITS_SECONDS == (0,)
     with pytest.raises(MaxRetryError):
         retry.increment(method="POST", url="/", error=NewConnectionError(None, "connection refused"))
 

@@ -29,13 +29,13 @@ from types import SimpleNamespace
 import pytest
 import rlp
 from eth_account import Account
-from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import Timeout
 from web3 import Web3
 from web3.providers.base import BaseProvider
 
 from ethernity_cloud_runner_py import errors as errors_module
 from ethernity_cloud_runner_py import runner as runner_module
+from ethernity_cloud_runner_py.contract.operation import protocolContract as protocol_module
 from ethernity_cloud_runner_py.contract.operation.protocolContract import protocolContract
 from ethernity_cloud_runner_py.enums import ECEvent, ECNetwork, ECStatus
 from ethernity_cloud_runner_py.errors import FeeCeilingError
@@ -107,8 +107,9 @@ class _Chain(BaseProvider):
     """A provider answering the requests of a send on the chain `chain_id`: the wallet's pending nonce (NONCE),
     the latest block, whose base fee is the next of `base_fees` (wei) and the last of them from then on, the
     gas estimate (ESTIMATE) and the raw transaction, which it keeps in `sent` and answers with TX, or which it
-    does not take, raising the next of `send_failures`, while one is left. `requests` lists the methods asked,
-    in order, without the eth_chainId web3 asks of its own accord around a call."""
+    does not take while one of `send_failures` is left: the next of them, raised when it is an exception, the
+    JSON-RPC answer when it is a dict. `requests` lists the methods asked, in order, without the eth_chainId web3
+    asks of its own accord around a call."""
 
     def __init__(self, chain_id, *base_fees, send_failures=()):
         super().__init__()
@@ -134,7 +135,10 @@ class _Chain(BaseProvider):
             return self._answer(hex(ESTIMATE))
         if method == "eth_sendRawTransaction":
             if self.send_failures:
-                raise self.send_failures.pop(0)
+                failure = self.send_failures.pop(0)
+                if isinstance(failure, dict):
+                    return failure
+                raise failure
             self.sent.append(bytes.fromhex(params[0][2:]))
             return self._answer(TX)
         raise AssertionError(f"unexpected request {method}")
@@ -645,8 +649,9 @@ def test_a_refused_request_is_sent_to_the_contract_once_and_no_wait_follows(monk
 
 
 def test_a_request_whose_send_fails_otherwise_is_sent_again_and_ends_at_the_refusal(monkeypatch):
-    # The chain does not take the first two raw transactions; the third send meets a base fee of 426 gwei.
-    dropped = [RequestsConnectionError("connection reset"), RequestsConnectionError("connection reset")]
+    # The node refuses the first two raw transactions; the third send meets a base fee of 426 gwei.
+    refused_by_the_node = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "transaction underpriced"}}
+    dropped = [refused_by_the_node, dict(refused_by_the_node)]
     chain = _Chain(137, 100 * GWEI, 100 * GWEI, 426 * GWEI, send_failures=dropped)
     runner = _submitting_runner(monkeypatch, chain)
     with pytest.raises(FeeCeilingError) as refused:
@@ -659,13 +664,15 @@ def test_a_request_whose_send_fails_otherwise_is_sent_again_and_ends_at_the_refu
     assert chain.sent == []
 
 
-def test_a_send_that_timed_out_is_built_again_and_ends_at_the_refusal():
+def test_a_send_whose_hand_over_timed_out_hands_the_same_transaction_over_again(monkeypatch):
+    """The answer to the hand-over did not come within the read timeout: the node may hold the transaction,
+    so the same signed bytes go to it again, and no other transaction is built at the base fee of 426 gwei the
+    chain has meanwhile."""
+    monkeypatch.setattr(protocol_module, "HANDOVER_RETRY_SECONDS", 0)
     chain = _Chain(137, 100 * GWEI, 426 * GWEI, send_failures=[Timeout("read timed out")])
-    with pytest.raises(FeeCeilingError) as refused:
-        _contract(chain).set_allowance(1)
-    assert str(refused.value) == REFUSED_AT_426
-    assert chain.requests == SEND + REFUSED_SEND
-    assert chain.sent == []
+    assert _contract(chain).set_allowance(1) == TX
+    assert chain.requests == SEND + ["eth_sendRawTransaction"]
+    assert len(chain.sent) == 1 and _max_fee(chain.sent[0]) == _fee(100 * GWEI)
 
 
 def test_a_run_whose_request_is_refused_ends_at_once_with_the_refusal(monkeypatch):
