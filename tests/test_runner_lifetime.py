@@ -59,7 +59,8 @@ STILL_AT_WORK = ("The run this runner was closed during is still at work in its 
 
 def _in_progress(call, instead):
     return (f"A run or a session of this runner is in progress on POLYGON AMOY: {call} is refused until the run "
-            f"has ended or, after a session, the runner is closed with close(). {instead}")
+            f"has ended or, after a session, the session is closed with session.close(wait=True) or the runner "
+            f"with close(). {instead}")
 
 
 # The two changes of a runner, each with the text of its refusal on POLYGON AMOY.

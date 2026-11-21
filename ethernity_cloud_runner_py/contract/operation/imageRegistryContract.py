@@ -7,8 +7,11 @@ from web3.contract.contract import Contract
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.types import TxParams
 
+import requests
+
 from ...contract.abi.imageRegistryAbi import contract
 from ...enums import ECNetwork
+from ...rpc import rpc_provider
 
 class ImageRegistryContract:
     def __init__(
@@ -27,7 +30,7 @@ class ImageRegistryContract:
         # Access the network type class within the network class (e.g., ECNetwork.BLOXBERG.TESTNET)
         self.network_config = getattr(network_class, network_type.upper())
 
-        self.provider = Web3(Web3.HTTPProvider(self.network_config.RPC_URL,request_kwargs=request_kwargs or {'timeout': 10}))
+        self.provider = Web3(rpc_provider(self.network_config.RPC_URL, request_kwargs))
 
         if self.network_config.MIDDLEWARE == "POA":
             self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
@@ -73,6 +76,10 @@ class ImageRegistryContract:
                     secureLockImage, PROTOCOL_VERSION
                 ).call()
                 return [imageDetails[0], trustedZonePublicKey, imageDetails[2]]
+        except requests.exceptions.RequestException:
+            # The RPC was not reached or did not answer: raised, so that the
+            # caller's retry_operation asks again.
+            raise
         except Exception as e:
             print(e)
             return None

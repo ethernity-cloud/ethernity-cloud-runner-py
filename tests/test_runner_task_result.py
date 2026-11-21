@@ -87,7 +87,7 @@ class _Storage:
     def held_entry(self, key):
         return None
 
-    def upload_to_ipfs(self, data, held_key=None):
+    def upload_to_ipfs(self, data, held_key=None, operation=None):
         self.uploads.append(data)
         return "QmInput"
 

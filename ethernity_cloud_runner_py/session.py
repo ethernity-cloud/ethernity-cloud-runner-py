@@ -27,13 +27,16 @@ its inputs are sealed for, and the task wallet attestation is checked
 against, the trustedzone certificate of that time, and its signatures and
 decryptions use the wallet key of that time. The runner's close() detaches
 the handle: from then on it sends and reads nothing, and send_input,
-poll_outputs, the waits and close raise SessionError.
+poll_outputs, the waits and close raise SessionError. A close(wait=True)
+that has returned the session's summary takes the handle out of the
+runner's handles.
 """
 
 import hashlib
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+import requests
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
@@ -55,6 +58,11 @@ MAX_SESSION_MESSAGES = 256
 # Mirror of the enclave's input-acceptance margin (M3): sending inside this
 # window would only earn a signed 'late' notice, so refuse client-side.
 SEND_CUTOFF_SECONDS = 600
+# How many times a read of the session's order, request and input rows is
+# made while the RPC does not answer it (requests.RequestException), and the
+# seconds between the tries (EthernityCloudSession._read).
+SESSION_READ_ATTEMPTS = 3
+SESSION_READ_RETRY_SECONDS = 2
 
 SESSION_STATUS_NAMES = {
     0: "closed",
@@ -102,12 +110,20 @@ class EthernityCloudSession:
         # The message of the SessionError the handle raises once the runner's
         # close() has detached it (_detach); None while it serves.
         self._detached: Optional[str] = None
+        # The key under which the handle's inputs are queued for the intake
+        # (IPFSClient.upload_to_ipfs): a task or another handle of the runner
+        # posts and drops none of them.
+        self._blobs = object()
+        # The summary close(wait=True) returned, once it has (_summarized):
+        # the handle is then out of the runner's handles.
+        self._summary: Optional[Dict[str, Any]] = None
+        self._summarized = False
         # Retried: a replica of a load-balanced RPC that has not seen an order
         # placed moments ago reverts the read.
         order = runner.retry_operation(lambda: self._protocol_contract.caller()._getOrder(self.order_id))
         self.do_req = int(order[2])
         self.dp_req = int(order[3])
-        doreq = self._protocol_contract.caller()._getDORequest(self.do_req)
+        doreq = self._read(lambda: self._protocol_contract.caller()._getDORequest(self.do_req))
         # _getDORequest: (downer, cpu, mem, storage, bandwidth, duration, ...)
         self.duration_hours = int(doreq[5]) if int(doreq[5]) < 1000 else int(doreq[5]) // 3600
         self.started_at = time.time()
@@ -150,17 +166,32 @@ class EthernityCloudSession:
         self._require_attached()
         return self._protocol_contract.caller()
 
+    @staticmethod
+    def _read(read: Callable[[], Any]) -> Any:
+        """`read()`, made again while the RPC does not answer it
+        (requests.RequestException: no connection, no answer within
+        rpc.RPC_TIMEOUT), up to SESSION_READ_ATTEMPTS times
+        SESSION_READ_RETRY_SECONDS apart; the last such error, and any other
+        error at once, is raised."""
+        for attempt in range(1, SESSION_READ_ATTEMPTS + 1):
+            try:
+                return read()
+            except requests.exceptions.RequestException:
+                if attempt == SESSION_READ_ATTEMPTS:
+                    raise
+            time.sleep(SESSION_READ_RETRY_SECONDS)
+
     def _count_my_inputs(self) -> int:
         """Resume seq from chain state so a reattached session continues
         exactly where the previous process stopped."""
         try:
-            count = int(self._caller()._getMetadataCountForRequest(self.do_req))
+            count = int(self._read(lambda: self._caller()._getMetadataCountForRequest(self.do_req)))
         except Exception:
             return 0
         seq = 0
         for i in range(count):
             try:
-                key, value = self._caller()._getMetadataValueForRequest(self.do_req, i)
+                key, value = self._read(lambda: self._caller()._getMetadataValueForRequest(self.do_req, i))
             except Exception:
                 break
             if key != SESSION_INPUT_KEY:
@@ -218,11 +249,13 @@ class EthernityCloudSession:
 
     def is_running(self) -> bool:
         """Chain-state liveness: the order is still PROCESSING and inside its
-        duration. No trust in the operator required."""
+        duration. No trust in the operator required. The order's read is
+        made again while the RPC does not answer it (_read); a read that
+        fails after that answers False."""
         if self.closed:
             return False
         try:
-            status = int(self._caller()._getOrder(self.order_id)[4])
+            status = int(self._read(lambda: self._caller()._getOrder(self.order_id))[4])
         except Exception:
             return False
         return status == 1 and time.time() < self.deadline
@@ -251,10 +284,12 @@ class EthernityCloudSession:
         Returns the input seq. Refuses when the session cannot answer any
         more (cap reached or inside the enclave's input cutoff). The input is
         sealed for the certificate, and its row sent through the contract,
-        the handle was made with. An input whose row was not sent, or was
+        the handle was made with. Through an intake its bytes are queued
+        under the handle's key (_blobs), which no task and no other handle of
+        the runner delivers or drops. An input whose row was not sent, or was
         mined as reverted, leaves no blob in the intake's queue
         (IPFSClient.drop_pending): no row names it, and the intake refuses
-        it when a later input's delivery posts the queue."""
+        it when a later input's delivery posts the handle's queue."""
         self._require_attached()
         if self.closed:
             raise SessionError("session is closed")
@@ -270,7 +305,7 @@ class EthernityCloudSession:
         # The input sealed for the enclave, its CID and digest through the
         # configured storage; _seal_artefact raises when the storage does not
         # take it, before any transaction.
-        cid, digest = self.runner._seal_artefact(str(data).encode("utf-8"), self._certificate)
+        cid, digest = self.runner._seal_artefact(str(data).encode("utf-8"), self._certificate, self._blobs)
         if not cid:
             raise SessionError("the configured storage did not accept the input")
         row_sent = False
@@ -290,11 +325,12 @@ class EthernityCloudSession:
                 raise SessionError(f"input row transaction failed ({tx_hash})")
         finally:
             if not row_sent:
-                storage.drop_pending([cid])
+                storage.drop_pending(self._blobs, [cid])
         # With the public intake, the row is on chain now, so bytes it names
-        # that were not lodged before it can be delivered; nothing is queued
-        # when they were.
-        storage.flush_pending(self.do_req)
+        # that were not lodged before it can be delivered, with those of an
+        # earlier input of the handle whose row had no receipt then; nothing
+        # is queued when they were lodged.
+        storage.flush_pending(self.do_req, self._blobs)
         # An input the held cache carried is referenced on chain now.
         storage.release_held([cid])
         seq = self._input_seq
@@ -318,7 +354,8 @@ class EthernityCloudSession:
             message = owner_signature_message(storage.network, self.do_req)
             self._owner_signature = Account.sign_message(
                 encode_defunct(text=message), private_key=self._private_key).signature.hex()
-        delivered, refused = storage.deliver_signed(self.do_req, self._owner_signature, [cid])
+        delivered, refused = storage.deliver_signed(self.do_req, self._owner_signature, [cid],
+                                                    operation=self._blobs)
         if cid in delivered:
             return True
         if INTAKE_NOT_NAMED in str(refused.get(cid, "")):
@@ -495,8 +532,17 @@ class EthernityCloudSession:
         return the final task result (the session summary). The row goes
         through the contract the handle was made with. SessionError on a
         handle the runner's close() detached, before the row and during the
-        wait: nothing is sent."""
+        wait: nothing is sent. Once a close(wait=True) has returned the
+        summary, the handle is out of the runner's handles
+        (EthernityCloudRunner._release_session) and the runner is in
+        progress no more for it, so it takes set_network(),
+        set_private_key() and run() again; a later close(wait=True) of the
+        handle returns that summary and reads nothing. After
+        close(wait=False) the runner keeps the handle: a close(wait=True)
+        made later reads the summary through it."""
         self._require_attached()
+        if self._summarized:
+            return self._summary if wait else None
         if not self.closed:
             value = f"{SESSION_WIRE_VERSION}:close:{self.order_id}"
             tx_hash = self._contract.add_metadata_to_request(self.do_req, SESSION_INPUT_KEY, value)
@@ -518,7 +564,10 @@ class EthernityCloudSession:
         # Final drain, then the ordinary result path (summary + transcript).
         self.poll_outputs()
         try:
-            return self.runner.get_result_from_order(self.order_id)
+            summary = self.runner.get_result_from_order(self.order_id)
         except Exception as e:
             self.runner.logger.warning(f"[session] final result not readable: {e}")
-            return None
+            summary = None
+        self._summary, self._summarized = summary, True
+        self.runner._release_session(self)
+        return summary

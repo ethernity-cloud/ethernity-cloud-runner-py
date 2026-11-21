@@ -31,7 +31,7 @@ def test_default_storage_queues_uploads_for_the_intake(monkeypatch):
     monkeypatch.setattr(ipfs.requests, "post", refuse)
     runner = EthernityCloudRunner()
     cid = runner.storage().upload_to_ipfs(b"challenge")
-    assert runner.storage().pending == {cid: b"challenge"}
+    assert runner.storage().pending == {None: {cid: b"challenge"}}
 
 
 def test_set_network_rebuilds_the_intake_network_key():

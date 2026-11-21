@@ -1,6 +1,8 @@
 from decimal import Decimal
 import os
 import re
+import threading
+import time
 from typing import Any, Union
 from eth_account.messages import encode_defunct
 from eth_typing import Address, HexStr
@@ -16,12 +18,15 @@ from ..abi.ECLDAbi import contract as ECLDAbi
 from ...enums import ECNetwork
 from ...errors import (suppress_web3_friendly_prefix, raw_rpc_error_message, raw_rpc_error_code, provider_message,
                        FeeCeilingError, RunEndedError)
-from ...rpc import rpc_session
+from ...rpc import rpc_provider
 
 # The environment variable that names the fee ceiling, a positive whole number
 # of gwei, where EthernityCloudRunner.set_max_fee_per_gas gave none
 # (protocolContract.fee_ceiling).
 MAX_FEE_PER_GAS_ENV = "ECLD_MAX_FEE_PER_GAS"
+# The wait before the next attempt of a send whose nonce, fee or gas estimate
+# read the RPC did not serve (protocolContract._build_sign_send).
+SEND_READ_RETRY_SECONDS = 1
 
 
 def _gwei(wei: int) -> str:
@@ -80,15 +85,18 @@ class protocolContract:
         # gwei; None where it gave none (fee_ceiling).
         self.max_fee_per_gas = max_fee_per_gas
         self.max_priority_fee_per_gas = self.network_config.MAX_PRIORITY_FEE_PER_GAS
-        _rpc_url = self.network_config.RPC_URL
-        self.provider = Web3(Web3.HTTPProvider(_rpc_url, request_kwargs=request_kwargs or {'timeout': 10},
-                                               session=rpc_session()))
+        self.provider = Web3(rpc_provider(self.network_config.RPC_URL, request_kwargs))
         if self.network_config.MIDDLEWARE == "POA":
             self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         self.signer = signer
         # What retire() was given: why this contract sends nothing more. None
         # while it sends.
         self.retired = None
+        # Held across the last retirement check of a send and the hand-over of
+        # the signed transaction to the node, and by retire(): a send that
+        # passed the check is handed over before retire() returns, and one
+        # that has not is refused.
+        self._send_lock = threading.Lock()
         self.protocol_contract = self.provider.eth.contract(
             address=self.protocol_address, abi=polygonAbi["abi"]
         )
@@ -100,8 +108,12 @@ class protocolContract:
         was closed, moved to another network, given another wallet): every
         transaction asked of the contract after it raises
         errors.RunEndedError with that reason and is not sent
-        (_build_sign_send). The reads go on."""
-        self.retired = reason
+        (_build_sign_send). A transaction being handed to the node when it is
+        called is handed over first: retire() waits for that one request
+        (rpc.RPC_REQUEST_MAX_SECONDS at most). The reads go on."""
+        with self._send_lock:
+            if self.retired is None:
+                self.retired = reason
     def _refuse_retired(self) -> None:
         """Raises errors.RunEndedError on a contract retire() ended."""
         if self.retired is not None:
@@ -188,13 +200,19 @@ class protocolContract:
         is printed like any other failure of an attempt and raised as it is,
         with no further attempt. A contract retire() ended raises
         RunEndedError: before an attempt reads the nonce and the fee, and
-        again before the signed transaction is handed to the node.
+        again, under the lock retire() takes, right before the signed
+        transaction is handed to the node. A read the transaction is built
+        from that the RPC does not serve (requests.RequestException: no
+        connection, no answer within rpc.RPC_TIMEOUT, an HTTP error status)
+        ends the attempt, and the next attempt, after SEND_READ_RETRY_SECONDS,
+        reads again.
         """
         max_attempts = 20
         current_nonce = None
 
         for attempt in range(max_attempts):
             self._refuse_retired()
+            handed_over = False
             try:
                 options = self.__transaction_object(nonce=current_nonce)
                 # build_transaction fills `gas` with the node's estimate for the
@@ -206,11 +224,12 @@ class protocolContract:
                 signed_tx = self.provider.eth.account.sign_transaction(
                     tx, private_key=self.signer._private_key
                 )
-                self._refuse_retired()
-
-                # Suppress Web3's friendly prefix for this call only
-                with suppress_web3_friendly_prefix():
-                    tx_hash = self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
+                with self._send_lock:
+                    self._refuse_retired()
+                    handed_over = True
+                    # Suppress Web3's friendly prefix for this call only
+                    with suppress_web3_friendly_prefix():
+                        tx_hash = self.provider.eth.send_raw_transaction(signed_tx.raw_transaction)
 
                 hex_tx_hash = self.provider.to_hex(tx_hash)
 
@@ -246,6 +265,10 @@ class protocolContract:
                 print(f"Attempt {attempt + 1}: Exception encountered: {str(e)}")
                 if isinstance(e, requests.exceptions.Timeout):
                     print(f"Attempt {attempt + 1}: Timeout, retrying...")
+                    continue
+                elif isinstance(e, requests.exceptions.RequestException) and not handed_over:
+                    print(f"Attempt {attempt + 1}: the RPC did not serve a read of the transaction, retrying...")
+                    time.sleep(SEND_READ_RETRY_SECONDS)
                     continue
                 elif isinstance(e, (FeeCeilingError, RunEndedError)):
                     raise

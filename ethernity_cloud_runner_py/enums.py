@@ -250,12 +250,17 @@ class ECNetwork:
             # deployed 2026-11-18, whose compute figures are whole GFLOPS, on
             # the storage and token of the implementations 1.1 0xB8f46D2B...
             # and 0x1579b37C.... A DO request is escrowed by the implementation
-            # it was posted through, so only this one is served.
+            # it was posted through, so only this one is served. The token's
+            # faucet() gives 1000 tECLD to a wallet holding less than 100:
+            # TOKEN_FAUCET_BELOW is that balance, in tokens, and a wallet
+            # below a request's escrow draws the faucet only while it holds
+            # less (EthernityCloudRunner._check_balance).
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706'
             PROTOCOL_ADDRESS='0xd1182deA61CDa785C320cdBE5888EaC4178cAAF2'
             TOKEN_ADDRESS='0x9927809B61122B2af3f3b3A3303875e0687b8eE3'
             HEARTBEAT_CONTRACT_ADDRESS='0x2E27677fb67531eb09134fE331C27899f87ADe10'
             TOKEN_NAME='tECLD'
+            TOKEN_FAUCET_BELOW=100
             RPC_URL='https://polygon-amoy-bor-rpc.publicnode.com'
             RPC_DELAY=200
             CHAIN_ID=80002
@@ -289,10 +294,7 @@ class ECNetwork:
             # The Polygon Amoy PoX 1.0 network, polygon_amoy_pox10: a copy of
             # Polygon mainnet's PoX 1.0 contracts on Amoy (80002), deployed
             # 2026-11-21 from block 53417996, on the storage 0x20B9fDBD....
-            # The token is AMOY's test ECLD, whose faucet() gives 1000 tECLD
-            # to a wallet holding less than 100: TOKEN_FAUCET_BELOW is that
-            # balance, in tokens, and a wallet below a request's escrow draws
-            # the faucet only while it holds less
+            # The token is AMOY's test ECLD, with AMOY's TOKEN_FAUCET_BELOW
             # (EthernityCloudRunner._check_balance). The PoX is apart from
             # the token, so the wallet approves the PoX for a request's
             # escrow, as on MAINNET. The image registry is a V1

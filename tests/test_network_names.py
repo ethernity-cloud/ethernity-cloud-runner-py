@@ -92,6 +92,7 @@ POLYGON_AMOY = {
     "TOKEN_ADDRESS": "0x9927809B61122B2af3f3b3A3303875e0687b8eE3",
     "HEARTBEAT_CONTRACT_ADDRESS": "0x2E27677fb67531eb09134fE331C27899f87ADe10",
     "TOKEN_NAME": "tECLD",
+    "TOKEN_FAUCET_BELOW": 100,
     "INTEGRATION_TEST_IMAGE": "ecld-pynithy-amoy",
     "TRUSTEDZONE_IMAGE": "ecld-pynithy-amoy",
 }
@@ -256,8 +257,19 @@ def _holding(field):
 def test_the_fields_the_pox_1_0_testnets_alone_hold():
     assert _holding("TOKEN_FAUCET") == [("BLOXBERG", "TESTNET_POX10")]
     assert ECNetwork.BLOXBERG.TESTNET_POX10.TOKEN_FAUCET is False
-    assert _holding("TOKEN_FAUCET_BELOW") == [("POLYGON", "AMOY_POX10")]
     assert _holding("TRUSTEDZONES") == [("BLOXBERG", "TESTNET_POX10"), ("POLYGON", "AMOY_POX10")]
+
+
+def test_the_networks_of_the_amoy_token_alone_hold_the_balance_below_which_its_faucet_gives():
+    """The three Polygon Amoy networks share the tECLD token 0x9927809B..., whose faucet() gives only to a
+    wallet holding less than 100."""
+    assert _holding("TOKEN_FAUCET_BELOW") == [("POLYGON", "AMOY"), ("POLYGON", "AMOY_UNSAFE"),
+                                              ("POLYGON", "AMOY_POX10")]
+    assert {ECNetwork.POLYGON.AMOY.TOKEN_FAUCET_BELOW, ECNetwork.POLYGON.AMOY_UNSAFE.TOKEN_FAUCET_BELOW,
+            ECNetwork.POLYGON.AMOY_POX10.TOKEN_FAUCET_BELOW} == {100}
+    assert {_entry.TOKEN_ADDRESS for _entry in (ECNetwork.POLYGON.AMOY, ECNetwork.POLYGON.AMOY_UNSAFE,
+                                                ECNetwork.POLYGON.AMOY_POX10)} == {
+        "0x9927809B61122B2af3f3b3A3303875e0687b8eE3"}
 
 
 def test_the_esr_address_table():

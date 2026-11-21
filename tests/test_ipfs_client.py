@@ -96,7 +96,8 @@ def test_intake_client_queues_the_bytes_without_a_request(monkeypatch):
                         intake_url="https://ipfs.ethernity.cloud", network="bloxberg_testnet")
     cid = client.upload_to_ipfs(b"payload")
     assert cid == cidv1_raw(b"payload")
-    assert client.pending == {cid: b"payload"}
+    # Queued under the operation None, the one an upload names when it names none.
+    assert client.pending == {None: {cid: b"payload"}}
     assert calls == []
 
 
@@ -137,7 +138,7 @@ def test_the_intake_queues_an_artefact_of_any_size_under_its_cid(monkeypatch):
                         intake_url="https://ipfs.ethernity.cloud", network="bloxberg_testnet")
     content = pattern(648000)
     assert client.upload_to_ipfs(content) == "bafybeicnawjqvxvtindqftaj5acjkqb6lh5sove2uqkdrzjkwooypl56zu"
-    assert client.pending == {"bafybeicnawjqvxvtindqftaj5acjkqb6lh5sove2uqkdrzjkwooypl56zu": content}
+    assert client.pending == {None: {"bafybeicnawjqvxvtindqftaj5acjkqb6lh5sove2uqkdrzjkwooypl56zu": content}}
     assert calls == []
 
 

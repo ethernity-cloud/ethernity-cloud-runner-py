@@ -26,6 +26,7 @@ from web3.middleware import ExtraDataToPOAMiddleware
 
 from ...contract.abi.esrAbi import contract
 from ...enums import ECNetwork
+from ...rpc import rpc_provider
 
 
 class ESRContract:
@@ -39,12 +40,7 @@ class ESRContract:
         network_class = getattr(ECNetwork, network_name.upper())
         self.network_config = getattr(network_class, network_type.upper())
 
-        self.provider = Web3(
-            Web3.HTTPProvider(
-                self.network_config.RPC_URL,
-                request_kwargs=request_kwargs or {"timeout": 10},
-            )
-        )
+        self.provider = Web3(rpc_provider(self.network_config.RPC_URL, request_kwargs))
         if self.network_config.MIDDLEWARE == "POA":
             self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 

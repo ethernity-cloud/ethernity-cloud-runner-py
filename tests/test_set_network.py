@@ -434,8 +434,8 @@ def test_the_block_time_is_the_one_of_the_network_set():
 # ---- a call that raises changes nothing ----
 
 IN_PROGRESS = ("A run or a session of this runner is in progress on POLYGON AMOY: set_network() is refused "
-               "until the run has ended or, after a session, the runner is closed with close(). Use another "
-               "EthernityCloudRunner for POLYGON AMOY_POX10.")
+               "until the run has ended or, after a session, the session is closed with session.close(wait=True) "
+               "or the runner with close(). Use another EthernityCloudRunner for POLYGON AMOY_POX10.")
 
 
 def test_set_network_is_refused_while_a_run_is_in_progress(chain):

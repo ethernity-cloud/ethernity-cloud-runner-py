@@ -1,7 +1,8 @@
 import base64
 import hashlib
+import threading
 import time
-from typing import Optional
+from typing import Hashable, Optional
 
 import requests  # type: ignore
 
@@ -147,7 +148,13 @@ class IPFSClient:
     """Uploads go to the Kubo RPC API at `api_url`, with `token` as the
     Authorization header of every request, or, when `intake_url` is set, are
     computed locally and delivered to the public intake once the DO request
-    exists (`flush_pending`). Reads always use `api_url`."""
+    exists (`flush_pending`). Reads always use `api_url`.
+
+    Each blob queued for the intake belongs to the operation that queued it,
+    the `operation` key given to upload_to_ipfs (the runner gives a task's
+    creation one and each session handle one; None when none is given):
+    flush_pending, deliver_signed and drop_pending act on the blobs of one
+    operation, so no operation posts or drops another's."""
 
     def __init__(
         self, api_url: str, token: str = "", intake_url: str = "", network: str = "",
@@ -160,8 +167,11 @@ class IPFSClient:
         self.intake_url = intake_url.rstrip("/")
         self.network = network
         self.intake_max_bytes = intake_max_bytes
-        # cid -> bytes awaiting delivery to the intake.
+        # operation -> {cid -> bytes awaiting delivery to the intake}; an
+        # operation whose blobs have all left is not listed.
         self.pending = {}
+        # Held while the queue is read or changed.
+        self._pending_lock = threading.Lock()
         # The blobs the intake does not take (above intake_max_bytes), held on
         # disk for the upload through an API of the application's own.
         self.held_cache = held_cache or HeldCache()
@@ -170,14 +180,15 @@ class IPFSClient:
         return data if isinstance(data, bytes) else str(data).encode("utf-8")
 
     def upload_to_ipfs(self, data: str, attempts: int = 3, delay: float = 5.0,
-                       held_key: Optional[str] = None) -> Optional[str]:
+                       held_key: Optional[str] = None, operation: Hashable = None) -> Optional[str]:
         """Add one blob and return its CID, or None. An add the API does not
         answer within the timeout, or answers with a 5xx, is retried
         `attempts` times. A 401 or 403 raises at once: the API admits only a
         caller with a writer token, which repeating the add cannot supply.
 
         Through the intake the CID is computed here (unixfs_cid) and the bytes
-        are delivered by flush_pending once the request names the CID; a blob
+        are queued under `operation`, for flush_pending or deliver_signed of
+        that operation to deliver once the request names the CID; a blob
         above intake_max_bytes is held in the held cache under `held_key` (the
         artefact key, or its CID) and raised as StorageLimitError."""
         content = self._data_bytes(data)
@@ -186,9 +197,26 @@ class IPFSClient:
             if len(content) > self.intake_max_bytes:
                 self.held_cache.put(held_key or cid, cid, content, hashlib.sha256(content).hexdigest())
                 raise StorageLimitError(cid, len(content), self.intake_max_bytes, self.held_cache.location())
-            self.pending[cid] = content
+            with self._pending_lock:
+                self.pending.setdefault(operation, {})[cid] = content
             return cid
         return self._add(content, attempts, delay)
+
+    def _queued(self, operation: Hashable, cids=None) -> list:
+        """(cid, bytes) of the blobs `operation` has queued, those among
+        `cids` when given, in the order they were queued."""
+        with self._pending_lock:
+            queue = self.pending.get(operation, {})
+            return [(cid, content) for cid, content in queue.items() if cids is None or cid in cids]
+
+    def _delivered(self, operation: Hashable, cid: str) -> None:
+        """Takes the blob `cid` of `operation` out of the queue."""
+        with self._pending_lock:
+            queue = self.pending.get(operation)
+            if queue is not None:
+                queue.pop(cid, None)
+                if not queue:
+                    del self.pending[operation]
 
     def _add(self, content, attempts: int = 3, delay: float = 5.0) -> Optional[str]:
         """The API's add of `content` (bytes, or an open file read as it
@@ -220,33 +248,35 @@ class IPFSClient:
                 time.sleep(delay)
         return None
 
-    def flush_pending(self, do_request: int, attempts: int = 3, delay: float = 5.0) -> None:
-        """Deliver every queued blob to the intake for `do_request`. A blob the
-        intake confirms (200) leaves the queue; one it refuses (4xx) raises at
-        once, since retrying the same bytes cannot change the answer, except
-        the 403 INTAKE_NOT_NAMED, which the intake answers while its own RPC
-        replica has not yet seen the row that names the cid (the row is on
-        chain, its receipt came back before the delivery) and which is retried
-        up to INTAKE_NOT_NAMED_ATTEMPTS times; the 404 for a network the
-        intake does not serve names the storage such a network needs; a
-        connection failure or 5xx is retried `attempts` times. No-op without
-        an intake."""
-        if not self.intake_url or not self.pending:
+    def flush_pending(self, do_request: int, operation: Hashable = None, attempts: int = 3,
+                      delay: float = 5.0) -> None:
+        """Deliver the blobs `operation` queued to the intake for
+        `do_request`; the blobs of every other operation stay as they are. A
+        blob the intake confirms (200) leaves the queue; one it refuses (4xx)
+        raises at once, since retrying the same bytes cannot change the
+        answer, except the 403 INTAKE_NOT_NAMED, which the intake answers
+        while its own RPC replica has not yet seen the row that names the cid
+        (the row is on chain, its receipt came back before the delivery) and
+        which is retried up to INTAKE_NOT_NAMED_ATTEMPTS times; the 404 for a
+        network the intake does not serve names the storage such a network
+        needs; a connection failure or 5xx is retried `attempts` times. No-op
+        without an intake."""
+        if not self.intake_url:
             return
-        for cid in list(self.pending):
+        for cid, content in self._queued(operation):
             url = f"{self.intake_url}/payload/{self.network}/{do_request}/{cid}"
             last = None
             allowed = attempts
             attempt = 0
             while attempt < allowed:
                 try:
-                    response = requests.post(url, data=self.pending[cid], timeout=120,
+                    response = requests.post(url, data=content, timeout=120,
                                              headers={"Content-Type": "application/octet-stream"})
                 except requests.RequestException as e:
                     last = f"{e}"
                 else:
                     if response.status_code == 200:
-                        del self.pending[cid]
+                        self._delivered(operation, cid)
                         break
                     if response.status_code == 404 and "unknown network" in response.text:
                         raise RuntimeError(
@@ -271,13 +301,19 @@ class IPFSClient:
                     f"intake did not accept {cid} for request {do_request} after "
                     f"{allowed} attempts: {last}")
 
-    def drop_pending(self, cids) -> None:
-        """Take the blobs among `cids` out of the intake queue, undelivered:
-        those of a request that was not sent, or of a row that was not
-        committed, which no request names. A CID that is not queued, and
-        None, are passed over."""
-        for cid in cids:
-            self.pending.pop(cid, None)
+    def drop_pending(self, operation: Hashable = None, cids=None) -> None:
+        """Take the blobs `operation` queued, those among `cids` when given,
+        out of the intake queue, undelivered: those of a request that was not
+        sent, or of a row that was not committed, which no request names. A
+        CID the operation has not queued, and None, are passed over."""
+        with self._pending_lock:
+            queue = self.pending.get(operation)
+            if queue is None:
+                return
+            for cid in list(queue if cids is None else cids):
+                queue.pop(cid, None)
+            if not queue:
+                del self.pending[operation]
 
     def upload_held(self):
         """Upload the held blobs through this client's API, each read from its
@@ -317,22 +353,20 @@ class IPFSClient:
                 self.held_cache.release(cid)
 
     def deliver_signed(self, do_request: int, signature: str, cids=None, attempts: int = 3,
-                       delay: float = 5.0):
-        """Deliver queued blobs (`cids`, or every one) to the intake for
-        `do_request` before the request names them, under the request owner's
-        `signature` (OWNER_SIGNATURE_HEADER), each tried `attempts` times
-        `delay` seconds apart through connection failures and 5xx. Returns
-        (delivered, refused): the CIDs the intake took leave the queue; one it
-        did not take stays queued for flush_pending after the row, with the
-        answer in `refused` (cid -> text). Never raises for an intake answer.
-        Nothing without an intake."""
+                       delay: float = 5.0, operation: Hashable = None):
+        """Deliver the blobs `operation` queued (those among `cids`, or every
+        one) to the intake for `do_request` before the request names them,
+        under the request owner's `signature` (OWNER_SIGNATURE_HEADER), each
+        tried `attempts` times `delay` seconds apart through connection
+        failures and 5xx. Returns (delivered, refused): the CIDs the intake
+        took leave the queue; one it did not take stays queued for
+        flush_pending of the operation after the row, with the answer in
+        `refused` (cid -> text). Never raises for an intake answer. Nothing
+        without an intake."""
         delivered, refused = [], {}
         if not self.intake_url:
             return delivered, refused
-        for cid in list(self.pending if cids is None else cids):
-            content = self.pending.get(cid)
-            if content is None:
-                continue
+        for cid, content in self._queued(operation, cids):
             url = f"{self.intake_url}/payload/{self.network}/{do_request}/{cid}"
             for attempt in range(1, attempts + 1):
                 try:
@@ -343,7 +377,7 @@ class IPFSClient:
                     refused[cid] = str(e)
                 else:
                     if response.status_code == 200:
-                        del self.pending[cid]
+                        self._delivered(operation, cid)
                         delivered.append(cid)
                         refused.pop(cid, None)
                         break

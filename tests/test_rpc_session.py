@@ -1,11 +1,10 @@
 """rpc.rpc_session: the runner's RPC connections are tried again when they
-cannot be made, and nothing the RPC may have received is ever sent twice
-(bloxberg testnet 2026-10-26: a moment's connection failure killed a client's
-task and session at once)."""
+cannot be made, and nothing the RPC may have received is ever sent twice."""
 import pytest
 from urllib3.exceptions import MaxRetryError, NewConnectionError, ReadTimeoutError
 
-from ethernity_cloud_runner_py.rpc import RPC_CONNECT_BACKOFF_SECONDS, RPC_CONNECT_RETRIES, rpc_session
+from ethernity_cloud_runner_py.rpc import (RPC_CONNECT_BACKOFF_SECONDS, RPC_CONNECT_RETRIES,
+                                           RPC_CONNECT_WAITS_SECONDS, rpc_session)
 
 RPC = "https://bloxberg.ethernity.cloud"
 
@@ -26,7 +25,7 @@ def test_a_connection_that_cannot_be_made_is_tried_again_with_a_growing_wait():
         retry = retry.increment(method="POST", url="/", error=NewConnectionError(None, "connection refused"))
         waits.append(retry.get_backoff_time())
     assert not retry.is_exhausted()
-    assert waits == [0, 2, 4, 8, 16]
+    assert tuple(waits) == RPC_CONNECT_WAITS_SECONDS == (0, 1)
     with pytest.raises(MaxRetryError):
         retry.increment(method="POST", url="/", error=NewConnectionError(None, "connection refused"))
 

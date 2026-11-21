@@ -37,8 +37,8 @@ A, B = Account.from_key(KEY_A).address, Account.from_key(KEY_B).address
 NETWORKS = [AMOY, AMOY_POX10, TESTNET, TESTNET_POX10, MAINNET]
 EVERY_NETWORK = pytest.mark.parametrize("network", NETWORKS, ids=[f"{name} {kind}" for name, kind in NETWORKS])
 IN_PROGRESS = ("A run or a session of this runner is in progress on POLYGON AMOY: set_private_key() is refused "
-               "until the run has ended or, after a session, the runner is closed with close(). Use another "
-               "EthernityCloudRunner for another wallet.")
+               "until the run has ended or, after a session, the session is closed with session.close(wait=True) "
+               "or the runner with close(). Use another EthernityCloudRunner for another wallet.")
 # Strings of the form of a key that are no key: two that the form check refuses and two eth_account refuses.
 NOT_0X = "11" * 33
 TOO_SHORT = "0x" + "11" * 31
@@ -273,6 +273,20 @@ def test_a_key_eth_account_does_not_take_leaves_the_runner_with_its_wallet(chain
     assert _held(runner) == held
     assert _is_wallet_of(runner, KEY_A)
     assert runner.signer.address == A
+
+
+@pytest.mark.parametrize("connect", [True, False], ids=["connected", "unconnected"])
+def test_the_key_zero_is_refused_and_leaves_the_runner_with_its_wallet(chain, connect):
+    """eth_account derives an address from the key zero, which is no secp256k1 private key."""
+    runner = _runner(AMOY, connect=connect, key=KEY_A)
+    held = _held(runner)
+    with pytest.raises(ValueError) as refusal:
+        runner.set_private_key("0x" + "0" * 64)
+    assert str(refusal.value) == (
+        "Invalid private key: it is zero, and a secp256k1 private key is from 1 to the order of the curve less 1.")
+    assert _held(runner) == held
+    assert _is_wallet_of(runner, KEY_A)
+    assert chain.log == []
 
 
 # ---- no key in a log line, an exception text or a repr ----

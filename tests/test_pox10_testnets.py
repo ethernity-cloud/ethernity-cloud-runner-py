@@ -114,14 +114,14 @@ def test_the_bloxberg_copy_differs_from_the_bloxberg_mainnet_in_its_contracts_to
 def test_the_amoy_copy_holds_the_amoy_chain_and_token_and_polygon_mainnets_other_values():
     copy = _fields(ECNetwork.POLYGON.AMOY_POX10)
     amoy, mainnet = _fields(ECNetwork.POLYGON.AMOY), _fields(ECNetwork.POLYGON.MAINNET)
-    assert set(amoy) == set(mainnet)
-    assert set(copy) == set(amoy) | {"TOKEN_FAUCET_BELOW", "TRUSTEDZONES"}
-    for name in CHAIN_FIELDS | {"TOKEN_ADDRESS", "TOKEN_NAME"}:
+    assert set(amoy) == set(mainnet) | {"TOKEN_FAUCET_BELOW"}
+    assert set(copy) == set(amoy) | {"TRUSTEDZONES"}
+    for name in CHAIN_FIELDS | {"TOKEN_ADDRESS", "TOKEN_NAME", "TOKEN_FAUCET_BELOW"}:
         assert copy[name] == amoy[name], name
     for name in set(copy) - CHAIN_FIELDS - OWN_FIELDS:
         assert copy[name] == mainnet[name], name
     assert {name for name in copy if copy[name] != amoy.get(name)} == OWN_FIELDS - {
-        "TOKEN_ADDRESS", "TOKEN_NAME", "TOKEN_FAUCET"}
+        "TOKEN_ADDRESS", "TOKEN_NAME", "TOKEN_FAUCET", "TOKEN_FAUCET_BELOW"}
 
 
 def test_no_other_entry_names_a_contract_or_an_image_of_the_copies():
@@ -533,12 +533,30 @@ def test_a_session_of_such_a_wallet_of_the_amoy_copy_raises_the_refusal(monkeypa
     assert runner.is_running() is False
 
 
-def test_the_amoy_pox_2_0_network_draws_the_faucet_whenever_the_wallet_is_below_the_escrow(monkeypatch):
-    """POLYGON AMOY holds no TOKEN_FAUCET_BELOW: a wallet of 120 tokens below an escrow of 150 draws."""
-    assert not hasattr(ECNetwork.POLYGON.AMOY, "TOKEN_FAUCET_BELOW")
-    runner = _init_step(_stubbed_runner(monkeypatch, ("POLYGON", "AMOY"), balance=120, resources=LARGE))
+AMOY_NETWORKS = pytest.mark.parametrize("network", [("POLYGON", "AMOY"), ("POLYGON", "AMOY_UNSAFE")],
+                                        ids=["POLYGON AMOY", "POLYGON AMOY_UNSAFE"])
+
+
+@AMOY_NETWORKS
+@pytest.mark.parametrize("balance", [0, 99], ids=["empty", "99"])
+def test_a_wallet_of_the_amoy_pox_2_0_networks_below_100_tokens_draws_the_faucet(monkeypatch, network, balance):
+    """The PoX 2.0 networks of Polygon Amoy share the copy's tECLD, whose faucet gives below 100 tokens."""
+    runner = _init_step(_stubbed_runner(monkeypatch, network, balance=balance, resources=LARGE))
     assert runner.calls == [("faucet",), ("allowance", WALLET, ECNetwork.POLYGON.AMOY.PROTOCOL_ADDRESS),
                             ("approve", LARGE_ESCROW), ("wait", TX)]
+
+
+@AMOY_NETWORKS
+@pytest.mark.parametrize("balance, missing", [(100, 50), (120, 30), (149, 1)])
+def test_a_wallet_of_the_amoy_pox_2_0_networks_from_100_tokens_below_the_escrow_is_refused_without_a_faucet_draw(
+        monkeypatch, network, balance, missing):
+    runner = _stubbed_runner(monkeypatch, network, balance=balance, resources=LARGE)
+    runner.event_queue.put(ECEvent.INIT)
+    with pytest.raises(ValueError) as refusal:
+        runner._run_attempt("code", "", runner.resources)
+    assert str(refusal.value) == _faucet_does_not_give(balance, missing).replace(
+        "POLYGON AMOY_POX10", f"POLYGON {network[1]}")
+    assert runner.calls == []
 
 
 def test_an_allowance_of_the_amoy_copy_at_the_escrow_is_left_as_it_is(monkeypatch):

@@ -133,8 +133,74 @@ def test_a_task_whose_delivery_the_intake_refuses_leaves_no_blob_queued(sealed, 
 def test_drop_pending_passes_over_what_is_not_queued():
     client = IPFSClient(f"{INTAKE}/api/v0", intake_url=INTAKE, network="polygon_amoy")
     kept, dropped = client.upload_to_ipfs(b"kept"), client.upload_to_ipfs(b"dropped")
-    client.drop_pending([dropped, None, "", "bafynotqueued"])
-    assert client.pending == {kept: b"kept"}
+    client.drop_pending(None, [dropped, None, "", "bafynotqueued"])
+    client.drop_pending("an operation that queued nothing")
+    assert client.pending == {None: {kept: b"kept"}}
+
+
+# ---- the blobs of one operation ----
+
+def _client():
+    return IPFSClient(f"{INTAKE}/api/v0", intake_url=INTAKE, network="polygon_amoy")
+
+
+def test_a_delivery_posts_the_blobs_of_its_own_operation_alone(monkeypatch):
+    calls = post_answering(monkeypatch, Response(200), Response(200))
+    client = _client()
+    task, session = object(), object()
+    challenge, code = client.upload_to_ipfs(b"challenge", operation=task), client.upload_to_ipfs(b"code", operation=task)
+    held_input = client.upload_to_ipfs(b"input", operation=session)
+    client.flush_pending(REQUEST, task)
+    assert _posted(calls) == [(str(REQUEST), challenge), (str(REQUEST), code)]
+    assert client.pending == {session: {held_input: b"input"}}
+
+
+def test_a_signed_lodge_and_a_drop_take_the_blobs_of_their_own_operation_alone(monkeypatch):
+    calls = post_answering(monkeypatch, Response(200))
+    client = _client()
+    task, session = object(), object()
+    challenge = client.upload_to_ipfs(b"challenge", operation=task)
+    lodged = client.upload_to_ipfs(b"input", operation=session)
+    # Neither names the other's blob, even when it is asked for by its CID.
+    assert client.deliver_signed(REQUEST, "0xsignature", [challenge, lodged], operation=session) == ([lodged], {})
+    client.drop_pending(session, [challenge])
+    assert _posted(calls) == [(str(REQUEST), lodged)]
+    assert client.pending == {task: {challenge: b"challenge"}}
+    client.drop_pending(task)
+    assert client.pending == {}
+
+
+def test_a_blob_another_thread_delivered_meanwhile_is_passed_over(monkeypatch):
+    """The delivery's list of its operation's blobs was taken before another thread delivered one of them:
+    that blob is not posted again, and nothing is raised."""
+    client = _client()
+    operation = object()
+    first, second = client.upload_to_ipfs(b"first", operation=operation), client.upload_to_ipfs(b"second", operation=operation)
+    posted = []
+
+    def post(url, **kwargs):
+        posted.append(url.rsplit("/", 1)[1])
+        if len(posted) == 1:
+            client._delivered(operation, second)
+        return Response(200)
+
+    monkeypatch.setattr(ipfs.requests, "post", post)
+    client.flush_pending(REQUEST, operation)
+    assert posted == [first, second]
+    assert client.pending == {}
+
+
+def test_a_session_inputs_blob_is_not_posted_by_a_task_of_the_same_runner(sealed, monkeypatch):
+    """The intake refuses a blob the request it is posted for does not name: a task's delivery that posted an
+    open session's queued input under the task's request would fail after that request is on chain."""
+    calls = post_answering(monkeypatch, Response(200), Response(200), Response(200))
+    runner = _runner(_sent)
+    session_blobs = object()
+    held_input, _ = runner._seal_artefact(b"an input whose row is not mined yet", "certificate", session_blobs)
+    assert runner.create_task("code") is True
+    task = [runner.challenge_ipfs_hash, runner.script_hash]
+    assert _posted(calls) == [(str(REQUEST), cid) for cid in task]
+    assert runner.storage().pending == {session_blobs: {held_input: b"sealed:an input whose row is not mined yet"}}
 
 
 # ---- a session input ----
@@ -163,7 +229,8 @@ def _session(send, receipt=None):
         retry_operation=lambda read: read(),
         contract=SimpleNamespace(add_metadata_to_request=send, get_provider=lambda: SimpleNamespace(eth=eth)),
         enclave_public_key="certificate",
-        _seal_artefact=lambda plaintext, certificate: (client.upload_to_ipfs(b"sealed:" + plaintext), "digest"),
+        _seal_artefact=lambda plaintext, certificate, operation: (
+            client.upload_to_ipfs(b"sealed:" + plaintext, operation=operation), "digest"),
         _poll_receipt=lambda provider, tx_hash, max_attempts, in_progress: receipt or {"status": 1},
         storage=lambda: client,
         private_key=KEY,
@@ -216,4 +283,37 @@ def test_an_input_whose_row_has_no_receipt_yet_keeps_its_blob_for_the_delivery_a
     session.runner._poll_receipt = lambda provider, tx_hash, max_attempts, in_progress: None
     with pytest.raises(SessionError, match="input row transaction failed"):
         session.send_input("hello")
-    assert client.pending == {ipfs.unixfs_cid(b"sealed:hello"): b"sealed:hello"}
+    assert client.pending == {session._blobs: {ipfs.unixfs_cid(b"sealed:hello"): b"sealed:hello"}}
+
+
+def test_an_input_kept_for_the_delivery_after_its_row_goes_out_with_the_next_input_of_its_handle(sealed, monkeypatch):
+    """The first input's row had no receipt; the next input's delivery after its row posts both, under the
+    session's request: both rows name their blobs there."""
+    calls = post_answering(monkeypatch, NOT_NAMED, NOT_NAMED, Response(200), Response(200))
+    record_sleeps(monkeypatch)
+    session, client = _session(_sent)
+    session.runner._poll_receipt = lambda provider, tx_hash, max_attempts, in_progress: None
+    with pytest.raises(SessionError, match="input row transaction failed"):
+        session.send_input("hello")
+    session.runner._poll_receipt = lambda provider, tx_hash, max_attempts, in_progress: {"status": 1}
+    assert session.send_input("hello again") == 0
+    first, second = ipfs.unixfs_cid(b"sealed:hello"), ipfs.unixfs_cid(b"sealed:hello again")
+    assert _posted(calls)[2:] == [(str(REQUEST), first), (str(REQUEST), second)]
+    assert client.pending == {}
+
+
+def test_a_second_session_of_the_runner_does_not_post_the_first_ones_input(sealed, monkeypatch):
+    """Each handle queues under a key of its own: the second handle's delivery after its row posts its own
+    input alone, and the first handle's input stays queued for its own delivery."""
+    calls = post_answering(monkeypatch, NOT_NAMED, NOT_NAMED, Response(200))
+    record_sleeps(monkeypatch)
+    first, client = _session(_sent)
+    first.runner._poll_receipt = lambda provider, tx_hash, max_attempts, in_progress: None
+    with pytest.raises(SessionError, match="input row transaction failed"):
+        first.send_input("to the first session")
+    second = EthernityCloudSession(first.runner, ORDER)
+    first.runner._poll_receipt = lambda provider, tx_hash, max_attempts, in_progress: {"status": 1}
+    assert second.send_input("to the second session") == 0
+    kept, sent = ipfs.unixfs_cid(b"sealed:to the first session"), ipfs.unixfs_cid(b"sealed:to the second session")
+    assert _posted(calls)[2:] == [(str(REQUEST), sent)]
+    assert client.pending == {first._blobs: {kept: b"sealed:to the first session"}}

@@ -40,7 +40,7 @@ def test_a_blob_an_intake_without_the_signed_path_refuses_stays_queued_for_the_d
     cid = client.upload_to_ipfs(b"beta")
     delivered, refused = client.deliver_signed(8, "0xsignature", [cid])
     assert delivered == [] and refused[cid].startswith("403 ")
-    assert client.pending == {cid: b"beta"}
+    assert client.pending == {None: {cid: b"beta"}}
     assert len(calls) == 1
     client.flush_pending(8)
     assert client.pending == {}

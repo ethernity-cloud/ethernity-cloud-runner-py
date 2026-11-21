@@ -2,10 +2,12 @@ import os
 import re
 import time
 import threading
+import weakref
 from contextlib import contextmanager
-from queue import Queue
+from queue import Empty, Queue
 from typing import Union, List, Optional, Dict, Any, Literal
 from datetime import datetime
+import requests
 from eth_account import Account
 from eth_typing import Address, HexStr
 from web3 import Web3
@@ -84,8 +86,16 @@ PRE_REQUEST_READ_RETRY_SECONDS = 2
 # How long connect(), run(), run_session(), attach_session(), set_network()
 # and set_private_key() wait for a run that close() ended while its thread
 # was at work (in a request to the RPC or the storage, or in a wait between
-# two), before they raise RuntimeError (_await_closed_run).
+# two), before they raise RuntimeError (_await_closed_run). It is above one
+# RPC request at its longest (rpc.RPC_REQUEST_MAX_SECONDS, 20 s) followed by
+# one poll interval (CHAIN_POLL_SECONDS).
 RUN_END_WAIT_SECONDS = 30
+# The message of the RuntimeError of connect(), run(), run_session(),
+# attach_session(), set_network() and set_private_key() when close() was
+# called while the call waited for the runner: the call does nothing.
+CLOSED_WHILE_WAITING = ("The runner was closed with close() while {call} waited for it: {call} did nothing. A closed "
+                        "runner takes a key with set_private_key() and connect() again; another "
+                        "EthernityCloudRunner serves meanwhile.")
 # The message of the errors.RunEndedError raised in the thread of a run or of
 # a session submission once close() has ended it: for a transaction it would
 # send (_sender) and for the handle it would return (_hold_session).
@@ -243,13 +253,32 @@ class EthernityCloudRunner:
         self.image_registry_contract: Optional[ImageRegistryContract] = None
         self.resources: Optional[Dict[str, int]] = None
         self.securelock_version: Optional[str] = None
-        # The fee ceiling set_max_fee_per_gas gave, in gwei, which connect()
-        # hands to the protocol contract; None where it gave none.
+        # The fee ceiling set_max_fee_per_gas gave, in gwei, which every
+        # protocol contract the runner builds holds; None where it gave none.
         self.max_fee_per_gas: Optional[int] = None
         # Held by connect() and by run() while it starts its thread, by
         # run_session() and attach_session() for the whole call, and by
         # set_network() and set_private_key() while they build and assign.
         self._run_lock = threading.Lock()
+        # Held by connect(), set_network() and set_private_key() while they
+        # build and assign the runner's protocol contract, network and key,
+        # and by close() while it retires the protocol contracts and drops the
+        # contracts, the signer and the key: close() waits for a change in
+        # progress and then ends what it left, and a change that waited for
+        # close() does nothing (_closes).
+        self._change_lock = threading.Lock()
+        # How many times close() has dropped the runner's contracts and key,
+        # counted as it lets the change lock go: a call that finds another
+        # count than at its start began before a close() was done, and
+        # raises CLOSED_WHILE_WAITING (_refuse_closed_since).
+        self._closes = 0
+        # The protocol contracts the runner built (_protocol_contract) that
+        # are still referenced: close() retires each of them, and
+        # set_max_fee_per_gas sets the ceiling of each.
+        self._contracts = weakref.WeakSet()
+        # The key under which the task being created queues its blobs for
+        # the intake (create_task); None outside a task's creation.
+        self._task_blobs: Optional[object] = None
         # The run in progress: the run() whose thread is at work, or the
         # run_session() or attach_session() call under way; None otherwise.
         self._run: Optional[_Run] = None
@@ -259,9 +288,11 @@ class EthernityCloudRunner:
         # The session handles run_session() and attach_session() returned,
         # until close() detaches them.
         self._sessions: List[Any] = []
-        # Held while a submission adds its handle to _sessions and while
+        # Held while a submission adds its handle to _sessions, while a
+        # handle whose close(wait=True) returned is taken out of it, while
         # close() takes the run in progress and the handles, so a handle is
-        # either added before close() and detached by it, or not added.
+        # either added before close() and detached by it, or not added, and
+        # while _contracts is changed or read.
         self._handles_lock = threading.Lock()
         # .run is the run the calling thread works for (_process_events,
         # _submission); unset in every other thread.
@@ -283,8 +314,12 @@ class EthernityCloudRunner:
         network. A call that raises changes nothing: ValueError for a name
         the table does not hold, RuntimeError while a run or a session is in
         progress or the thread of a run close() ended is still at work
-        (_while_idle), ConnectionError when the network's provider does not
-        answer a connected runner."""
+        (_while_idle), RuntimeError (CLOSED_WHILE_WAITING) when close() was
+        called while the call waited, ConnectionError when the network's
+        provider does not answer a connected runner. A close() called while
+        the call builds and assigns waits for it, and then ends what it
+        assigned."""
+        closes = self._closes
         name, kind = network_name.upper(), network_type.upper()
         network_class = getattr(ECNetwork, name, None)
         if network_class is None:
@@ -292,7 +327,7 @@ class EthernityCloudRunner:
         network_config = getattr(network_class, kind, None)
         if network_config is None:
             raise ValueError(f"Invalid network type: {network_type} for network {network_name}")
-        with self._while_idle("set_network()", f"Use another EthernityCloudRunner for {name} {kind}."):
+        with self._while_idle("set_network()", f"Use another EthernityCloudRunner for {name} {kind}.", closes):
             contract = None
             if self.contract is not None:
                 contract = self._protocol_contract(name, kind, self.signer)
@@ -330,15 +365,21 @@ class EthernityCloudRunner:
         nothing more. The network, the storage, the fee ceiling
         set_max_fee_per_gas gave, the resources, the enclave details, the ESR
         state cache and the last run's outcome stay. A call that raises
-        changes nothing: ValueError for a string of another form, the error
-        eth_account raises for a key it does not take, RuntimeError while a
-        run or a session is in progress or the thread of a run close() ended
-        is still at work (_while_idle). No message of the call holds the
-        key."""
+        changes nothing: ValueError for a string of another form and for the
+        key zero, the error eth_account raises for a key it does not take,
+        RuntimeError while a run or a session is in progress or the thread of
+        a run close() ended is still at work (_while_idle), RuntimeError
+        (CLOSED_WHILE_WAITING) when close() was called while the call waited.
+        A close() called while the call builds and assigns waits for it, and
+        then ends what it assigned. No message of the call holds the key."""
+        closes = self._closes
         if not private_key.startswith("0x") or len(private_key) != 66:
             raise ValueError("Invalid private key format. Must be 64 hex chars prefixed with 0x.")
+        if not private_key[2:].strip("0"):
+            raise ValueError("Invalid private key: it is zero, and a secp256k1 private key is from 1 to the order "
+                             "of the curve less 1.")
         signer = Account.from_key(private_key)
-        with self._while_idle("set_private_key()", "Use another EthernityCloudRunner for another wallet."):
+        with self._while_idle("set_private_key()", "Use another EthernityCloudRunner for another wallet.", closes):
             contract = None
             if self.contract is not None:
                 contract = self._protocol_contract(self.network_name, self.network_type, signer)
@@ -351,29 +392,41 @@ class EthernityCloudRunner:
             self.image_registry_contract = None
             self._drop_order()
     @contextmanager
-    def _while_idle(self, call: str, instead: str):
-        """The runner's lock, held for a change of its network or its wallet.
-        connect(), run(), run_session() and attach_session() work under that
-        lock, so one that is starting holds it before is_running() says so.
-        RuntimeError naming `call` and `instead` when the lock is held or
-        something of the runner is in progress: a run whose thread is at
-        work or a session submission (_run), a session handle close() has
-        not detached (_sessions), or the running flag. RuntimeError from
-        _await_closed_run while the thread of a run close() ended is still
-        at work."""
+    def _while_idle(self, call: str, instead: str, closes: int):
+        """The runner's lock and its change lock, held for a change of its
+        network or its wallet. connect(), run(), run_session() and
+        attach_session() work under the runner's lock, so one that is
+        starting holds it before is_running() says so; close() takes the
+        change lock to end what the change assigned. RuntimeError naming
+        `call` and `instead` when the runner's lock is held or something of
+        the runner is in progress: a run whose thread is at work or a session
+        submission (_run), a session handle the runner holds (_sessions), or
+        the running flag. RuntimeError from _await_closed_run while the
+        thread of a run close() ended is still at work, and
+        CLOSED_WHILE_WAITING when close() was called since the call began,
+        whose count of close() calls was `closes`."""
         in_progress = (
             f"A run or a session of this runner is in progress on {self.network_name} {self.network_type}: "
-            f"{call} is refused until the run has ended or, after a session, the runner is closed with "
-            f"close(). {instead}")
+            f"{call} is refused until the run has ended or, after a session, the session is closed with "
+            f"session.close(wait=True) or the runner with close(). {instead}")
         if not self._run_lock.acquire(blocking=False):
             raise RuntimeError(in_progress)
         try:
+            self._refuse_closed_since(closes, call)
             self._await_closed_run(call)
             if self._run is not None or self._sessions or self.running:
                 raise RuntimeError(in_progress)
-            yield
+            with self._change_lock:
+                self._refuse_closed_since(closes, call)
+                yield
         finally:
             self._run_lock.release()
+    def _refuse_closed_since(self, closes: int, call: str) -> None:
+        """RuntimeError (CLOSED_WHILE_WAITING) naming `call` when close() was
+        called since the call began, whose count of close() calls was
+        `closes`."""
+        if self._closes != closes:
+            raise RuntimeError(CLOSED_WHILE_WAITING.format(call=call))
     def _await_closed_run(self, call: str) -> None:
         """Waits for the thread of the run close() ended to leave it, for up
         to RUN_END_WAIT_SECONDS, and raises RuntimeError naming `call` when
@@ -458,11 +511,13 @@ class EthernityCloudRunner:
         ceiling set_max_fee_per_gas gave: what connect() builds for the
         runner's network and key, set_network() for the network it moves a
         connected runner to and set_private_key() for the wallet it gives
-        one."""
-        return protocolContract(
-            signer, network_name, network_type, request_kwargs={'timeout': 10},
-            max_fee_per_gas=self.max_fee_per_gas,
-        )
+        one. Its provider is rpc.rpc_provider's. The contract is one of the
+        runner's contracts (_contracts) from then on."""
+        contract = protocolContract(signer, network_name, network_type, max_fee_per_gas=self.max_fee_per_gas)
+        with self._handles_lock:
+            self._contracts.add(contract)
+            contract.max_fee_per_gas = self.max_fee_per_gas
+        return contract
     def _hold_contract(self, contract: protocolContract) -> None:
         """Makes `contract` the one every read and transaction of the runner
         goes through, with its protocol and token contracts."""
@@ -474,20 +529,27 @@ class EthernityCloudRunner:
         """Connect to the protocol contract of the runner's network with its
         key. The contract is built and held under the runner's lock, so a
         set_network() or a set_private_key() of another thread is taken
-        before the call or refused during it, never in between. RuntimeError
-        from _await_closed_run while the thread of a run close() ended is
-        still at work."""
+        before the call or refused during it, never in between, and under
+        its change lock, so a close() called meanwhile waits for the call and
+        then retires the contract it held. RuntimeError from
+        _await_closed_run while the thread of a run close() ended is still
+        at work, and CLOSED_WHILE_WAITING when close() was called while the
+        call waited."""
+        closes = self._closes
         if self.local_mode:
             self.logger.info(f"LOCAL mode: no blockchain connection; using {self.local_endpoint}")
             return
         with self._run_lock:
+            self._refuse_closed_since(closes, "connect()")
             self._await_closed_run("connect()")
-            if self.signer is None:
-                raise RuntimeError("Private key must be set before connecting.")
-            self._hold_contract(self._protocol_contract(self.network_name, self.network_type, self.signer))
-            provider = self.contract.get_provider()
-            if not provider.is_connected():
-                raise ConnectionError("Failed to connect to Web3 provider.")
+            with self._change_lock:
+                self._refuse_closed_since(closes, "connect()")
+                if self.signer is None:
+                    raise RuntimeError("Private key must be set before connecting.")
+                self._hold_contract(self._protocol_contract(self.network_name, self.network_type, self.signer))
+                provider = self.contract.get_provider()
+                if not provider.is_connected():
+                    raise ConnectionError("Failed to connect to Web3 provider.")
     def set_order_wait(self, seconds: float) -> None:
         """How long a task waits for a node to place an order on its DO
         request before the request is cancelled and its escrow returned
@@ -500,12 +562,18 @@ class EthernityCloudRunner:
         the network's default (the entry's MAX_FEE_PER_GAS). A transaction
         whose maxFeePerGas is above the ceiling in force is not sent and
         raises errors.FeeCeilingError (protocolContract.fee_ceiling). Callable
-        before connect(), which hands the value to the protocol contract, and
-        after it. Raises ValueError naming `gwei` for anything but an int
-        above zero."""
+        before connect() and after it: the ceiling is that of every protocol
+        contract of the runner from the next send on, the one the runner
+        holds, the one a run in progress began with and the one each session
+        handle was made with (_contracts), and of every contract it builds
+        later. Raises ValueError naming `gwei` for anything but an int above
+        zero."""
         if isinstance(gwei, bool) or not isinstance(gwei, int) or gwei <= 0:
             raise ValueError(f"The fee ceiling is a positive whole number of gwei, given as an int, not {gwei!r}.")
-        self.max_fee_per_gas = gwei
+        with self._handles_lock:
+            self.max_fee_per_gas = gwei
+            for contract in list(self._contracts):
+                contract.max_fee_per_gas = gwei
         if self.contract is not None:
             self.contract.max_fee_per_gas = gwei
     def set_log_level(self, level: str) -> None:
@@ -579,9 +647,10 @@ class EthernityCloudRunner:
         """The wallet's token balance against the request's escrow
         (protocolContract.request_escrow): a wallet below it draws the token's
         faucet where the token has one (token_has_faucet) and, on an entry
-        that holds TOKEN_FAUCET_BELOW (POLYGON AMOY_POX10), while the wallet
-        holds less than that many tokens, the balance below which that faucet
-        gives; elsewhere it raises ValueError and no transaction is sent. On
+        that holds TOKEN_FAUCET_BELOW (POLYGON AMOY, AMOY_UNSAFE and
+        AMOY_POX10, whose token is one), while the wallet holds less than
+        that many tokens, the balance below which that faucet gives;
+        elsewhere it raises ValueError and no transaction is sent. On
         a MAINNET type the message states the escrow and the balance; on a
         testnet it also names the token, why its faucet does not serve, the
         wallet and the amount a transfer has to bring. The balance is read
@@ -700,7 +769,10 @@ class EthernityCloudRunner:
         """poll_transaction's wait, through the eth module `provider`, for as
         long as `in_progress()` holds: the runner's is_running for a run, a
         session handle's own state for a row of that handle, whose receipt
-        is read through the contract the handle was made with."""
+        is read through the contract the handle was made with. A read the
+        RPC does not answer (requests.RequestException: no connection, no
+        answer within rpc.RPC_TIMEOUT) is made again at the next poll, as a
+        receipt not found yet is."""
         self.logger.info(f"Submitting transaction {tx_hash}")
         deadline = time.monotonic() + max_attempts * self.block_time
         attempt = 0
@@ -715,6 +787,8 @@ class EthernityCloudRunner:
                     return receipt
             except TransactionNotFound:
                 pass
+            except requests.exceptions.RequestException as e:
+                self.logger.debug(f"The receipt of {tx_hash} was not read ({type(e).__name__}: {e})")
             left = deadline - time.monotonic()
             if left <= 0:
                 self.logger.error(f"Transaction {tx_hash} was not mined within {max_attempts} blocks.")
@@ -753,7 +827,7 @@ class EthernityCloudRunner:
         return self.bytes_to_hex(priv_key)
     def get_v3_image_metadata(self, challenge_hash: bytes) -> str:
         """Generate v3 image metadata."""
-        challenge_ipfs_hash, _ = self._seal_artefact(challenge_hash)
+        challenge_ipfs_hash, _ = self._seal_artefact(challenge_hash, operation=self._task_blobs)
         if challenge_ipfs_hash is None:
             raise ValueError("Failed to upload challenge to IPFS.")
         self.challenge_ipfs_hash = challenge_ipfs_hash
@@ -768,7 +842,7 @@ class EthernityCloudRunner:
         # against that repr and every payload fails with
         # PAYLOAD_CHECKSUM_ERROR (orders 1817-1819 on bloxberg testnet).
         script_checksum = sha256(code, True)
-        self.script_hash, _ = self._seal_artefact(code.encode("utf-8"))
+        self.script_hash, _ = self._seal_artefact(code.encode("utf-8"), operation=self._task_blobs)
         if self.script_hash is None:
             raise ValueError("Failed to upload encrypted code to IPFS.")
         self.logger.info(f"Uploaded encrypted code to IPFS: {self.script_hash}")
@@ -801,7 +875,7 @@ class EthernityCloudRunner:
             self.file_set_hash = ""
             return f"{version}::{ZERO_CHECKSUM}"
         input_checksum = sha256(input_data, True)
-        self.file_set_hash, _ = self._seal_artefact(input_data.encode("utf-8"))
+        self.file_set_hash, _ = self._seal_artefact(input_data.encode("utf-8"), operation=self._task_blobs)
         if self.file_set_hash is None:
             raise ValueError("Failed to upload encrypted input to IPFS.")
         self.logger.info(f"Uploaded encrypted input to IPFS: {self.file_set_hash}")
@@ -856,9 +930,9 @@ class EthernityCloudRunner:
         self.logger.info(f"Request {self.do_request} was created successfully!")
         # An artefact the held cache carried is referenced on chain now.
         self.storage().release_held([getattr(self, "challenge_ipfs_hash", None), self.script_hash, self.file_set_hash])
-        # With the public intake, the artefacts named in the request are
-        # delivered now that the request they belong to is on chain.
-        self.storage().flush_pending(self.do_request)
+        # With the public intake, the artefacts named in the request, those
+        # its task queued, are delivered now that the request is on chain.
+        self.storage().flush_pending(self.do_request, self._task_blobs)
         return True
     def parse_order_result(self, result: str) -> Dict[str, Any]:
         """Parse order result string."""
@@ -1110,18 +1184,24 @@ class EthernityCloudRunner:
     def create_task(self, code: str) -> bool:
         """Create a new task: its challenge, code and input are sealed and
         its DO request is sent. With an intake storage the sealed blobs are
-        queued and delivered once the request is on chain (create_do_request).
-        When the call ends none of them is left in the queue: a blob that was
-        not delivered, because the request was not sent or the delivery
-        failed, is dropped (IPFSClient.drop_pending), since the request of a
-        later task does not name it and the intake refuses it there."""
+        queued under a key of the task's own (_task_blobs) and delivered once
+        the request is on chain (create_do_request); no other operation of
+        the runner posts or drops them, and the task posts no other's. When
+        the call ends none of them is left in the queue: a blob that was not
+        delivered, because the request was not sent or the delivery failed,
+        is dropped (IPFSClient.drop_pending), since the request of a later
+        task does not name it and the intake refuses it there. The order
+        count read is tried as the reads before a request are
+        (_read_before_request)."""
         storage = self.storage()
         self.challenge_hash = generate_random_hex_of_size(20).encode("utf-8")
+        blobs = self._task_blobs = object()
         try:
             image_metadata = self.get_v3_image_metadata(self.challenge_hash)
             code_metadata = self.get_v3_code_metadata(code)
             input_metadata = self.get_v3_input_metadata()
-            self.current_order_index = self.protocol_contract.functions._getOrdersCount().call()
+            self.current_order_index = self._read_before_request(
+                lambda: self.protocol_contract.functions._getOrdersCount().call())
             # Anchor for the stateless event-log scans (find_order / result wait).
             try:
                 self.request_start_block = self.protocol_contract.w3.eth.block_number
@@ -1129,7 +1209,8 @@ class EthernityCloudRunner:
                 self.request_start_block = None
             return self.create_do_request(image_metadata, code_metadata, input_metadata, self.node_address)
         finally:
-            storage.drop_pending([getattr(self, "challenge_ipfs_hash", None), self.script_hash, self.file_set_hash])
+            storage.drop_pending(blobs)
+            self._task_blobs = None
     def attach_task(self, order_id: int) -> Optional[Dict[str, Any]]:
         """Attach to an existing task."""
         self.order_id = order_id
@@ -1396,14 +1477,16 @@ class EthernityCloudRunner:
             self.logger.warning(f"Held blob {cid} was not taken by the IPFS endpoint: {reason}")
         return uploaded, failed
 
-    def _seal_artefact(self, plaintext: bytes, certificate: Optional[str] = None):
+    def _seal_artefact(self, plaintext: bytes, certificate: Optional[str] = None, operation: Any = None):
         """(cid, digest) of an artefact (challenge, code, input, session
         input) sealed for the enclave's certificate, through the configured
         storage; the digest is the ciphertext's sha256, hex. The certificate
         is `certificate` when given, the one a session handle was made with
         (EthernityCloudSession.send_input), else the one the runner holds
-        (enclave_public_key). An artefact the intake does not take
-        (ipfs.INTAKE_MAX_BYTES) is held in the runner's held cache under the
+        (enclave_public_key). Through an intake the sealed bytes are queued
+        under `operation`, the key of the task or the session handle that
+        seals them (IPFSClient.upload_to_ipfs). An artefact the intake does
+        not take (ipfs.INTAKE_MAX_BYTES) is held in the runner's held cache under the
         key of its plaintext and the enclave key, logged at ERROR and raised
         as ipfs.StorageLimitError before any transaction names it; once an
         IPFS endpoint of the application's own has uploaded it
@@ -1428,7 +1511,7 @@ class EthernityCloudRunner:
             raise refused
         ciphertext = self._data_bytes(encrypt(plaintext, certificate))
         try:
-            cid = storage.upload_to_ipfs(ciphertext, held_key=key)
+            cid = storage.upload_to_ipfs(ciphertext, held_key=key, operation=operation)
         except StorageLimitError as e:
             self.logger.error(str(e))
             raise
@@ -1566,13 +1649,16 @@ class EthernityCloudRunner:
         a session of the runner is in progress raises RuntimeError("A task is
         already running.") and changes nothing of it; one made while the
         thread of a run close() ended is still at work raises RuntimeError
-        after RUN_END_WAIT_SECONDS (_await_closed_run). For parallel tasks
-        use one runner instance per task."""
+        after RUN_END_WAIT_SECONDS (_await_closed_run), and one that waited
+        for the lock while close() was called raises CLOSED_WHILE_WAITING.
+        For parallel tasks use one runner instance per task."""
+        closes = self._closes
         if not self._run_lock.acquire(blocking=False):
             self.logger.info(
                 "Another call holds this runner's lock -- waiting for it to be done.")
             self._run_lock.acquire()
         try:
+            self._refuse_closed_since(closes, "run()")
             return self.__run_exclusive(
                 resources, securelock_enclave, securelock_version, code,
                 node_address, trustedzone_enclave, max_retries, retry_delay, input_data)
@@ -1724,8 +1810,10 @@ class EthernityCloudRunner:
         import json
         import urllib.request
 
-        while not self.event_queue.empty() and self.is_running():
-            event = self.event_queue.get()
+        while self.is_running():
+            event = self._next_event()
+            if event is None:
+                break
             if event == ECEvent.INIT:
                 self.progress = ECEvent.INIT
                 try:
@@ -1769,12 +1857,22 @@ class EthernityCloudRunner:
                 self._finish("Task completed (LOCAL mode).")
             self.processed_events.append(event.name)
 
+    def _next_event(self) -> Optional[ECEvent]:
+        """The next event of the queue, or None when it holds none: the event
+        is taken without waiting, so a queue close() empties meanwhile ends
+        the attempt instead of blocking its thread."""
+        try:
+            return self.event_queue.get_nowait()
+        except Empty:
+            return None
     def _run_attempt(self, code: str, node_address: str, resources: Dict[str, int]) -> None:
         """One full submission attempt: INIT through FINISHED."""
         if self.local_mode:
             return self._run_local_attempt(code)
-        while not self.event_queue.empty() and self.is_running():
-            event = self.event_queue.get()
+        while self.is_running():
+            event = self._next_event()
+            if event is None:
+                break
             if event == ECEvent.INIT:
                 self.progress = ECEvent.INIT
                 self._check_balance()
@@ -1838,14 +1936,19 @@ class EthernityCloudRunner:
         runner held when it began, and a close() during it ends it with
         errors.RunEndedError, whose cause is the error of the step it was in.
         RuntimeError("A task is already running.")
-        while a run() of the runner is in progress, and RuntimeError from
+        while a run() of the runner is in progress, RuntimeError from
         _await_closed_run while the thread of a run close() ended is still
-        at work. The handle returned stays among the runner's handles, and
-        the runner in progress, until close(); a call that fails leaves the
-        runner in progress only for the handles it already holds.
+        at work, and CLOSED_WHILE_WAITING when close() was called while the
+        call waited for the runner's lock. The handle returned stays among
+        the runner's handles, and the runner in progress, until its
+        close(wait=True) has returned the session's summary or the runner's
+        close(); a call that fails leaves the runner in progress only for
+        the handles it already holds.
         """
         from .session import EthernityCloudSession
+        closes = self._closes
         with self._run_lock:
+            self._refuse_closed_since(closes, "run_session()")
             self._await_closed_run("run_session()")
             if self._run is not None:
                 raise RuntimeError("A task is already running.")
@@ -1923,18 +2026,22 @@ class EthernityCloudRunner:
         made: a call that waited for a set_network() or a set_private_key()
         of another thread raises RuntimeError naming both the network and
         the wallet asked for and those the runner has, and reads nothing; a
-        call that waited for anything else attaches once that is done.
-        RuntimeError("A task is already running.") while a run() of the
+        call that waited for a close() raises CLOSED_WHILE_WAITING and reads
+        nothing; a call that waited for anything else attaches once that is
+        done. RuntimeError("A task is already running.") while a run() of the
         runner is in progress, RuntimeError from _await_closed_run while the
         thread of a run close() ended is still at work, errors.RunEndedError
         when close() ends the call, as run_session() raises it. The handle
         returned stays among the runner's handles, and the runner in
-        progress, until close(); a call that fails leaves the runner in
-        progress only for the handles it already holds.
+        progress, until its close(wait=True) has returned the session's
+        summary or the runner's close(); a call that fails leaves the runner
+        in progress only for the handles it already holds.
         """
         from .session import EthernityCloudSession
+        closes = self._closes
         asked_on = self._network_and_wallet()
         with self._run_lock:
+            self._refuse_closed_since(closes, "attach_session()")
             self._await_closed_run("attach_session()")
             if self._run is not None:
                 raise RuntimeError("A task is already running.")
@@ -2060,7 +2167,12 @@ class EthernityCloudRunner:
         under: <network>_<type>, lower case (polygon_amoy_pox10). Each
         network's Enclave State Registry holds its own state for a wallet and
         a key, so an entry cached on one network is read on no other."""
-        return f"{self.network_name.lower()}_{self.network_type.lower()}"
+        return self._network_key(self.network_name, self.network_type)
+
+    @staticmethod
+    def _network_key(network_name: str, network_type: str) -> str:
+        """<network>_<type> in lower case."""
+        return f"{network_name.lower()}_{network_type.lower()}"
 
     def esr_read(
         self,
@@ -2079,9 +2191,18 @@ class EthernityCloudRunner:
         Serves the state from the cache while a FREE on-chain check
         (`getState` eth_call) confirms it is current; otherwise submits one
         state-fetch task (the SDK's built-in `esr_fetch`, or `read_code` if
-        given) and refreshes the cache from its result envelope. The cache is
-        read under the runner's network (_state_network): a state cached on
-        another network is not served.
+        given) and refreshes the cache from its result envelope. The network
+        is read once, as the call begins: the cache is read under that
+        network's key (_state_network), the free check is made on that
+        network's Enclave State Registry, and a state-fetch task is run only
+        while the runner is still on that network (RuntimeError otherwise,
+        before any task). A state cached on another network is not served.
+        An entry under the wallet and the key alone, the key
+        ethernity-cloud-runner-py 0.5.38 wrote, is served when no entry of
+        the network is cached, its cid is not empty and the network's
+        registry holds that cid, and it is then cached under the network's
+        key as well. The free check's read is tried as the reads before a
+        request are (_read_before_request).
 
         Wallet resolution: explicit `enclave_wallet`, else the wallet learned
         from previous result envelopes for this enclave (self-healing across
@@ -2089,29 +2210,46 @@ class EthernityCloudRunner:
 
         Returns {state, version, cid, wallet, from_cache, checked_on_chain}.
         """
+        with self._change_lock:
+            network_name, network_type = self.network_name, self.network_type
+        network = self._network_key(network_name, network_type)
         enclave_name = securelock_enclave or self.securelock_enclave
         wallet = enclave_wallet or self._esr_wallet_memo.get(enclave_name or "")
 
         checked_on_chain = False
         cache = self._get_state_cache()
         if (not force) and cache is not None and wallet:
-            entry = cache.get(wallet, key, network=self._state_network())
-            if entry is not None:
+            entry = cache.get(wallet, key, network=network)
+            legacy = None
+            if entry is None:
+                legacy = cache.get(wallet, key)
+                if legacy is not None and not legacy.get("cid"):
+                    legacy = None
+            if entry is not None or legacy is not None:
                 try:
-                    esr = ESRContract(self.network_name, self.network_type)
-                    onchain = esr.get_state(wallet, key)
+                    esr = ESRContract(network_name, network_type)
+                    onchain = self._read_before_request(lambda: esr.get_state(wallet, key))
                     checked_on_chain = True
                     fresh = False
-                    # Prefer cid equality (content-addressed); fall back to
-                    # version. trust_min_version covers the caller's own
-                    # still-relaying commit: external writes only increase the
-                    # version, so they still invalidate.
-                    if entry.get("cid") and onchain.get("cid"):
-                        fresh = entry["cid"] == onchain["cid"]
-                    if not fresh:
-                        fresh = int(onchain.get("version", -1)) == int(entry.get("version", -2))
-                    if not fresh and trust_min_version is not None:
-                        fresh = int(onchain.get("version", 0)) <= int(trust_min_version)
+                    if entry is None:
+                        # The cid names the state's content, whatever
+                        # network the entry was written on.
+                        fresh = legacy["cid"] == onchain.get("cid")
+                        if fresh:
+                            entry = legacy
+                            cache.set(wallet, key, entry.get("state"), entry.get("version", 0), entry["cid"],
+                                      network=network)
+                    else:
+                        # Prefer cid equality (content-addressed); fall back
+                        # to version. trust_min_version covers the caller's
+                        # own still-relaying commit: external writes only
+                        # increase the version, so they still invalidate.
+                        if entry.get("cid") and onchain.get("cid"):
+                            fresh = entry["cid"] == onchain["cid"]
+                        if not fresh:
+                            fresh = int(onchain.get("version", -1)) == int(entry.get("version", -2))
+                        if not fresh and trust_min_version is not None:
+                            fresh = int(onchain.get("version", 0)) <= int(trust_min_version)
                     if fresh:
                         return {
                             "state": entry.get("state"),
@@ -2134,6 +2272,11 @@ class EthernityCloudRunner:
                 raise ValueError(
                     "esr_read needs securelock_enclave (no previous run to inherit from)")
         version = securelock_version or self.securelock_version
+        if (self.network_name, self.network_type) != (network_name, network_type):
+            raise RuntimeError(
+                f"esr_read('{key}') was called on {network_name} {network_type}, and the runner was moved to "
+                f"{self.network_name} {self.network_type} before its state-fetch task: no task was run. Call "
+                "esr_read again on the network meant.")
         self.run(
             resources or getattr(self, "resources", None),
             enclave_name,
@@ -2231,11 +2374,16 @@ class EthernityCloudRunner:
             runner.esr_wait_for_version("dashboard", v, enclave_wallet=W)
 
         Raises TimeoutError if the version does not advance within `timeout`
-        seconds."""
+        seconds. A read the RPC does not answer (requests.RequestException)
+        is made again at the next interval."""
         deadline = time.monotonic() + float(timeout)
         while True:
-            cur = self._esr_onchain(key, enclave_wallet)
-            if cur["version"] > int(since_version):
+            try:
+                cur = self._esr_onchain(key, enclave_wallet)
+            except requests.exceptions.RequestException as e:
+                self.logger.debug(f"ESR version read of '{key}' failed ({type(e).__name__}: {e})")
+                cur = None
+            if cur is not None and cur["version"] > int(since_version):
                 return cur
             if time.monotonic() >= deadline:
                 raise TimeoutError(
@@ -2243,42 +2391,67 @@ class EthernityCloudRunner:
                     f"{since_version} within {timeout}s")
             time.sleep(interval)
 
+    def _release_session(self, session: Any) -> None:
+        """Takes `session` out of the runner's handles once its close(wait=True)
+        has returned the session's summary: it reads nothing more through the
+        runner. The runner stays in progress for the handles it still holds
+        and a run in progress."""
+        with self._handles_lock:
+            if any(held is session for held in self._sessions):
+                self._sessions = [held for held in self._sessions if held is not session]
+                self.running = bool(self._sessions) or self._run is not None
     def close(self) -> None:
         """Close resources and stop the runner. The run in progress (a run()
         whose thread is at work, a run_session() or attach_session() call
         under way) ends: its thread sends no transaction after this
-        (_sender). The protocol contracts that end with the runner are
-        retired (protocolContract.retire), so nothing is sent through them by
-        anything that still holds one: the contract the runner holds, the one
-        the run in progress began with and the one each session handle was
-        made with, which are other objects than the runner's after a
-        connect() made meanwhile. Every session handle of the runner is
-        detached: it sends and reads nothing more and raises
-        session.SessionError (EthernityCloudSession._detach). The thread of a
-        run is waited for two block times; one still at work then is waited
-        for again, for up to RUN_END_WAIT_SECONDS, by the next connect(),
-        run(), run_session(), attach_session(), set_network() or
-        set_private_key(), which raises RuntimeError while the thread has not
-        ended (_await_closed_run)."""
+        (_sender). A connect(), set_network() or set_private_key() building
+        and assigning in another thread is waited for, and its outcome ended
+        with the rest; one that waits for the runner meanwhile does nothing
+        and raises CLOSED_WHILE_WAITING. Every protocol contract the runner
+        built is retired (protocolContract.retire), so nothing is sent
+        through it by anything that still holds one: the contract the runner
+        holds, the one the run in progress began with, the one each session
+        handle was made with, and any other the runner built (_contracts). A
+        transaction being handed to the node is handed over before close()
+        goes on, and none is sent through these contracts after it. The
+        contracts, the signer and the key are dropped with the change lock
+        held. Every session handle of the runner is detached: it sends and
+        reads nothing more and raises session.SessionError
+        (EthernityCloudSession._detach). The thread of a run is waited for
+        two block times; one still at work then is waited for again, for up
+        to RUN_END_WAIT_SECONDS, by the next connect(), run(), run_session(),
+        attach_session(), set_network() or set_private_key(), which raises
+        RuntimeError while the thread has not ended (_await_closed_run)."""
         self.running = False
-        with self._handles_lock:
-            run, self._run = self._run, None
-            sessions, self._sessions = self._sessions, []
-            if run is not None:
-                self._closed_run = run
-        ended = [self.contract] + ([run.contract] if run is not None else []) + [
-            session._contract for session in sessions]
-        for contract in ended:
-            if contract is not None:
-                contract.retire("The runner was closed with close()")
+        with self._change_lock:
+            with self._handles_lock:
+                run, self._run = self._run, None
+                sessions, self._sessions = self._sessions, []
+                if run is not None:
+                    self._closed_run = run
+                built = list(self._contracts)
+            ended = [self.contract] + ([run.contract] if run is not None else []) + [
+                session._contract for session in sessions] + built
+            for contract in ended:
+                if contract is not None:
+                    contract.retire("The runner was closed with close()")
+            providers = [self.contract, self.image_registry_contract]
+            self.contract = None
+            self.token_contract = None
+            self.protocol_contract = None
+            self.image_registry_contract = None
+            self.signer = None
+            self.private_key = ""
+            # Counted as the change lock is let go: a call that began before
+            # this point finds another count than at its start.
+            self._closes += 1
         detached = (
             f"The runner was closed with close(): this handle of a session on {self.network_name} "
             f"{self.network_type} sends and reads nothing more. The session's order stays as it is on chain; "
             "attach_session(order_id) on a connected runner of that network and wallet gives a new handle.")
         for session in sessions:
             session._detach(detached)
-        for attr in ['contract', 'image_registry_contract']:
-            obj = getattr(self, attr, None)
+        for obj in providers:
             if obj:
                 try:
                     provider = obj.get_provider()
@@ -2294,19 +2467,13 @@ class EthernityCloudRunner:
             if self.task_thread.is_alive():
                 self.logger.error("Task thread did not terminate; potential stuck loop.")
                 self.status = ECStatus.ERROR
-        while not self.event_queue.empty():
-            self.event_queue.get_nowait()
+        with self.event_queue.mutex:
+            self.event_queue.queue.clear()
         self.event_queue = Queue()
         self.reset()
         self.processed_events = []
         self.result = None
         self.task_thread = None
         self.ipfs_client = None
-        self.contract = None
-        self.token_contract = None
-        self.protocol_contract = None
-        self.image_registry_contract = None
-        self.signer = None
-        self.private_key = ""
         self.status = ECStatus.SUCCESS
         self.logger.info("Runner resources closed successfully")
