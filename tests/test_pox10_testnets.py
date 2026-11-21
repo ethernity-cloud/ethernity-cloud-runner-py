@@ -5,9 +5,12 @@ used as its mainnet is: the bloxberg copy's PoX is its own token, so no
 allowance is approved; the Amoy copy's PoX is apart from the tECLD token and
 is approved for a request's escrow. The bloxberg copy's token has no faucet:
 a wallet below a request's escrow is refused with the amount it lacks and no
-transaction is sent; the Amoy copy's wallet draws the tECLD faucet. Neither is
-served by the bootnode's payload intake, and the bloxberg copy reads the
-bloxberg testnet's Enclave State Registry while the Amoy copy has none. No
+transaction is sent; the Amoy copy's wallet draws the tECLD faucet while it
+holds less than the 100 tokens below which that faucet gives, and is refused
+the same way from there. Each network runs its two trustedzones and no other,
+and they run on no other network. Neither is served by the bootnode's payload
+intake, and the bloxberg copy reads the bloxberg testnet's Enclave State
+Registry while the Amoy copy has none. No
 chain: the contracts, the registry and the session are stand-ins, and the one
 real protocolContract sends to a provider that keeps what it is sent."""
 from pathlib import Path
@@ -21,12 +24,12 @@ import ethernity_cloud_runner_py.runner as runner_module
 import ethernity_cloud_runner_py.session as session_module
 from ethernity_cloud_runner_py.contract.operation.esrContract import ESRContract
 from ethernity_cloud_runner_py.contract.operation.protocolContract import protocolContract
-from ethernity_cloud_runner_py.enums import ECEvent, ECNetwork, ECStatus
+from ethernity_cloud_runner_py.enums import ECEvent, ECNetwork, ECStatus, trustedzone_network
 from ethernity_cloud_runner_py.errors import FeeCeilingError
 from ethernity_cloud_runner_py.ipfs import INTAKE_NETWORKS
 from ethernity_cloud_runner_py.runner import EthernityCloudRunner
 
-from test_fee_ceiling import GWEI, NONCE, SIGNER, THE_DEFAULT, TX, _Chain, _refusal
+from test_fee_ceiling import GWEI, NONCE, SIGNER, THE_DEFAULT, TX, _Chain, _connect, _refusal
 
 BLOXBERG_POX10 = ("BLOXBERG", "TESTNET_POX10")
 AMOY_POX10 = ("POLYGON", "AMOY_POX10")
@@ -48,9 +51,12 @@ TERMED = {"taskPrice": 5, "validators": 3, "duration": 2}
 TERMED_ESCROW = 30
 RESOURCES = {"taskPrice": 1, "cpu": 1, "memory": 1, "storage": 1,
              "bandwidth": 1, "duration": 1, "validators": 1}
-# The fields of an entry that name its contracts, its token and its images.
+# The fields of an entry that name its contracts, its token, the token's faucet and its images.
 OWN_FIELDS = {"IMAGE_REGISTRY_CONTRACT_ADDRESS", "PROTOCOL_ADDRESS", "TOKEN_ADDRESS", "HEARTBEAT_CONTRACT_ADDRESS",
-              "TOKEN_NAME", "TOKEN_FAUCET", "INTEGRATION_TEST_IMAGE", "TRUSTEDZONE_IMAGE"}
+              "TOKEN_NAME", "TOKEN_FAUCET", "TOKEN_FAUCET_BELOW", "INTEGRATION_TEST_IMAGE", "TRUSTEDZONE_IMAGE",
+              "TRUSTEDZONES"}
+BLOXBERG_POX10_ZONES = ("etny-pynithy-testnet-pox10", "etny-nodenithy-testnet-pox10")
+AMOY_POX10_ZONES = ("ecld-pynithy-amoy-pox10", "ecld-nodenithy-amoy-pox10")
 # The fields of an entry that are its chain's: the RPC, the chain id and the fees.
 CHAIN_FIELDS = {"RPC_URL", "RPC_DELAY", "CHAIN_ID", "MIDDLEWARE", "BLOCK_TIME", "MINIMUM_GAS_AT_START",
                 "GAS_PRICE_MEASURE", "EIP1559", "GAS_PRICE", "GAS_LIMIT", "MAX_FEE_PER_GAS",
@@ -80,7 +86,9 @@ def test_the_bloxberg_copy_names_its_contracts_on_chain_8995():
     assert entry.HEARTBEAT_CONTRACT_ADDRESS == BLOXBERG_POX10_HEARTBEAT
     assert entry.TOKEN_NAME == "tE10"
     assert entry.TOKEN_FAUCET is False
+    assert not hasattr(entry, "TOKEN_FAUCET_BELOW")
     assert entry.TRUSTEDZONE_IMAGE == entry.INTEGRATION_TEST_IMAGE == "etny-pynithy-testnet-pox10"
+    assert entry.TRUSTEDZONES == BLOXBERG_POX10_ZONES
 
 
 def test_the_amoy_copy_names_its_contracts_on_chain_80002():
@@ -93,23 +101,26 @@ def test_the_amoy_copy_names_its_contracts_on_chain_80002():
     assert entry.HEARTBEAT_CONTRACT_ADDRESS == AMOY_POX10_HEARTBEAT
     assert entry.TOKEN_NAME == "tECLD"
     assert not hasattr(entry, "TOKEN_FAUCET")
+    assert entry.TOKEN_FAUCET_BELOW == 100
     assert entry.TRUSTEDZONE_IMAGE == entry.INTEGRATION_TEST_IMAGE == "ecld-pynithy-amoy-pox10"
+    assert entry.TRUSTEDZONES == AMOY_POX10_ZONES
 
 
 def test_the_bloxberg_copy_differs_from_the_bloxberg_mainnet_in_its_contracts_token_and_images_alone():
     copy, mainnet = _fields(ECNetwork.BLOXBERG.TESTNET_POX10), _fields(ECNetwork.BLOXBERG.MAINNET)
-    assert {name for name in copy if copy[name] != mainnet.get(name)} == OWN_FIELDS
+    assert {name for name in copy if copy[name] != mainnet.get(name)} == OWN_FIELDS - {"TOKEN_FAUCET_BELOW"}
 
 
 def test_the_amoy_copy_holds_the_amoy_chain_and_token_and_polygon_mainnets_other_values():
     copy = _fields(ECNetwork.POLYGON.AMOY_POX10)
     amoy, mainnet = _fields(ECNetwork.POLYGON.AMOY), _fields(ECNetwork.POLYGON.MAINNET)
-    assert set(copy) == set(amoy) == set(mainnet)
+    assert set(amoy) == set(mainnet)
+    assert set(copy) == set(amoy) | {"TOKEN_FAUCET_BELOW", "TRUSTEDZONES"}
     for name in CHAIN_FIELDS | {"TOKEN_ADDRESS", "TOKEN_NAME"}:
         assert copy[name] == amoy[name], name
     for name in set(copy) - CHAIN_FIELDS - OWN_FIELDS:
         assert copy[name] == mainnet[name], name
-    assert {name for name in copy if copy[name] != amoy[name]} == OWN_FIELDS - {
+    assert {name for name in copy if copy[name] != amoy.get(name)} == OWN_FIELDS - {
         "TOKEN_ADDRESS", "TOKEN_NAME", "TOKEN_FAUCET"}
 
 
@@ -140,12 +151,25 @@ def test_the_intake_keys_are_the_network_words():
     assert EthernityCloudRunner(*AMOY_POX10)._intake_network() == "polygon_amoy_pox10"
 
 
-def test_set_network_moves_a_runner_to_a_pox_1_0_testnet():
-    runner = EthernityCloudRunner("BLOXBERG", "TESTNET")
+def test_set_network_moves_a_runner_to_a_pox_1_0_testnet(monkeypatch):
+    """A runner connected on BLOXBERG TESTNET, whose PoX 2.0 is apart from
+    its token: after set_network it holds the copy's PoX, which is its token,
+    and sends there (test_set_network.py walks a whole run for every pair)."""
+    chain = _Chain(8995, GWEI)
+    runner = _connect(monkeypatch, EthernityCloudRunner("BLOXBERG", "TESTNET"), chain)
+    assert runner.protocol_contract.address == "0x830c781F0352050343211B6BFA83600B3e77647C"
+    assert runner.token_contract.address == "0x02882F03097fE8cD31afbdFbB5D72a498B41112c"
     runner.set_network("bloxberg", "testnet_pox10")
     assert (runner.network_name, runner.network_type) == BLOXBERG_POX10
     assert runner.network_config is ECNetwork.BLOXBERG.TESTNET_POX10
     assert runner.trustedZoneImage == "etny-pynithy-testnet-pox10"
+    assert runner.contract.network_config is ECNetwork.BLOXBERG.TESTNET_POX10
+    assert runner.protocol_contract.address == runner.token_contract.address == BLOXBERG_POX10_POX
+    assert runner.contract.get_protocol_address() == runner.contract.get_token_address() == BLOXBERG_POX10_POX
+    assert runner.escrow_needs_allowance() is False
+    assert runner.contract.cancel_do_request(3) == TX
+    [raw] = chain.sent
+    assert Web3.to_checksum_address(rlp.decode(raw)[3]) == BLOXBERG_POX10_POX
 
 
 @pytest.mark.parametrize("network, pynithy, nodenithy", [
@@ -155,6 +179,7 @@ def test_set_network_moves_a_runner_to_a_pox_1_0_testnet():
 def test_a_task_runs_on_the_networks_trustedzone_or_the_one_it_names(network, pynithy, nodenithy):
     runner = EthernityCloudRunner(*network)
     assert runner._resolve_trustedzone(None) == pynithy
+    assert runner._resolve_trustedzone(pynithy) == pynithy
     assert runner._resolve_trustedzone(nodenithy) == nodenithy
 
 
@@ -163,6 +188,94 @@ def test_a_pox_1_0_testnet_has_no_unsafe_network(network):
     runner = EthernityCloudRunner(*network)
     with pytest.raises(ValueError, match=f"{network[0]} {network[1]} has no -unsafe network"):
         runner._resolve_trustedzone("etny-pynithy-testnet-unsafe")
+
+
+# ---- the trustedzones of a PoX 1.0 network run there and nowhere else ----
+
+def _entries():
+    """(network name, type name) of every entry of ECNetwork."""
+    return [(network_name, type_name)
+            for network_name, network in vars(ECNetwork).items() if not network_name.startswith("_")
+            for type_name in vars(network) if not type_name.startswith("_")]
+
+
+def _entry_of(network):
+    return getattr(getattr(ECNetwork, network[0]), network[1])
+
+
+def test_the_pox_1_0_networks_are_the_entries_that_name_their_trustedzones():
+    named = {network: _entry_of(network).TRUSTEDZONES
+             for network in _entries() if hasattr(_entry_of(network), "TRUSTEDZONES")}
+    assert named == {BLOXBERG_POX10: BLOXBERG_POX10_ZONES, AMOY_POX10: AMOY_POX10_ZONES}
+    for zone in BLOXBERG_POX10_ZONES:
+        assert trustedzone_network(zone) == BLOXBERG_POX10
+    for zone in AMOY_POX10_ZONES:
+        assert trustedzone_network(zone) == AMOY_POX10
+    for zone in ("etny-pynithy", "etny-pynithy-testnet", "ecld-pynithy-amoy", "etny-pynithy-testnet-pox10-unsafe"):
+        assert trustedzone_network(zone) is None
+
+
+@pytest.mark.parametrize("zone, home", [(zone, BLOXBERG_POX10) for zone in BLOXBERG_POX10_ZONES]
+                         + [(zone, AMOY_POX10) for zone in AMOY_POX10_ZONES])
+def test_a_pox_1_0_trustedzone_is_refused_on_every_other_network(zone, home):
+    others = [network for network in _entries() if network != home]
+    assert len(others) == 12
+    for network in others:
+        runner = EthernityCloudRunner(*network)
+        with pytest.raises(ValueError) as refusal:
+            runner._resolve_trustedzone(zone)
+        assert str(refusal.value) == (
+            f"{zone} is a trustedzone of the {home[0]} {home[1]} network and runs on no other: run it there, "
+            f"not on {network[0]} {network[1]}"), network
+
+
+@pytest.mark.parametrize("network, zones, zone", [
+    (BLOXBERG_POX10, BLOXBERG_POX10_ZONES, "etny-pynithy"),
+    (BLOXBERG_POX10, BLOXBERG_POX10_ZONES, "etny-pynithy-testnet"),
+    (BLOXBERG_POX10, BLOXBERG_POX10_ZONES, "etny-nodenithy-testnet"),
+    (BLOXBERG_POX10, BLOXBERG_POX10_ZONES, "my-own-trustedzone"),
+    (AMOY_POX10, AMOY_POX10_ZONES, "ecld-pynithy"),
+    (AMOY_POX10, AMOY_POX10_ZONES, "ecld-pynithy-amoy"),
+    (AMOY_POX10, AMOY_POX10_ZONES, "ecld-nodenithy-amoy"),
+])
+def test_a_pox_1_0_network_runs_no_other_trustedzone(network, zones, zone):
+    runner = EthernityCloudRunner(*network)
+    with pytest.raises(ValueError) as refusal:
+        runner._resolve_trustedzone(zone)
+    assert str(refusal.value) == (
+        f"{network[0]} {network[1]} runs only its trustedzones ({zones[0]}, {zones[1]}), and {zone} is not one "
+        "of them")
+
+
+def test_the_readme_gives_the_texts_of_the_two_trustedzone_refusals():
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    for network, zone in ((("POLYGON", "AMOY"), "ecld-pynithy-amoy-pox10"), (AMOY_POX10, "ecld-pynithy-amoy")):
+        with pytest.raises(ValueError) as refusal:
+            EthernityCloudRunner(*network)._resolve_trustedzone(zone)
+        assert str(refusal.value) in readme, zone
+
+
+def test_the_other_pox_1_0_networks_trustedzone_is_refused_by_its_own_network():
+    with pytest.raises(ValueError, match="is a trustedzone of the POLYGON AMOY_POX10 network and runs on no other"):
+        EthernityCloudRunner(*BLOXBERG_POX10)._resolve_trustedzone("ecld-pynithy-amoy-pox10")
+
+
+@pytest.mark.parametrize("submit", ["run", "run_session"])
+@pytest.mark.parametrize("network, zone, message", [
+    (("POLYGON", "AMOY"), "ecld-pynithy-amoy-pox10", "is a trustedzone of the POLYGON AMOY_POX10 network"),
+    (("BLOXBERG", "MAINNET"), "etny-nodenithy-testnet-pox10", "is a trustedzone of the BLOXBERG TESTNET_POX10 network"),
+    (AMOY_POX10, "ecld-pynithy-amoy", "POLYGON AMOY_POX10 runs only its trustedzones"),
+    (BLOXBERG_POX10, "etny-pynithy", "BLOXBERG TESTNET_POX10 runs only its trustedzones"),
+])
+def test_a_trustedzone_of_the_wrong_generation_is_refused_before_any_read_or_transaction(monkeypatch, submit, network,
+                                                                                        zone, message):
+    chain = _Chain(_entry_of(network).CHAIN_ID, GWEI)
+    runner = _connect(monkeypatch, EthernityCloudRunner(*network), chain)
+    with pytest.raises(ValueError, match=message):
+        getattr(runner, submit)(RESOURCES, "my-dapp-securelock", "v3", "code", trustedzone_enclave=zone)
+    assert chain.requests == [] and chain.sent == []
+    assert not runner.is_running()
+    assert runner.task_thread is None
 
 
 # ---- the storage ----
@@ -364,6 +477,65 @@ def test_an_unfunded_wallet_of_the_amoy_copy_draws_the_faucet_then_approves_its_
 def test_a_funded_wallet_of_the_amoy_copy_draws_no_faucet(monkeypatch):
     runner = _init_step(_stubbed_runner(monkeypatch, AMOY_POX10, balance=TERMED_ESCROW))
     assert runner.calls == [("allowance", WALLET, AMOY_POX10_POX), ("approve", TERMED_ESCROW), ("wait", TX)]
+
+
+# Three instances for an hour at 50 tokens: an escrow of 150 tokens, above the
+# 100 tokens below which the tECLD faucet gives.
+LARGE = {"taskPrice": 50, "validators": 3, "duration": 1}
+LARGE_ESCROW = 150
+
+
+def _faucet_does_not_give(balance, missing):
+    """The refusal of a POLYGON AMOY_POX10 request of LARGE from WALLET, which holds `balance` tECLD."""
+    return (f"Insufficient wallet balance. Required: {LARGE_ESCROW}, Available: {balance}. The token tECLD "
+            f"({AMOY_TECLD}) of POLYGON AMOY_POX10 has a faucet that gives to a wallet holding less than 100 "
+            f"tECLD: the wallet {WALLET} needs a transfer of {missing} tECLD or more before the request.")
+
+
+@pytest.mark.parametrize("balance", [0, 99, Web3.from_wei(99_900000000000000000, "ether")],
+                         ids=["empty", "99", "99.9"])
+def test_a_wallet_of_the_amoy_copy_below_100_tokens_draws_the_faucet(monkeypatch, balance):
+    runner = _init_step(_stubbed_runner(monkeypatch, AMOY_POX10, balance=balance, resources=LARGE))
+    assert runner.calls == [("faucet",), ("allowance", WALLET, AMOY_POX10_POX),
+                            ("approve", LARGE_ESCROW), ("wait", TX)]
+
+
+@pytest.mark.parametrize("balance, missing", [(100, 50), (120, 30), (149, 1)])
+def test_a_wallet_of_the_amoy_copy_from_100_tokens_below_the_escrow_is_refused_without_a_faucet_draw(
+        monkeypatch, balance, missing):
+    runner = _stubbed_runner(monkeypatch, AMOY_POX10, balance=balance, resources=LARGE)
+    runner.event_queue.put(ECEvent.INIT)
+    with pytest.raises(ValueError) as refusal:
+        runner._run_attempt("code", "", LARGE)
+    assert str(refusal.value) == _faucet_does_not_give(balance, missing)
+    # No faucet draw, no allowance read and no approval: nothing was sent.
+    assert runner.calls == []
+    assert runner.processed_events == []
+
+
+def test_that_refusal_names_the_token_the_rule_and_the_amount():
+    assert _faucet_does_not_give(120, 30) == (
+        "Insufficient wallet balance. Required: 150, Available: 120. The token tECLD "
+        "(0x9927809B61122B2af3f3b3A3303875e0687b8eE3) of POLYGON AMOY_POX10 has a faucet that gives to a wallet "
+        "holding less than 100 tECLD: the wallet 0x1111111111111111111111111111111111111111 needs a transfer of "
+        "30 tECLD or more before the request.")
+
+
+def test_a_session_of_such_a_wallet_of_the_amoy_copy_raises_the_refusal(monkeypatch):
+    runner = _stubbed_runner(monkeypatch, AMOY_POX10, balance=120, resources=LARGE)
+    with pytest.raises(ValueError) as refusal:
+        _session_submission(monkeypatch, runner)
+    assert str(refusal.value) == _faucet_does_not_give(120, 30)
+    assert runner.calls == []
+    assert runner.is_running() is False
+
+
+def test_the_amoy_pox_2_0_network_draws_the_faucet_whenever_the_wallet_is_below_the_escrow(monkeypatch):
+    """POLYGON AMOY holds no TOKEN_FAUCET_BELOW: a wallet of 120 tokens below an escrow of 150 draws."""
+    assert not hasattr(ECNetwork.POLYGON.AMOY, "TOKEN_FAUCET_BELOW")
+    runner = _init_step(_stubbed_runner(monkeypatch, ("POLYGON", "AMOY"), balance=120, resources=LARGE))
+    assert runner.calls == [("faucet",), ("allowance", WALLET, ECNetwork.POLYGON.AMOY.PROTOCOL_ADDRESS),
+                            ("approve", LARGE_ESCROW), ("wait", TX)]
 
 
 def test_an_allowance_of_the_amoy_copy_at_the_escrow_is_left_as_it_is(monkeypatch):

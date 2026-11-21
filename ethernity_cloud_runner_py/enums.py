@@ -187,6 +187,9 @@ class ECNetwork:
             # (EthernityCloudRunner._check_balance). The image registry is a
             # V1 ECImageRegistry. The trustedzones are signed --production and
             # take their sessions from Scontain's CAS, as MAINNET's do.
+            # TRUSTEDZONES names them, the pynithy and the nodenithy one: the
+            # runner runs no other trustedzone on this network and runs them
+            # on no other (EthernityCloudRunner._resolve_trustedzone).
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0x7dBC1b591cc3b7136D863bc7430C6Db50E929665'
             PROTOCOL_ADDRESS='0x69A7bEB5Da2d3dA711d52E491D71e51296b08745'
             TOKEN_ADDRESS='0x69A7bEB5Da2d3dA711d52E491D71e51296b08745'
@@ -208,6 +211,7 @@ class ECNetwork:
             TASK_EXECUTION_PRICE_DEFAULT=1
             INTEGRATION_TEST_IMAGE='etny-pynithy-testnet-pox10'
             TRUSTEDZONE_IMAGE='etny-pynithy-testnet-pox10'
+            TRUSTEDZONES=('etny-pynithy-testnet-pox10', 'etny-nodenithy-testnet-pox10')
             REWARD_TYPE=1
             NETWORK_FEE=5
             ENCLAVE_FEE=10
@@ -286,17 +290,24 @@ class ECNetwork:
             # Polygon mainnet's PoX 1.0 contracts on Amoy (80002), deployed
             # 2026-11-21 from block 53417996, on the storage 0x20B9fDBD....
             # The token is AMOY's test ECLD, whose faucet() gives 1000 tECLD
-            # to a wallet holding less than 100; the PoX is apart from it, so
-            # the wallet approves the PoX for a request's escrow, as on
-            # MAINNET. The image registry is a V1 ECImageRegistry. The
-            # trustedzones are signed --production and take their sessions
-            # from Scontain's CAS, as MAINNET's do. The RPC, the chain id and
-            # the fee values are AMOY's.
+            # to a wallet holding less than 100: TOKEN_FAUCET_BELOW is that
+            # balance, in tokens, and a wallet below a request's escrow draws
+            # the faucet only while it holds less
+            # (EthernityCloudRunner._check_balance). The PoX is apart from
+            # the token, so the wallet approves the PoX for a request's
+            # escrow, as on MAINNET. The image registry is a V1
+            # ECImageRegistry. The trustedzones are signed --production and
+            # take their sessions from Scontain's CAS, as MAINNET's do.
+            # TRUSTEDZONES names them, the pynithy and the nodenithy one: the
+            # runner runs no other trustedzone on this network and runs them
+            # on no other (EthernityCloudRunner._resolve_trustedzone). The
+            # RPC, the chain id and the fee values are AMOY's.
             IMAGE_REGISTRY_CONTRACT_ADDRESS='0xa2EE2a9118d0011AF05a6196c862D37d8c29F8eC'
             PROTOCOL_ADDRESS='0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02'
             TOKEN_ADDRESS='0x9927809B61122B2af3f3b3A3303875e0687b8eE3'
             HEARTBEAT_CONTRACT_ADDRESS='0x937F74419E31c1200e86B6D2439D9f12b3Fa12c9'
             TOKEN_NAME='tECLD'
+            TOKEN_FAUCET_BELOW=100
             RPC_URL='https://polygon-amoy-bor-rpc.publicnode.com'
             RPC_DELAY=200
             CHAIN_ID=80002
@@ -315,6 +326,7 @@ class ECNetwork:
             TASK_EXECUTION_PRICE_DEFAULT=1
             INTEGRATION_TEST_IMAGE='ecld-pynithy-amoy-pox10'
             TRUSTEDZONE_IMAGE='ecld-pynithy-amoy-pox10'
+            TRUSTEDZONES=('ecld-pynithy-amoy-pox10', 'ecld-nodenithy-amoy-pox10')
             REWARD_TYPE=1
             NETWORK_FEE=5
             ENCLAVE_FEE=10
@@ -426,6 +438,20 @@ class ECNetwork:
             # network.
             INTEGRATION_TEST_IMAGE='ecld-pynithy-litvm-testnet-unsafe'
             TRUSTEDZONE_IMAGE='ecld-pynithy-litvm-testnet-unsafe'
+
+
+def trustedzone_network(trustedzone: str):
+    """(network name, network type) of the ECNetwork entry whose TRUSTEDZONES
+    names `trustedzone`, the one network that trustedzone runs on; None for a
+    trustedzone no entry names in that field."""
+    for network_name, network in vars(ECNetwork).items():
+        if network_name.startswith("_"):
+            continue
+        for type_name, entry in vars(network).items():
+            if not type_name.startswith("_") and trustedzone in getattr(entry, "TRUSTEDZONES", ()):
+                return network_name, type_name
+    return None
+
 
 ZERO_CHECKSUM = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 

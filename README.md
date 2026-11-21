@@ -127,9 +127,9 @@ Two testnet networks run the PoX 1.0 contracts of the mainnets, beside the PoX 2
 | PoX | `0x69A7bEB5Da2d3dA711d52E491D71e51296b08745` | `0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02` |
 | Token | the PoX itself: tE10 ("PoX10 Test ETNY") | tECLD `0x9927809B61122B2af3f3b3A3303875e0687b8eE3`, the token of `("POLYGON", "AMOY")` |
 | Image registry | `0x7dBC1b591cc3b7136D863bc7430C6Db50E929665` | `0xa2EE2a9118d0011AF05a6196c862D37d8c29F8eC` |
-| Trustedzone | `etny-pynithy-testnet-pox10`; a nodenithy dApp passes `etny-nodenithy-testnet-pox10` | `ecld-pynithy-amoy-pox10`; a nodenithy dApp passes `ecld-nodenithy-amoy-pox10` |
+| Trustedzones | `etny-pynithy-testnet-pox10`; a nodenithy dApp passes `etny-nodenithy-testnet-pox10` | `ecld-pynithy-amoy-pox10`; a nodenithy dApp passes `ecld-nodenithy-amoy-pox10` |
 | Token approval | none: the PoX holds the balances | the PoX is approved for the request's escrow |
-| A wallet below the escrow | the task fails at `INIT`, before any transaction | draws the token's `faucet()`, which gives 1000 tECLD to a wallet holding less than 100 |
+| A wallet below the escrow | the task fails at `INIT`, before any transaction | while it holds less than 100 tECLD it draws the token's `faucet()`, which gives 1000 tECLD to such a wallet; from 100 tECLD the task fails at `INIT`, before any transaction |
 | Fees | the fixed gas price of the bloxberg networks | EIP-1559, default ceiling 500 gwei, which admits a base fee up to 425.45 gwei |
 | Enclave State Registry | `0x0Ea1728EAE108FD3B9340ae91451348E2Cc6b4E4`, the bloxberg testnet's | none |
 
@@ -139,9 +139,21 @@ The tE10 token has no faucet and no mint: it reaches a wallet by a transfer from
 Insufficient wallet balance. Required: 30, Available: 29. The token tE10 (0x69A7bEB5Da2d3dA711d52E491D71e51296b08745) of BLOXBERG TESTNET_POX10 has no faucet: the wallet 0x1111111111111111111111111111111111111111 needs a transfer of 1 tE10 or more before the request.
 ```
 
-`run_session()` raises the same message as a `ValueError`.
+`run_session()` raises the same message as a `ValueError`. On `("POLYGON", "AMOY_POX10")` a wallet that holds 100 tECLD or more and less than the escrow is refused the same way, with `has a faucet that gives to a wallet holding less than 100 tECLD` in place of `has no faucet`.
+
+Each of the two networks runs its two trustedzones and no other, and they run on no other network: `run()` and `run_session()` raise `ValueError` before any read or transaction for a trustedzone of the table above on another network (`ecld-pynithy-amoy-pox10 is a trustedzone of the POLYGON AMOY_POX10 network and runs on no other: run it there, not on POLYGON AMOY`) and for any other trustedzone on one of the two (`POLYGON AMOY_POX10 runs only its trustedzones (ecld-pynithy-amoy-pox10, ecld-nodenithy-amoy-pox10), and ecld-pynithy-amoy is not one of them`).
 
 The trustedzones of both networks are signed for production and take their sessions from Scontain's CAS, as the mainnets' do; neither network has an `-unsafe` network. Neither is among `ipfs.INTAKE_NETWORKS`: while the storage is the bootnode's payload intake, which is the default, `run()`, `run_session()` and `attach_session(order_id, securelock_enclave)` refuse before any transaction, so call `set_storage_ipfs(url, token)` first (see "Storage and the result read").
+
+### Changing the network
+
+`runner.set_network(name, type)` moves a runner to another network of the table, before or after `connect()`. On a connected runner it builds the protocol and token contracts again for the network set, as `connect()` builds them, so every later read and transaction goes to that network's contracts at its RPC, signed for its chain; the image registry is read from the network set at the next run. The key, a storage set with `set_storage_ipfs`, the ceiling set with `set_max_fee_per_gas`, the resources and the last run's result stay; the order with its request's challenge and block, the node and the enclave details of the network left are dropped, and an intake storage is rebuilt under the new network's key.
+
+A call that raises leaves the runner on its network, unchanged:
+
+- `ValueError` for a name or a type the table does not hold;
+- `RuntimeError` while a run or a session of the runner is in progress (`is_running()`): after a run it is taken once the run has ended; a runner that opened or attached a session stays in progress until `runner.close()`, after which it takes the key and `connect()` again. Another `EthernityCloudRunner` serves the other network meanwhile;
+- `ConnectionError` when the provider of the network set does not answer a connected runner.
 
 ### Closing a session
 

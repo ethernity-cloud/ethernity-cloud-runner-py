@@ -69,6 +69,7 @@ BLOXBERG_TESTNET_POX10 = {
     "TOKEN_FAUCET": False,
     "INTEGRATION_TEST_IMAGE": "etny-pynithy-testnet-pox10",
     "TRUSTEDZONE_IMAGE": "etny-pynithy-testnet-pox10",
+    "TRUSTEDZONES": ("etny-pynithy-testnet-pox10", "etny-nodenithy-testnet-pox10"),
 }
 POLYGON_MAINNET = {
     **EVERY_ENTRY,
@@ -101,8 +102,10 @@ POLYGON_AMOY_POX10 = {
     "TOKEN_ADDRESS": "0x9927809B61122B2af3f3b3A3303875e0687b8eE3",
     "HEARTBEAT_CONTRACT_ADDRESS": "0x937F74419E31c1200e86B6D2439D9f12b3Fa12c9",
     "TOKEN_NAME": "tECLD",
+    "TOKEN_FAUCET_BELOW": 100,
     "INTEGRATION_TEST_IMAGE": "ecld-pynithy-amoy-pox10",
     "TRUSTEDZONE_IMAGE": "ecld-pynithy-amoy-pox10",
+    "TRUSTEDZONES": ("ecld-pynithy-amoy-pox10", "ecld-nodenithy-amoy-pox10"),
 }
 IOTEX_TESTNET = {
     **EVERY_ENTRY,
@@ -244,11 +247,17 @@ def test_every_field_of_the_entry(network_name, network_type):
     assert _fields(entry) == TABLE[(network_name, network_type)]
 
 
-def test_the_bloxberg_testnet_pox_1_0_entry_is_the_one_that_holds_token_faucet():
-    holding = [(network_name, kind) for network_name, kind in TABLE
-               if hasattr(getattr(getattr(ECNetwork, network_name), kind), "TOKEN_FAUCET")]
-    assert holding == [("BLOXBERG", "TESTNET_POX10")]
+def _holding(field):
+    """The entries that hold `field`."""
+    return [(network_name, kind) for network_name, kind in TABLE
+            if hasattr(getattr(getattr(ECNetwork, network_name), kind), field)]
+
+
+def test_the_fields_the_pox_1_0_testnets_alone_hold():
+    assert _holding("TOKEN_FAUCET") == [("BLOXBERG", "TESTNET_POX10")]
     assert ECNetwork.BLOXBERG.TESTNET_POX10.TOKEN_FAUCET is False
+    assert _holding("TOKEN_FAUCET_BELOW") == [("POLYGON", "AMOY_POX10")]
+    assert _holding("TRUSTEDZONES") == [("BLOXBERG", "TESTNET_POX10"), ("POLYGON", "AMOY_POX10")]
 
 
 def test_the_esr_address_table():

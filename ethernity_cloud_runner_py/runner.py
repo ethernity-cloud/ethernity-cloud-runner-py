@@ -34,6 +34,7 @@ from .enums import (
     UNSAFE_NETWORK_SUFFIX,
     UNSAFE_TRUSTEDZONE_SUFFIX,
     task_status_name,
+    trustedzone_network,
 )
 import hashlib
 
@@ -223,26 +224,91 @@ class EthernityCloudRunner:
         # hands to the protocol contract; None where it gave none.
         self.max_fee_per_gas: Optional[int] = None
     def set_network(self, network_name: str, network_type: str) -> None:
-        """Set the network configuration."""
-        self.network_name = network_name.upper()
-        self.network_type = network_type.upper()
-        network_class = getattr(ECNetwork, self.network_name, None)
+        """Moves the runner to another network, whole. The names, the table
+        entry, the default trustedzone and the block time become the
+        network's. On a connected runner the protocol and token contracts are
+        built again for the network, as connect() builds them, so that every
+        later read and transaction goes to the network's contracts at its
+        RPC. The image registry contract, the order with its request's
+        challenge and block, the node, the enclave details and the ESR
+        wallets learned on the network left are dropped, and an intake client
+        is rebuilt under the network's key. The key, a storage of the
+        runner's own, the fee ceiling set_max_fee_per_gas gave, the
+        resources and the last run's outcome stay. A call that raises
+        changes nothing: ValueError for a name the table does not hold,
+        RuntimeError while a run or a session is in progress (is_running),
+        ConnectionError when the network's provider does not answer a
+        connected runner."""
+        name, kind = network_name.upper(), network_type.upper()
+        network_class = getattr(ECNetwork, name, None)
         if network_class is None:
             raise ValueError(f"Invalid network name: {network_name}")
-        self.network_config = getattr(network_class, self.network_type, None)
-        if self.network_config is None:
+        network_config = getattr(network_class, kind, None)
+        if network_config is None:
             raise ValueError(f"Invalid network type: {network_type} for network {network_name}")
-        self.trustedZoneImage = self.network_config.TRUSTEDZONE_IMAGE
-        # An intake client posts under its network key, so one built for the
-        # previous network is rebuilt for this one.
-        if self.ipfs_client is not None and self.ipfs_client.intake_url:
-            self.set_public_intake(self.ipfs_client.intake_url)
+        in_progress = (
+            f"A run or a session of this runner is in progress on {self.network_name} {self.network_type}: "
+            "set_network() is refused until the run has ended or, after a session, the runner is closed "
+            f"with close(). Use another EthernityCloudRunner for {name} {kind}.")
+        # run() and run_session() submit under this lock: a submission that
+        # is starting holds it before is_running() says so.
+        if not hasattr(self, "_run_lock"):
+            self._run_lock = threading.Lock()
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError(in_progress)
+        try:
+            if self.is_running():
+                raise RuntimeError(in_progress)
+            contract = None
+            if self.contract is not None:
+                contract = self._protocol_contract(name, kind)
+                if not contract.get_provider().is_connected():
+                    raise ConnectionError("Failed to connect to Web3 provider.")
+            # An intake client posts under its network key, so one built for
+            # the network left is built again for this one.
+            ipfs_client = self.ipfs_client
+            if ipfs_client is not None and ipfs_client.intake_url:
+                ipfs_client = self._intake_client(ipfs_client.intake_url, f"{name.lower()}_{kind.lower()}")
+            self.network_name, self.network_type, self.network_config = name, kind, network_config
+            self.trustedZoneImage = network_config.TRUSTEDZONE_IMAGE
+            self.block_time = network_config.BLOCK_TIME
+            self.ipfs_client = ipfs_client
+            if contract is not None:
+                self._hold_contract(contract)
+            self.image_registry_contract = None
+            self.reset()
+            self.challenge_hash = b""
+            self.request_start_block = None
+            self.current_order_index = 0
+            self.node_address = ""
+            self.enclave_image_ipfs_hash = ""
+            self.enclave_public_key = ""
+            self.enclave_docker_compose_ipfs_hash = ""
+            self._esr_wallet_memo = {}
+        finally:
+            self._run_lock.release()
     def set_private_key(self, private_key: str) -> None:
         """Set the private key and derive signer."""
         if not private_key.startswith("0x") or len(private_key) != 66:
             raise ValueError("Invalid private key format. Must be 64 hex chars prefixed with 0x.")
         self.private_key = private_key
         self.signer = Account.from_key(private_key)
+    def _protocol_contract(self, network_name: str, network_type: str) -> protocolContract:
+        """The protocol contract of a network for the runner's key and the
+        fee ceiling set_max_fee_per_gas gave: what connect() builds for the
+        runner's network and set_network() for the network it moves a
+        connected runner to."""
+        return protocolContract(
+            self.signer, network_name, network_type, request_kwargs={'timeout': 10},
+            max_fee_per_gas=self.max_fee_per_gas,
+        )
+    def _hold_contract(self, contract: protocolContract) -> None:
+        """Makes `contract` the one every read and transaction of the runner
+        goes through, with its protocol and token contracts."""
+        self.contract = contract
+        self.protocol_abi = polygonAbi.get("abi")
+        self.token_contract = contract.token_contract
+        self.protocol_contract = contract.protocol_contract
     def connect(self) -> None:
         """Connect to the protocol contract."""
         if self.local_mode:
@@ -250,13 +316,7 @@ class EthernityCloudRunner:
             return
         if self.signer is None:
             raise RuntimeError("Private key must be set before connecting.")
-        self.contract = protocolContract(
-            self.signer, self.network_name, self.network_type, request_kwargs={'timeout': 10},
-            max_fee_per_gas=self.max_fee_per_gas,
-        )
-        self.protocol_abi = polygonAbi.get("abi")
-        self.token_contract = self.contract.token_contract
-        self.protocol_contract = self.contract.protocol_contract
+        self._hold_contract(self._protocol_contract(self.network_name, self.network_type))
         provider = self.contract.get_provider()
         if not provider.is_connected():
             raise ConnectionError("Failed to connect to Web3 provider.")
@@ -350,37 +410,54 @@ class EthernityCloudRunner:
     def _check_balance(self) -> None:
         """The wallet's token balance against the request's escrow
         (protocolContract.request_escrow): a wallet below it draws the token's
-        faucet where the token has one (token_has_faucet) and raises
-        ValueError elsewhere. On a MAINNET type the message states the escrow
-        and the balance; on a testnet whose token has no faucet it also names
-        the token, the wallet and the amount a transfer has to bring, and no
-        transaction is sent. The balance is read with _read_before_request;
-        the RuntimeError of a read no try answered
+        faucet where the token has one (token_has_faucet) and, on an entry
+        that holds TOKEN_FAUCET_BELOW (POLYGON AMOY_POX10), while the wallet
+        holds less than that many tokens, the balance below which that faucet
+        gives; elsewhere it raises ValueError and no transaction is sent. On
+        a MAINNET type the message states the escrow and the balance; on a
+        testnet it also names the token, why its faucet does not serve, the
+        wallet and the amount a transfer has to bring. The balance is read
+        with _read_before_request; the RuntimeError of a read no try answered
         (protocolContract.get_balance) is raised as it is, and no faucet is
         drawn on it."""
         self.logger.info("Checking wallet balance...")
         balance = int(self._read_before_request(self.contract.get_balance))
         escrow = protocolContract.request_escrow(self.resources)
-        if balance < escrow:
-            if self.token_has_faucet():
-                self.logger.info("Insufficient wallet balance, using testnet faucet...")
-                self.contract.faucet()
-            elif self.network_type == "MAINNET":
-                raise ValueError(f"Insufficient wallet balance. Required: {escrow}, Available: {balance}")
-            else:
-                token = self.network_config.TOKEN_NAME
-                raise ValueError(
-                    f"Insufficient wallet balance. Required: {escrow}, Available: {balance}. The token {token} "
-                    f"({self.network_config.TOKEN_ADDRESS}) of {self.network_name} {self.network_type} has no "
-                    f"faucet: the wallet {self.signer.address} needs a transfer of {escrow - balance} {token} "
-                    "or more before the request.")
+        if balance >= escrow:
+            return
+        if self.network_type == "MAINNET":
+            raise ValueError(f"Insufficient wallet balance. Required: {escrow}, Available: {balance}")
+        token = self.network_config.TOKEN_NAME
+        gives_below = getattr(self.network_config, "TOKEN_FAUCET_BELOW", None)
+        if not self.token_has_faucet():
+            faucet = "has no faucet"
+        elif gives_below is not None and balance >= gives_below:
+            faucet = f"has a faucet that gives to a wallet holding less than {gives_below} {token}"
+        else:
+            self.logger.info("Insufficient wallet balance, using testnet faucet...")
+            self.contract.faucet()
+            return
+        raise ValueError(
+            f"Insufficient wallet balance. Required: {escrow}, Available: {balance}. The token {token} "
+            f"({self.network_config.TOKEN_ADDRESS}) of {self.network_name} {self.network_type} {faucet}: "
+            f"the wallet {self.signer.address} needs a transfer of {escrow - balance} {token} or more before "
+            "the request.")
     def _resolve_trustedzone(self, trustedzone_enclave: Optional[str]) -> str:
         """The trustedzone a task runs on: `trustedzone_enclave` when given,
-        else the network's. An -unsafe trustedzone runs without a CAS, and
-        runs only on an -unsafe network, which runs no other."""
+        else the network's. A trustedzone an entry names in its TRUSTEDZONES
+        (those of the testnet PoX 1.0 networks) runs on that network alone,
+        and such a network runs no other. An -unsafe trustedzone runs without
+        a CAS, and runs only on an -unsafe network, which runs no other. A
+        trustedzone the network does not run raises ValueError; run() and
+        run_session() ask before any read or transaction."""
         if self.local_mode:
             return "local"
         trustedzone = trustedzone_enclave or self.network_config.TRUSTEDZONE_IMAGE
+        home = trustedzone_network(trustedzone)
+        if home is not None and home != (self.network_name, self.network_type):
+            raise ValueError(
+                f"{trustedzone} is a trustedzone of the {home[0]} {home[1]} network and runs on no other: "
+                f"run it there, not on {self.network_name} {self.network_type}")
         unsafe_zone = trustedzone.endswith(UNSAFE_TRUSTEDZONE_SUFFIX)
         if unsafe_zone and not self.is_unsafe():
             twin = f"{self.network_type}{UNSAFE_NETWORK_SUFFIX}"
@@ -396,6 +473,11 @@ class EthernityCloudRunner:
                 f"{self.network_name} {self.network_type} runs only -unsafe trustedzones, "
                 f"and {trustedzone} is provisioned by a CAS: run it on the "
                 f"{self.network_name} {self.network_type[:-len(UNSAFE_NETWORK_SUFFIX)]} network")
+        own = getattr(self.network_config, "TRUSTEDZONES", None)
+        if own is not None and trustedzone not in own:
+            raise ValueError(
+                f"{self.network_name} {self.network_type} runs only its trustedzones ({', '.join(own)}), "
+                f"and {trustedzone} is not one of them")
         return trustedzone
     def get_enclave_details(self) -> bool:
         """Fetch enclave details from the registry."""
@@ -1178,8 +1260,12 @@ class EthernityCloudRunner:
         only: a run or session on another network is refused by
         _resolve_storage before any transaction; an intake of your own, named
         by `base_url`, serves what its agent runs."""
-        self.ipfs_client = IPFSClient(f"{base_url.rstrip('/')}/api/v0", "",
-                                      intake_url=base_url, network=self._intake_network())
+        self.ipfs_client = self._intake_client(base_url, self._intake_network())
+    @staticmethod
+    def _intake_client(base_url: str, network: str) -> IPFSClient:
+        """A client that delivers through the payload intake at `base_url`
+        under the network key `network` and reads through its API."""
+        return IPFSClient(f"{base_url.rstrip('/')}/api/v0", "", intake_url=base_url, network=network)
     def _intake_network(self) -> str:
         """The network's key in the intake's route, the node agent's name for
         it: <network>_<type>, lower case (bloxberg_testnet)."""
