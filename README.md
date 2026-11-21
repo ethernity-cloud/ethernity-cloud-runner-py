@@ -206,7 +206,7 @@ The run this runner was closed during is still at work in its thread, which was 
 The runner was closed with close(): this handle of a session on POLYGON AMOY sends and reads nothing more. The session's order stays as it is on chain; attach_session(order_id) on a connected runner of that network and wallet gives a new handle.
 ```
 
-- The protocol contract the runner held sends nothing more: a transaction asked of it raises `errors.RunEndedError`.
+- The protocol contract the runner held sends nothing more: a transaction asked of it raises `errors.RunEndedError`. So does one asked of the contract a run began with or a handle was made with, which is another object than the runner's when `connect()` was called again since.
 
 ### Closing a session
 

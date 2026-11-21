@@ -2250,23 +2250,30 @@ class EthernityCloudRunner:
         """Close resources and stop the runner. The run in progress (a run()
         whose thread is at work, a run_session() or attach_session() call
         under way) ends: its thread sends no transaction after this
-        (_sender), and the protocol contract is retired
-        (protocolContract.retire), so nothing is sent through it by anything
-        that still holds it. Every session handle of the runner is detached:
-        it sends and reads nothing more and raises session.SessionError
-        (EthernityCloudSession._detach). The thread of a run is waited for
-        two block times; one still at work then is waited for again, for up
-        to RUN_END_WAIT_SECONDS, by the next connect(), run(), run_session(),
-        attach_session(), set_network() or set_private_key(), which raises
-        RuntimeError while the thread has not ended (_await_closed_run)."""
+        (_sender). The protocol contracts that end with the runner are
+        retired (protocolContract.retire), so nothing is sent through them by
+        anything that still holds one: the contract the runner holds, the one
+        the run in progress began with and the one each session handle was
+        made with, which are other objects than the runner's after a
+        connect() made meanwhile. Every session handle of the runner is
+        detached: it sends and reads nothing more and raises
+        session.SessionError (EthernityCloudSession._detach). The thread of a
+        run is waited for two block times; one still at work then is waited
+        for again, for up to RUN_END_WAIT_SECONDS, by the next connect(),
+        run(), run_session(), attach_session(), set_network() or
+        set_private_key(), which raises RuntimeError while the thread has not
+        ended (_await_closed_run)."""
         self.running = False
         with self._handles_lock:
             run, self._run = self._run, None
             sessions, self._sessions = self._sessions, []
             if run is not None:
                 self._closed_run = run
-        if self.contract is not None:
-            self.contract.retire("The runner was closed with close()")
+        ended = [self.contract] + ([run.contract] if run is not None else []) + [
+            session._contract for session in sessions]
+        for contract in ended:
+            if contract is not None:
+                contract.retire("The runner was closed with close()")
         detached = (
             f"The runner was closed with close(): this handle of a session on {self.network_name} "
             f"{self.network_type} sends and reads nothing more. The session's order stays as it is on chain; "

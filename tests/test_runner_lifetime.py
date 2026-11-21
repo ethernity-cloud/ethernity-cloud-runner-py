@@ -628,6 +628,50 @@ def test_the_contract_a_change_leaves_sends_nothing(chain, switch, reason):
     assert len(_sends(chain)) == 1
 
 
+CLOSED_CONTRACT = ("The runner was closed with close(), and the protocol contract it held until then sends nothing "
+                   "after that: the transaction was not sent.")
+
+
+def test_close_retires_the_contract_a_handle_was_made_with_before_a_connect(chain):
+    """A connect() made while a session is open gives the runner another contract object; the handle keeps
+    the one it was made with, and close() ends that one's sends as well."""
+    _in_session(chain)
+    runner = _runner(AMOY)
+    session = _open(runner)
+    made_with = runner.contract
+    runner.connect()
+    assert runner.contract is not made_with and session._contract is made_with
+    runner.close()
+    mark = len(chain.log)
+    del chain.wallets[:]
+    with pytest.raises(RunEndedError) as refusal:
+        made_with.add_metadata_to_request(DO_REQUEST, "etny-si", CLOSE)
+    assert str(refusal.value) == CLOSED_CONTRACT
+    assert chain.log[mark:] == [] and chain.wallets == []
+
+
+def test_close_retires_the_contract_a_run_began_with_before_a_connect(chain):
+    """A connect() made during a run gives the runner another contract object; the run sends through the
+    one it began with, and close() ends that one's sends as well."""
+    runner = _runner(AMOY)
+    thread, hold = _held_run(chain, runner)
+    try:
+        began_with = runner.contract
+        runner.connect()
+        assert runner.contract is not began_with and runner._run.contract is began_with
+        runner.close()
+        del chain.wallets[:]
+        with pytest.raises(RunEndedError) as refusal:
+            began_with.approve_order(ORDER)
+        assert str(refusal.value) == CLOSED_CONTRACT
+        assert chain.wallets == []
+    finally:
+        hold.release()
+        thread.join(10)
+    assert not thread.is_alive()
+    assert _sends(chain) == []
+
+
 def test_a_contract_retired_between_the_signature_and_the_send_does_not_send(chain):
     runner = _runner(AMOY)
     contract = runner.contract
