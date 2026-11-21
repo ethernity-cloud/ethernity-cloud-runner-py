@@ -116,14 +116,18 @@ class _Rpc(BaseProvider):
     """The RPC endpoint of a table entry. A read is answered with ANSWERS' values for the function called, else
     the zero value of each of its outputs, and kept in `log` as ("read", RPC URL, contract, function,
     arguments); a raw transaction is answered with TX and kept as ("send", RPC URL, the chain id it is signed
-    for, contract, function, arguments). An endpoint whose URL is in `down` does not answer is_connected."""
+    for, contract, function, arguments). An endpoint whose URL is in `down` does not answer is_connected.
+    `wallets` keeps, in order, the wallet each request names or is signed by: ("nonce", address) for a
+    transaction count, ("estimate", address) for a gas estimate's sender, ("call", address) for a read made
+    from an address, ("signed", address) for the signer recovered from a raw transaction."""
 
-    def __init__(self, entry, log, down):
+    def __init__(self, entry, log, down, wallets):
         super().__init__()
         self.url = entry.RPC_URL
         self.chain_id = entry.CHAIN_ID
         self.log = log
         self.down = down
+        self.wallets = wallets
 
     def is_connected(self, show_traceback=False):
         return self.url not in self.down
@@ -134,19 +138,24 @@ class _Rpc(BaseProvider):
         if method == "eth_call":
             to, function, arguments = _called(params[0]["to"], params[0].get("data") or params[0]["input"])
             self.log.append(("read", self.url, to, function["name"], arguments))
+            if params[0].get("from"):
+                self.wallets.append(("call", Web3.to_checksum_address(params[0]["from"])))
             kinds = get_abi_output_types(function)
             values = ANSWERS.get(function["name"]) or [_zero(kind) for kind in kinds]
             return self._answer("0x" + encode(kinds, values).hex())
         if method == "eth_getTransactionCount":
+            self.wallets.append(("nonce", Web3.to_checksum_address(params[0])))
             return self._answer(hex(NONCE))
         if method == "eth_getBlockByNumber":
             return self._answer({"number": "0x1", "baseFeePerGas": hex(BASE_FEE)})
         if method == "eth_estimateGas":
+            self.wallets.append(("estimate", Web3.to_checksum_address(params[0]["from"])))
             return self._answer(hex(50_000))
         if method == "eth_sendRawTransaction":
             chain_id, recipient, data = _signed(bytes.fromhex(params[0][2:]))
             to, function, arguments = _called(recipient, data)
             self.log.append(("send", self.url, chain_id, to, function["name"], arguments))
+            self.wallets.append(("signed", Account.recover_transaction(params[0])))
             return self._answer(TX)
         raise AssertionError(f"unexpected request {method}")
 
@@ -158,34 +167,34 @@ class _Rpc(BaseProvider):
 @pytest.fixture
 def chain(monkeypatch, tmp_path):
     """Every protocol contract and image registry the runner module builds sends its requests to a _Rpc of
-    the network it is built for. chain.log lists what the endpoints were sent, in order, and chain.down the
-    RPC URLs that do not answer. The held cache is a directory of the test's own and no fee ceiling is set
-    in the environment."""
-    log, down = [], set()
+    the network it is built for. chain.log lists what the endpoints were sent, in order, chain.wallets the
+    wallet each request named or was signed by, and chain.down the RPC URLs that do not answer. The held
+    cache is a directory of the test's own and no fee ceiling is set in the environment."""
+    log, down, wallets = [], set(), []
 
     class Protocol(protocolContract):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.provider.provider = _Rpc(self.network_config, log, down)
+            self.provider.provider = _Rpc(self.network_config, log, down, wallets)
 
     class Registry(ImageRegistryContract):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.provider.provider = _Rpc(self.network_config, log, down)
+            self.provider.provider = _Rpc(self.network_config, log, down, wallets)
 
     monkeypatch.setattr(runner_module, "protocolContract", Protocol)
     monkeypatch.setattr(runner_module, "ImageRegistryContract", Registry)
     monkeypatch.setenv("ETHERNITY_CLOUD_HELD_DIR", str(tmp_path / "held"))
     monkeypatch.delenv("ECLD_MAX_FEE_PER_GAS", raising=False)
-    return SimpleNamespace(log=log, down=down)
+    return SimpleNamespace(log=log, down=down, wallets=wallets)
 
 
-def _runner(network, connect=True):
-    """A `network` runner with KEY and a Kubo API of its own as storage, connected unless `connect` is false.
-    Its request is add_do_request with fixed metadata through the contract it holds when the request is made;
-    a receipt is a mined one; a node places ORDER on the request; the task's result is RESULT."""
+def _runner(network, connect=True, key=KEY):
+    """A `network` runner with `key` and a Kubo API of its own as storage, connected unless `connect` is
+    false. Its request is add_do_request with fixed metadata through the contract it holds when the request
+    is made; a receipt is a mined one; a node places ORDER on the request; the task's result is RESULT."""
     runner = EthernityCloudRunner(*network)
-    runner.set_private_key(KEY)
+    runner.set_private_key(key)
     runner.set_storage_ipfs("http://kubo.invalid:5001/api/v0", "writer-token")
     if connect:
         runner.connect()
@@ -210,8 +219,8 @@ def _run(runner):
     assert runner.status == ECStatus.SUCCESS
 
 
-def _expected(network):
-    """What a run of RESOURCES from WALLET on `network` reads and sends, in order: every read at the
+def _expected(network, wallet=WALLET):
+    """What a run of RESOURCES from `wallet` on `network` reads and sends, in order: every read at the
     network's token, PoX and image registry, the approval of the PoX on the token where the PoX is apart
     from it, the request and the approval of the order at the PoX, each at the network's RPC and each
     transaction signed for its chain."""
@@ -220,13 +229,13 @@ def _expected(network):
     pox, token, registry = (Web3.to_checksum_address(address) for address in (
         entry.PROTOCOL_ADDRESS, entry.TOKEN_ADDRESS, entry.IMAGE_REGISTRY_CONTRACT_ADDRESS))
     walk = [
-        ("read", url, token, "balanceOf", (WALLET,)),
+        ("read", url, token, "balanceOf", (wallet,)),
         ("read", url, pox, "_getOrdersCount", ()),
         ("read", url, registry, "getLatestTrustedZoneImageCertPublicKey", (entry.TRUSTEDZONE_IMAGE, "v3")),
         ("read", url, registry, "getLatestImageVersionPublicKey", (SECURELOCK, "v3")),
     ]
     if pox != token:
-        walk += [("read", url, token, "allowance", (WALLET, pox)),
+        walk += [("read", url, token, "allowance", (wallet, pox)),
                  ("send", url, chain_id, token, "approve", (pox, ESCROW_WEI))]
     return walk + [
         ("send", url, chain_id, pox, "_addDORequest", REQUEST),
@@ -254,6 +263,7 @@ def test_a_run_after_set_network_reads_and_sends_on_the_network_set(chain, first
     runner.set_network(*second)
     _run(runner)
     assert chain.log == _expected(second)
+    assert {wallet for _, wallet in chain.wallets} == {WALLET}
 
 
 @EVERY_SWITCH

@@ -2,6 +2,7 @@ import os
 import re
 import time
 import threading
+from contextlib import contextmanager
 from queue import Queue
 from typing import Union, List, Optional, Dict, Any, Literal
 from datetime import datetime
@@ -246,22 +247,10 @@ class EthernityCloudRunner:
         network_config = getattr(network_class, kind, None)
         if network_config is None:
             raise ValueError(f"Invalid network type: {network_type} for network {network_name}")
-        in_progress = (
-            f"A run or a session of this runner is in progress on {self.network_name} {self.network_type}: "
-            "set_network() is refused until the run has ended or, after a session, the runner is closed "
-            f"with close(). Use another EthernityCloudRunner for {name} {kind}.")
-        # run() and run_session() submit under this lock: a submission that
-        # is starting holds it before is_running() says so.
-        if not hasattr(self, "_run_lock"):
-            self._run_lock = threading.Lock()
-        if not self._run_lock.acquire(blocking=False):
-            raise RuntimeError(in_progress)
-        try:
-            if self.is_running():
-                raise RuntimeError(in_progress)
+        with self._while_idle("set_network()", f"Use another EthernityCloudRunner for {name} {kind}."):
             contract = None
             if self.contract is not None:
-                contract = self._protocol_contract(name, kind)
+                contract = self._protocol_contract(name, kind, self.signer)
                 if not contract.get_provider().is_connected():
                     raise ConnectionError("Failed to connect to Web3 provider.")
             # An intake client posts under its network key, so one built for
@@ -276,30 +265,76 @@ class EthernityCloudRunner:
             if contract is not None:
                 self._hold_contract(contract)
             self.image_registry_contract = None
-            self.reset()
-            self.challenge_hash = b""
-            self.request_start_block = None
-            self.current_order_index = 0
-            self.node_address = ""
+            self._drop_order()
             self.enclave_image_ipfs_hash = ""
             self.enclave_public_key = ""
             self.enclave_docker_compose_ipfs_hash = ""
             self._esr_wallet_memo = {}
-        finally:
-            self._run_lock.release()
     def set_private_key(self, private_key: str) -> None:
-        """Set the private key and derive signer."""
+        """Gives the runner another wallet, whole. `private_key` is 64 hex
+        digits prefixed with 0x. The key and the signer become the wallet's,
+        and on a connected runner the protocol contract is built again for
+        the runner's network with that signer, as connect() builds it, so
+        that every later transaction is signed by the wallet and every read
+        is made for it. What the wallet left had in hand is dropped: the
+        image registry contract built with its signer, and its order with
+        its request's challenge and block and its node. The network, the
+        storage, the fee ceiling set_max_fee_per_gas gave, the resources, the
+        enclave details, the ESR state cache and the last run's outcome stay.
+        A call that raises changes nothing: ValueError for a string of
+        another form, the error eth_account raises for a key it does not
+        take, RuntimeError while a run or a session is in progress
+        (is_running). No message of the call holds the key."""
         if not private_key.startswith("0x") or len(private_key) != 66:
             raise ValueError("Invalid private key format. Must be 64 hex chars prefixed with 0x.")
-        self.private_key = private_key
-        self.signer = Account.from_key(private_key)
-    def _protocol_contract(self, network_name: str, network_type: str) -> protocolContract:
-        """The protocol contract of a network for the runner's key and the
-        fee ceiling set_max_fee_per_gas gave: what connect() builds for the
-        runner's network and set_network() for the network it moves a
-        connected runner to."""
+        signer = Account.from_key(private_key)
+        with self._while_idle("set_private_key()", "Use another EthernityCloudRunner for another wallet."):
+            contract = None
+            if self.contract is not None:
+                contract = self._protocol_contract(self.network_name, self.network_type, signer)
+            self.private_key = private_key
+            self.signer = signer
+            if contract is not None:
+                self._hold_contract(contract)
+            self.image_registry_contract = None
+            self._drop_order()
+    @contextmanager
+    def _while_idle(self, call: str, instead: str):
+        """The runner's submission lock, held for a change of its network or
+        its wallet. run() and run_session() submit under that lock, so a
+        submission that is starting holds it before is_running() says so.
+        RuntimeError naming `call` and `instead` when the lock is held or a
+        run or a session is in progress."""
+        in_progress = (
+            f"A run or a session of this runner is in progress on {self.network_name} {self.network_type}: "
+            f"{call} is refused until the run has ended or, after a session, the runner is closed with "
+            f"close(). {instead}")
+        if not hasattr(self, "_run_lock"):
+            self._run_lock = threading.Lock()
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError(in_progress)
+        try:
+            if self.is_running():
+                raise RuntimeError(in_progress)
+            yield
+        finally:
+            self._run_lock.release()
+    def _drop_order(self) -> None:
+        """Forgets the order in hand: its ids and hashes (reset), its
+        request's challenge, block and order count, and its node."""
+        self.reset()
+        self.challenge_hash = b""
+        self.request_start_block = None
+        self.current_order_index = 0
+        self.node_address = ""
+    def _protocol_contract(self, network_name: str, network_type: str, signer: Account) -> protocolContract:
+        """The protocol contract of a network for `signer` and the fee
+        ceiling set_max_fee_per_gas gave: what connect() builds for the
+        runner's network and key, set_network() for the network it moves a
+        connected runner to and set_private_key() for the wallet it gives
+        one."""
         return protocolContract(
-            self.signer, network_name, network_type, request_kwargs={'timeout': 10},
+            signer, network_name, network_type, request_kwargs={'timeout': 10},
             max_fee_per_gas=self.max_fee_per_gas,
         )
     def _hold_contract(self, contract: protocolContract) -> None:
@@ -316,7 +351,7 @@ class EthernityCloudRunner:
             return
         if self.signer is None:
             raise RuntimeError("Private key must be set before connecting.")
-        self._hold_contract(self._protocol_contract(self.network_name, self.network_type))
+        self._hold_contract(self._protocol_contract(self.network_name, self.network_type, self.signer))
         provider = self.contract.get_provider()
         if not provider.is_connected():
             raise ConnectionError("Failed to connect to Web3 provider.")

@@ -155,6 +155,15 @@ A call that raises leaves the runner on its network, unchanged:
 - `RuntimeError` while a run or a session of the runner is in progress (`is_running()`): after a run it is taken once the run has ended; a runner that opened or attached a session stays in progress until `runner.close()`, after which it takes the key and `connect()` again. Another `EthernityCloudRunner` serves the other network meanwhile;
 - `ConnectionError` when the provider of the network set does not answer a connected runner.
 
+### Changing the wallet
+
+`runner.set_private_key(key)` gives a runner another wallet, before or after `connect()`; the key is 64 hex digits prefixed with `0x`. On a connected runner it builds the protocol contract again for the runner's network with the new signer, as `connect()` builds it, so every later transaction is signed by the new wallet and every read (its balance, its allowance, its orders) is made for it. The network, the storage, the ceiling set with `set_max_fee_per_gas`, the resources, the ESR state cache and the last run's result stay; the order the previous wallet had in hand, with its request's challenge and block and its node, is dropped.
+
+A call that raises leaves the runner with its wallet, unchanged, and no message of the call holds the key:
+
+- `ValueError` for a string of another form (`Invalid private key format. Must be 64 hex chars prefixed with 0x.`), and the error `eth_account` raises for a key it does not take;
+- `RuntimeError` while a run or a session of the runner is in progress, as `set_network` raises it: another `EthernityCloudRunner` serves the other wallet meanwhile.
+
 ### Closing a session
 
 `session.close(wait=True, timeout=900)` writes the session's close row. With `wait` true it then waits until the order has closed and returns the order's result, the session summary. The answers to the session's inputs are output rows and arrive before the close; the order closes after the trustedzone has found those rows on chain and the node has sent the result, which takes at least one more block. An application that does not read the summary calls `session.close(wait=False)`, which returns once the close row is mined.
