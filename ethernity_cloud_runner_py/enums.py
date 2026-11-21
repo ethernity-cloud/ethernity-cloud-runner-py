@@ -262,7 +262,10 @@ class ECNetwork:
             EIP1559=True
             GAS_PRICE=0
             GAS_LIMIT=0
-            MAX_FEE_PER_GAS=64
+            # The ceiling of 500 gwei admits a base fee up to 425.45 gwei:
+            # maxFeePerGas is int(baseFee * 1.1) plus the priority fee of 32
+            # gwei.
+            MAX_FEE_PER_GAS=500
             MAX_PRIORITY_FEE_PER_GAS=32
             TASK_EXECUTION_PRICE_DEFAULT=1
             INTEGRATION_TEST_IMAGE='ecld-pynithy-amoy'
@@ -304,7 +307,10 @@ class ECNetwork:
             EIP1559=True
             GAS_PRICE=0
             GAS_LIMIT=0
-            MAX_FEE_PER_GAS=64
+            # The ceiling of 500 gwei admits a base fee up to 425.45 gwei:
+            # maxFeePerGas is int(baseFee * 1.1) plus the priority fee of 32
+            # gwei.
+            MAX_FEE_PER_GAS=500
             MAX_PRIORITY_FEE_PER_GAS=32
             TASK_EXECUTION_PRICE_DEFAULT=1
             INTEGRATION_TEST_IMAGE='ecld-pynithy-amoy-pox10'

@@ -68,9 +68,9 @@ FEE_TABLE = {
     ("BLOXBERG", "MAINNET"): (False, 0, 0),
     ("BLOXBERG", "TESTNET_POX10"): (False, 0, 0),
     ("POLYGON", "MAINNET"): (True, 500, 32),
-    ("POLYGON", "AMOY"): (True, 64, 32),
-    ("POLYGON", "AMOY_UNSAFE"): (True, 64, 32),
-    ("POLYGON", "AMOY_POX10"): (True, 64, 32),
+    ("POLYGON", "AMOY"): (True, 500, 32),
+    ("POLYGON", "AMOY_UNSAFE"): (True, 500, 32),
+    ("POLYGON", "AMOY_POX10"): (True, 500, 32),
     ("IOTEX", "TESTNET"): (True, 1500, 1),
     ("ETHEREUM", "SEPOLIA"): (True, 15, 1),
     ("ETHEREUM", "SEPOLIA_UNSAFE"): (True, 15, 1),
@@ -273,7 +273,7 @@ def test_a_fee_at_the_ceiling_is_sent_and_one_a_wei_above_it_is_refused():
 
 
 @pytest.mark.parametrize("network, chain_id, priority_fee, sent_at, refused_at, refusal", [
-    (POLYGON_AMOY, 80002, 32, 29, 30, _refusal("30", "65", "64", THE_DEFAULT)),
+    (POLYGON_AMOY, 80002, 32, 425, 426, _refusal("426", "500.6", "500", THE_DEFAULT)),
     (("IOTEX", "TESTNET"), 4690, 1, 1362, 1363, _refusal("1363", "1500.3", "1500", THE_DEFAULT, "1")),
     (("ETHEREUM", "SEPOLIA"), 11155111, 1, 12, 13, _refusal("13", "15.3", "15", THE_DEFAULT, "1")),
     (("LITVM", "LITEFORGE"), 4441, 0, 1, 2, _refusal("2", "2.2", "2", THE_DEFAULT, "0")),
@@ -698,12 +698,12 @@ def test_a_run_whose_allowance_approval_is_refused_ends_with_the_refusal(monkeyp
 
 
 def test_a_run_whose_faucet_draw_is_refused_ends_with_the_refusal(monkeypatch):
-    # Polygon Amoy, whose ceiling is 64 gwei: a fee of 65.
-    chain = _Chain(80002, 30 * GWEI)
+    # Polygon Amoy, whose ceiling is 500 gwei: a fee of 500.6.
+    chain = _Chain(80002, 426 * GWEI)
     runner = _submitting_runner(monkeypatch, chain, network=POLYGON_AMOY, balance=0)
     state = _run(runner)
     assert (state["status"], state["progress"]) == ("ERROR", "FINISHED")
-    assert state["last_error"] == _refusal("30", "65", "64", THE_DEFAULT)
+    assert state["last_error"] == _refusal("426", "500.6", "500", THE_DEFAULT)
     assert runner.sends == ["faucet"]
     assert runner.sleeps == []
     assert chain.sent == []

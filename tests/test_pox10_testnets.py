@@ -22,10 +22,11 @@ import ethernity_cloud_runner_py.session as session_module
 from ethernity_cloud_runner_py.contract.operation.esrContract import ESRContract
 from ethernity_cloud_runner_py.contract.operation.protocolContract import protocolContract
 from ethernity_cloud_runner_py.enums import ECEvent, ECNetwork, ECStatus
+from ethernity_cloud_runner_py.errors import FeeCeilingError
 from ethernity_cloud_runner_py.ipfs import INTAKE_NETWORKS
 from ethernity_cloud_runner_py.runner import EthernityCloudRunner
 
-from test_fee_ceiling import GWEI, NONCE, SIGNER, TX, _Chain
+from test_fee_ceiling import GWEI, NONCE, SIGNER, THE_DEFAULT, TX, _Chain, _refusal
 
 BLOXBERG_POX10 = ("BLOXBERG", "TESTNET_POX10")
 AMOY_POX10 = ("POLYGON", "AMOY_POX10")
@@ -392,7 +393,8 @@ def test_the_amoy_copys_faucet_draw_is_a_type_2_transaction_to_the_tecld_token(m
     contract = protocolContract(SIGNER, *AMOY_POX10)
     assert contract.protocol_contract.address == AMOY_POX10_POX
     assert contract.token_contract.address == AMOY_TECLD
-    chain = _Chain(80002, 20 * GWEI)
+    # A base fee of 425 gwei: a fee of 499.5 gwei, within the network's ceiling of 500.
+    chain = _Chain(80002, 425 * GWEI)
     contract.provider.provider = chain
     assert contract.faucet() == TX
     [raw] = chain.sent
@@ -400,7 +402,19 @@ def test_the_amoy_copys_faucet_draw_is_a_type_2_transaction_to_the_tecld_token(m
     chain_id, nonce, priority_fee, max_fee, _gas, to, value, data = rlp.decode(raw[1:])[:8]
     assert (int.from_bytes(chain_id, "big"), int.from_bytes(nonce, "big")) == (80002, NONCE)
     assert int.from_bytes(priority_fee, "big") == 32 * GWEI
-    assert int.from_bytes(max_fee, "big") == 54 * GWEI
+    assert int.from_bytes(max_fee, "big") == 499_500_000_000
     assert Web3.to_checksum_address(to) == AMOY_TECLD
     assert value == b""
     assert data == bytes(Web3.keccak(text="faucet()")[:4])
+
+
+def test_the_amoy_copys_faucet_draw_is_refused_above_its_ceiling_of_500_gwei(monkeypatch):
+    monkeypatch.delenv("ECLD_MAX_FEE_PER_GAS", raising=False)
+    contract = protocolContract(SIGNER, *AMOY_POX10)
+    # A base fee of 426 gwei: a fee of 500.6 gwei.
+    chain = _Chain(80002, 426 * GWEI)
+    contract.provider.provider = chain
+    with pytest.raises(FeeCeilingError) as refused:
+        contract.faucet()
+    assert str(refused.value) == _refusal("426", "500.6", "500", THE_DEFAULT)
+    assert chain.sent == []
