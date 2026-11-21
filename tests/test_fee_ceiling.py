@@ -717,7 +717,10 @@ def test_an_order_approval_refused_at_every_try_is_tried_fifty_times_and_ends_th
     runner.running = True
     runner.order_id = 9
     runner.event_queue.put(ECEvent.ORDER_PLACED)
-    runner._process_events("code", "", RESOURCES)
+    # The runner's run in progress, as run() makes it for its thread.
+    run = runner_module._Run(runner.contract)
+    runner._run = run
+    runner._process_events("code", "", RESOURCES, run)
     assert (runner.status, runner.progress) == (ECStatus.ERROR, ECEvent.FINISHED)
     assert runner.last_error == REFUSED_AT_426
     assert runner.running is False

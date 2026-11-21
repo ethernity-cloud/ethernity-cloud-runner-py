@@ -1650,15 +1650,14 @@ class EthernityCloudRunner:
             self.event_queue.queue.clear()
         for event in events:
             self.event_queue.put(event)
-    def _process_events(self, code: str, node_address: str, resources: Dict[str, int],
-                        run: Optional[_Run] = None) -> None:
+    def _process_events(self, code: str, node_address: str, resources: Dict[str, int], run: _Run) -> None:
         """Process events, resubmitting on operator-side failures. `run` is
         the run() this thread works for: its transactions go through that
         run's contract (_sender), and once close() has ended the run the
         thread sends nothing, tries nothing again, and leaves the runner's
-        status, error and running flag as close() set them."""
-        if run is not None:
-            self._calling.run = run
+        status, error and running flag as close() set them. When the call
+        is over the thread works for no run."""
+        self._calling.run = run
         attempt = 0
         try:
             while True:
@@ -1694,13 +1693,11 @@ class EthernityCloudRunner:
                     self.logger.error(f"Error: {self.last_error}")
                     return
         finally:
-            if run is None:
+            if self._run is run:
+                self._run = None
                 self.running = False
-            else:
-                if self._run is run:
-                    self._run = None
-                    self.running = False
-                run.ended.set()
+            del self._calling.run
+            run.ended.set()
 
     def _finish(self, completed: str) -> None:
         """The FINISHED event: SUCCESS when the enclave's task code is 0. A

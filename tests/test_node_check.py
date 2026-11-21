@@ -288,7 +288,10 @@ def _submitting_runner(monkeypatch, admission):
 def test_a_run_whose_node_check_read_fails_ends_with_the_checks_message(monkeypatch, admission, expected):
     runner = _submitting_runner(monkeypatch, admission)
     runner._populate_event_queue()
-    runner._process_events("code", NODE, RESOURCES)
+    # The runner's run in progress, as run() makes it for its thread.
+    run = runner_module._Run(runner.contract)
+    runner._run = run
+    runner._process_events("code", NODE, RESOURCES, run)
     assert runner.status == ECStatus.ERROR
     assert runner.last_error == expected
     assert runner.processed_events == []

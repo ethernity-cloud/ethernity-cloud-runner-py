@@ -439,7 +439,10 @@ def test_a_fraction_of_a_token_does_not_count_towards_the_escrow(monkeypatch):
 def test_a_run_of_an_unfunded_wallet_of_the_bloxberg_copy_ends_with_the_refusal(monkeypatch):
     runner = _stubbed_runner(monkeypatch, BLOXBERG_POX10, balance=TERMED_ESCROW - 1)
     runner._populate_event_queue()
-    runner._process_events("code", "", TERMED)
+    # The runner's run in progress, as run() makes it for its thread.
+    run = runner_module._Run(runner.contract)
+    runner._run = run
+    runner._process_events("code", "", TERMED, run)
     assert runner.status == ECStatus.ERROR
     assert runner.last_error == _unfunded(29, 1)
     assert runner.processed_events == []

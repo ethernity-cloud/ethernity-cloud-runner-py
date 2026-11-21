@@ -269,7 +269,10 @@ def test_a_resubmission_approves_the_escrow_again(monkeypatch):
 
     runner.process_task = process_task
     runner._populate_event_queue()
-    runner._process_events("code", "", TERMED)
+    # The runner's run in progress, as run() makes it for its thread.
+    run = runner_module._Run(runner.contract)
+    runner._run = run
+    runner._process_events("code", "", TERMED, run)
     assert runner.status == ECStatus.ERROR
     walk = [("allowance", WALLET, BLOXBERG_TESTNET_POX_2_0), ("approve", TERMED_ESCROW), ("wait", TX)]
     assert runner.calls == walk + walk

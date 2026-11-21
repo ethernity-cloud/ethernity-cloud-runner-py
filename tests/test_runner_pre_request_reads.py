@@ -202,7 +202,10 @@ def test_an_unfunded_mainnet_wallet_is_reported_on_a_read_that_answered(monkeypa
 def test_a_failed_balance_read_refuses_the_request_with_the_cause(monkeypatch):
     runner = _runner(monkeypatch, _contract(_answers(DROPPED, DROPPED, DROPPED)))
     runner._populate_event_queue()
-    runner._process_events("code", "", RESOURCES)
+    # The runner's run in progress, as run() makes it for its thread.
+    run = runner_module._Run(runner.contract)
+    runner._run = run
+    runner._process_events("code", "", RESOURCES, run)
     assert runner.status == ECStatus.ERROR
     assert runner.last_error == (
         f"could not read the tETNY balance of {WALLET} at {TESTNET_TOKEN}: Failed to fetch")

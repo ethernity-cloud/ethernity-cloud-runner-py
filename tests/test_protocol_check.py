@@ -361,7 +361,10 @@ def test_a_run_on_a_pox_its_storage_does_not_list_asks_the_chain_four_reads_and_
     runner.running = True
     runner.resources = RESOURCES
     runner._populate_event_queue()
-    runner._process_events("code", "", RESOURCES)
+    # The runner's run in progress, as run() makes it for its thread.
+    run = runner_module._Run(runner.contract)
+    runner._run = run
+    runner._process_events("code", "", RESOURCES, run)
     assert runner.status == ECStatus.ERROR
     assert runner.last_error == OUT_OF_SERVICE
     assert chain.requests == [BALANCE_CALL, ORDERS_CALL, POINTER_CALL, ALLOW_LIST_CALL]
@@ -431,9 +434,12 @@ def _session_submission(runner, node):
 
 
 def _failed_run(runner, node):
-    """A run that names `node`, to its end; returns the error it ends with."""
+    """A run that names `node`, to its end, as the runner's run in progress, which run() makes for its
+    thread; returns the error it ends with."""
     runner._populate_event_queue()
-    runner._process_events("code", node, RESOURCES)
+    run = runner_module._Run(runner.contract)
+    runner._run = run
+    runner._process_events("code", node, RESOURCES, run)
     assert runner.status == ECStatus.ERROR
     return runner.last_error
 
