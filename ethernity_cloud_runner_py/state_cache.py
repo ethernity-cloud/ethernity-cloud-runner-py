@@ -9,7 +9,7 @@ through untouched), exposing both the typed view and a legacy string view so
 existing dApp code that treats results as strings keeps working.
 
 `StateCache` stores the ESR state carried by result envelopes, keyed by
-(enclave wallet, state key). The runner auto-populates it from every result
+(network, enclave wallet, state key). The runner auto-populates it from every result
 and gates reads behind a free on-chain check (`getState` eth_call): while the
 cached version is current, a read costs zero orders and zero gas.
 """
@@ -76,12 +76,20 @@ def parse_result_envelope(raw):
 
 
 class StateCache:
-    """Pluggable (enclave wallet, key) -> state cache.
+    """Pluggable (network, enclave wallet, key) -> state cache.
 
     Default backend is an in-memory dict; pass `file=` for JSON persistence
     across restarts, or `backend=` with any dict-like object implementing
     __getitem__/__setitem__/__delitem__/__contains__ (plus .keys()) to plug in
     custom storage.
+
+    get, set and invalidate take the network an entry belongs to as
+    `network`, and an entry set under one network is found under no other:
+    the Enclave State Registry of each network holds its own state for a
+    wallet and a key. The runner passes its network's key, <network>_<type>
+    in lower case (EthernityCloudRunner._state_network). The backend's key is
+    "<network>|<wallet in lower case>|<key>"; without `network` it is
+    "<wallet in lower case>|<key>", which the runner neither reads nor writes.
     """
 
     def __init__(self, backend=None, file=None):
@@ -97,8 +105,9 @@ class StateCache:
                 self._backend = {}
 
     @staticmethod
-    def _k(wallet, key):
-        return f"{(wallet or '').lower()}|{key}"
+    def _k(wallet, key, network=None):
+        entry = f"{(wallet or '').lower()}|{key}"
+        return f"{network}|{entry}" if network else entry
 
     def _persist(self):
         if not self._file:
@@ -111,13 +120,14 @@ class StateCache:
         except Exception:
             pass
 
-    def get(self, wallet, key):
+    def get(self, wallet, key, network=None):
+        k = self._k(wallet, key, network)
         with self._lock:
-            entry = self._backend.get(self._k(wallet, key)) if hasattr(self._backend, "get") \
-                else (self._backend[self._k(wallet, key)] if self._k(wallet, key) in self._backend else None)
+            entry = self._backend.get(k) if hasattr(self._backend, "get") \
+                else (self._backend[k] if k in self._backend else None)
             return dict(entry) if entry else None
 
-    def set(self, wallet, key, state, version, cid):
+    def set(self, wallet, key, state, version, cid, network=None):
         entry = {
             "state": state,
             "version": int(version),
@@ -125,14 +135,16 @@ class StateCache:
             "wallet": wallet,
             "savedAt": int(time.time()),
         }
+        if network:
+            entry["network"] = network
         with self._lock:
-            self._backend[self._k(wallet, key)] = entry
+            self._backend[self._k(wallet, key, network)] = entry
             self._persist()
 
-    def invalidate(self, wallet, key):
+    def invalidate(self, wallet, key, network=None):
         with self._lock:
             try:
-                del self._backend[self._k(wallet, key)]
+                del self._backend[self._k(wallet, key, network)]
             except KeyError:
                 pass
             self._persist()

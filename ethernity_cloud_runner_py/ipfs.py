@@ -271,6 +271,14 @@ class IPFSClient:
                     f"intake did not accept {cid} for request {do_request} after "
                     f"{allowed} attempts: {last}")
 
+    def drop_pending(self, cids) -> None:
+        """Take the blobs among `cids` out of the intake queue, undelivered:
+        those of a request that was not sent, or of a row that was not
+        committed, which no request names. A CID that is not queued, and
+        None, are passed over."""
+        for cid in cids:
+            self.pending.pop(cid, None)
+
     def upload_held(self):
         """Upload the held blobs through this client's API, each read from its
         file as it goes; each one the API takes is marked uploaded and stays

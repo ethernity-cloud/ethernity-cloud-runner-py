@@ -56,6 +56,7 @@ __all__ = [
     "provider_message",
     "ECWeb3RPCError",
     "FeeCeilingError",
+    "RunEndedError",
     "suppress_web3_friendly_prefix",
     "install_web3_friendly_prefix_filter",
 ]
@@ -124,6 +125,17 @@ class FeeCeilingError(Exception):
     (EthernityCloudRunner.create_do_request). The approval of an order, which
     the placed order waits for, is tried again after it as after any other
     failed send (EthernityCloudRunner.approve_order)."""
+
+
+class RunEndedError(RuntimeError):
+    """A transaction that is not sent because what it belongs to has ended.
+    EthernityCloudRunner raises it for a transaction of a run or of a session
+    submission that close() ended (EthernityCloudRunner._sender), and
+    protocolContract._build_sign_send for a transaction through a protocol
+    contract its runner retired (protocolContract.retire): at close(), and at
+    a set_network() or a set_private_key() that built another one. It is
+    raised as it is, with no further attempt (protocolContract._build_sign_send,
+    EthernityCloudRunner.retry_operation)."""
 
 
 # ---------- Filter (global) ----------

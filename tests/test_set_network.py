@@ -71,6 +71,8 @@ ANSWERS = {
     "getLatestTrustedZoneImageCertPublicKey": ["QmTrustedzone", "trustedzone certificate", "QmTrustedzoneCompose"],
     "getLatestImageVersionPublicKey": ["QmSecurelock", "securelock certificate", "QmCompose"],
 }
+# The answer of a read the contract reverts.
+REVERTS = object()
 
 
 def _entry(network):
@@ -113,26 +115,36 @@ def _signed(raw):
 
 
 class _Rpc(BaseProvider):
-    """The RPC endpoint of a table entry. A read is answered with ANSWERS' values for the function called, else
-    the zero value of each of its outputs, and kept in `log` as ("read", RPC URL, contract, function,
-    arguments); a raw transaction is answered with TX and kept as ("send", RPC URL, the chain id it is signed
-    for, contract, function, arguments). An endpoint whose URL is in `down` does not answer is_connected.
-    `wallets` keeps, in order, the wallet each request names or is signed by: ("nonce", address) for a
-    transaction count, ("estimate", address) for a gas estimate's sender, ("call", address) for a read made
-    from an address, ("signed", address) for the signer recovered from a raw transaction."""
+    """The RPC endpoint of a table entry. A read is answered with the test's `answers` for the function called,
+    else ANSWERS' values, else the zero value of each of its outputs, and kept in `log` as ("read", RPC URL,
+    contract, function, arguments); an answer that is a function is called with the read's arguments, and the
+    answer REVERTS is the node's error for a call that reverts. A raw transaction is answered with TX and
+    kept as ("send", RPC URL, the chain id it is signed for, contract, function, arguments); its receipt is a
+    mined one without logs. An endpoint whose URL is in `down` does not answer is_connected. `wallets` keeps,
+    in order, the wallet each request names or is signed by: ("nonce", address) for a transaction count,
+    ("estimate", address) for a gas estimate's sender, ("call", address) for a read made from an address,
+    ("signed", address) for the signer recovered from a raw transaction. Each of `hooks` is called with (RPC
+    URL, method, params) before a request is answered, and with the method "is_connected" before that
+    question is."""
 
-    def __init__(self, entry, log, down, wallets):
+    def __init__(self, entry, log, down, wallets, answers, hooks):
         super().__init__()
         self.url = entry.RPC_URL
         self.chain_id = entry.CHAIN_ID
         self.log = log
         self.down = down
         self.wallets = wallets
+        self.answers = answers
+        self.hooks = hooks
 
     def is_connected(self, show_traceback=False):
+        for hook in list(self.hooks):
+            hook(self.url, "is_connected", ())
         return self.url not in self.down
 
     def make_request(self, method, params):
+        for hook in list(self.hooks):
+            hook(self.url, method, params)
         if method == "eth_chainId":
             return self._answer(hex(self.chain_id))
         if method == "eth_call":
@@ -141,8 +153,14 @@ class _Rpc(BaseProvider):
             if params[0].get("from"):
                 self.wallets.append(("call", Web3.to_checksum_address(params[0]["from"])))
             kinds = get_abi_output_types(function)
-            values = ANSWERS.get(function["name"]) or [_zero(kind) for kind in kinds]
-            return self._answer("0x" + encode(kinds, values).hex())
+            values = self.answers.get(function["name"], ANSWERS.get(function["name"]))
+            if callable(values):
+                values = values(arguments)
+            if values is REVERTS:
+                return {"jsonrpc": "2.0", "id": 1, "error": {"code": 3, "message": "execution reverted"}}
+            return self._answer("0x" + encode(kinds, values or [_zero(kind) for kind in kinds]).hex())
+        if method == "eth_getTransactionReceipt":
+            return self._answer({"transactionHash": params[0], "status": "0x1", "blockNumber": "0x1", "logs": []})
         if method == "eth_getTransactionCount":
             self.wallets.append(("nonce", Web3.to_checksum_address(params[0])))
             return self._answer(hex(NONCE))
@@ -168,25 +186,27 @@ class _Rpc(BaseProvider):
 def chain(monkeypatch, tmp_path):
     """Every protocol contract and image registry the runner module builds sends its requests to a _Rpc of
     the network it is built for. chain.log lists what the endpoints were sent, in order, chain.wallets the
-    wallet each request named or was signed by, and chain.down the RPC URLs that do not answer. The held
-    cache is a directory of the test's own and no fee ceiling is set in the environment."""
-    log, down, wallets = [], set(), []
+    wallet each request named or was signed by, and chain.down the RPC URLs that do not answer;
+    chain.answers holds a test's own answers by function name and chain.hooks the functions called before
+    each request. The held cache is a directory of the test's own and no fee ceiling is set in the
+    environment."""
+    log, down, wallets, answers, hooks = [], set(), [], {}, []
 
     class Protocol(protocolContract):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.provider.provider = _Rpc(self.network_config, log, down, wallets)
+            self.provider.provider = _Rpc(self.network_config, log, down, wallets, answers, hooks)
 
     class Registry(ImageRegistryContract):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.provider.provider = _Rpc(self.network_config, log, down, wallets)
+            self.provider.provider = _Rpc(self.network_config, log, down, wallets, answers, hooks)
 
     monkeypatch.setattr(runner_module, "protocolContract", Protocol)
     monkeypatch.setattr(runner_module, "ImageRegistryContract", Registry)
     monkeypatch.setenv("ETHERNITY_CLOUD_HELD_DIR", str(tmp_path / "held"))
     monkeypatch.delenv("ECLD_MAX_FEE_PER_GAS", raising=False)
-    return SimpleNamespace(log=log, down=down, wallets=wallets)
+    return SimpleNamespace(log=log, down=down, wallets=wallets, answers=answers, hooks=hooks)
 
 
 def _runner(network, connect=True, key=KEY):
@@ -463,7 +483,6 @@ def test_set_network_is_refused_while_a_submission_holds_the_runners_lock(chain)
     """run() and run_session() submit under the runner's lock, which a submission that is starting holds
     before is_running() says so."""
     runner = _runner(AMOY)
-    runner._run_lock = threading.Lock()
     held = _held(runner)
     with runner._run_lock:
         assert not runner.is_running()

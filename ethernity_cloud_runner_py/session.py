@@ -19,6 +19,15 @@ Trust model, mirrored from the enclave side:
   challenge was sealed with) -- BEFORE the payload is decrypted or
   delivered, so the operator cannot forge or alter outputs;
 - liveness (is_running / get_status) derives from chain state alone.
+
+A handle works through what the runner held when it was made, whatever the
+runner holds later: its rows and its close row go through that protocol
+contract (its network, its PoX and its signer), its reads are made on it,
+its inputs are sealed for, and the task wallet attestation is checked
+against, the trustedzone certificate of that time, and its signatures and
+decryptions use the wallet key of that time. The runner's close() detaches
+the handle: from then on it sends and reads nothing, and send_input,
+poll_outputs, the waits and close raise SessionError.
 """
 
 import hashlib
@@ -82,12 +91,23 @@ class EthernityCloudSession:
     def __init__(self, runner, order_id: int):
         self.runner = runner
         self.order_id = int(order_id)
+        # What the runner holds as the handle is made, kept for the handle's
+        # life: the protocol contract its rows go through (a network, a PoX
+        # and a signer), the web3 contract its reads are made on, the
+        # trustedzone's certificate and the wallet key.
+        self._contract = runner.contract
+        self._protocol_contract = runner.protocol_contract
+        self._certificate = runner.enclave_public_key
+        self._private_key = runner.private_key
+        # The message of the SessionError the handle raises once the runner's
+        # close() has detached it (_detach); None while it serves.
+        self._detached: Optional[str] = None
         # Retried: a replica of a load-balanced RPC that has not seen an order
         # placed moments ago reverts the read.
-        order = runner.retry_operation(lambda: runner.protocol_contract.caller()._getOrder(self.order_id))
+        order = runner.retry_operation(lambda: self._protocol_contract.caller()._getOrder(self.order_id))
         self.do_req = int(order[2])
         self.dp_req = int(order[3])
-        doreq = runner.protocol_contract.caller()._getDORequest(self.do_req)
+        doreq = self._protocol_contract.caller()._getDORequest(self.do_req)
         # _getDORequest: (downer, cpu, mem, storage, bandwidth, duration, ...)
         self.duration_hours = int(doreq[5]) if int(doreq[5]) < 1000 else int(doreq[5]) // 3600
         self.started_at = time.time()
@@ -109,8 +129,26 @@ class EthernityCloudSession:
 
     # ----------------------------------------------------------------- helpers
 
+    def _detach(self, reason: str) -> None:
+        """Ends the handle's work; the runner's close() calls it. `reason` is
+        the message of the SessionError that send_input, poll_outputs, the
+        waits and close raise from then on; is_running answers False and
+        get_status an order_status of -1. The wallet key is dropped."""
+        self._detached = reason
+        self._private_key = ""
+
+    def _attached(self) -> bool:
+        return self._detached is None
+
+    def _require_attached(self) -> None:
+        """Raises SessionError on a handle the runner's close() detached."""
+        if self._detached is not None:
+            raise SessionError(self._detached)
+
     def _caller(self):
-        return self.runner.protocol_contract.caller()
+        """The read interface of the contract the handle was made with."""
+        self._require_attached()
+        return self._protocol_contract.caller()
 
     def _count_my_inputs(self) -> int:
         """Resume seq from chain state so a reattached session continues
@@ -159,7 +197,7 @@ class EthernityCloudSession:
         except ValueError:
             return False
         message = f"{SESSION_WALLET_KEY}|{self.order_id}|{wallet}".encode("utf-8")
-        if not verify_certificate_signature(self.runner.enclave_public_key, message, signature):
+        if not verify_certificate_signature(self._certificate, message, signature):
             self.runner.logger.error(
                 f"[session] task wallet attestation of {wallet} does not verify against the "
                 f"trustedzone's certificate -- IGNORING")
@@ -211,7 +249,13 @@ class EthernityCloudSession:
         """Encrypt for the enclave, hand the bytes to the configured storage
         (the bootnode's payload intake by default), commit the etny-si row.
         Returns the input seq. Refuses when the session cannot answer any
-        more (cap reached or inside the enclave's input cutoff)."""
+        more (cap reached or inside the enclave's input cutoff). The input is
+        sealed for the certificate, and its row sent through the contract,
+        the handle was made with. An input whose row was not sent, or was
+        mined as reverted, leaves no blob in the intake's queue
+        (IPFSClient.drop_pending): no row names it, and the intake refuses
+        it when a later input's delivery posts the queue."""
+        self._require_attached()
         if self.closed:
             raise SessionError("session is closed")
         if self._input_seq >= MAX_SESSION_MESSAGES:
@@ -222,29 +266,37 @@ class EthernityCloudSession:
                 "only answer with a timeout notice; not sending")
         if not self.is_running():
             raise SessionError("session order is no longer processing")
+        storage = self.runner.storage()
         # The input sealed for the enclave, its CID and digest through the
         # configured storage; _seal_artefact raises when the storage does not
         # take it, before any transaction.
-        cid, digest = self.runner._seal_artefact(str(data).encode("utf-8"))
+        cid, digest = self.runner._seal_artefact(str(data).encode("utf-8"), self._certificate)
         if not cid:
             raise SessionError("the configured storage did not accept the input")
-        # The bytes reach the intake before the row that names them, under
-        # the owner's signature; an input is complete only once its row is on
-        # chain, so a client that stops before that leaves no row without
-        # bytes.
-        self._lodge_input(cid)
-        value = f"{SESSION_WIRE_VERSION}:{self._input_seq}:{self.order_id}:{cid}:{digest}"
-        tx_hash = self.runner.contract.add_metadata_to_request(
-            self.do_req, SESSION_INPUT_KEY, value)
-        receipt = self.runner.poll_transaction(tx_hash, max_attempts=60)
-        if not receipt or receipt["status"] != 1:
-            raise SessionError(f"input row transaction failed ({tx_hash})")
+        row_sent = False
+        try:
+            # The bytes reach the intake before the row that names them,
+            # under the owner's signature; an input is complete only once its
+            # row is on chain, so a client that stops before that leaves no
+            # row without bytes.
+            self._lodge_input(cid)
+            value = f"{SESSION_WIRE_VERSION}:{self._input_seq}:{self.order_id}:{cid}:{digest}"
+            tx_hash = self._contract.add_metadata_to_request(self.do_req, SESSION_INPUT_KEY, value)
+            row_sent = True
+            receipt = self.runner._poll_receipt(self._contract.get_provider().eth, tx_hash, 60, self._attached)
+            if receipt and receipt["status"] != 1:
+                row_sent = False
+            if not receipt or receipt["status"] != 1:
+                raise SessionError(f"input row transaction failed ({tx_hash})")
+        finally:
+            if not row_sent:
+                storage.drop_pending([cid])
         # With the public intake, the row is on chain now, so bytes it names
         # that were not lodged before it can be delivered; nothing is queued
         # when they were.
-        self.runner.storage().flush_pending(self.do_req)
+        storage.flush_pending(self.do_req)
         # An input the held cache carried is referenced on chain now.
-        self.runner.storage().release_held([cid])
+        storage.release_held([cid])
         seq = self._input_seq
         self._input_seq += 1
         self.runner.logger.info(f"[session] input {seq} committed ({cid})")
@@ -253,19 +305,19 @@ class EthernityCloudSession:
     def _lodge_input(self, cid: str) -> bool:
         """Lodge input `cid`'s queued bytes with the intake before the row
         that names them, under the request owner's signature, made once per
-        session from the runner's key. True when the intake took them. False
-        when the bytes are to go after the row instead: no intake, no key, or
-        an intake without the signed path (its 403 INTAKE_NOT_NAMED). Raises
-        SessionError when the intake refused the lodged bytes otherwise, or
-        could not be reached: the row is not committed without its bytes in
-        place, and the input can be sent again."""
+        session from the handle's wallet key. True when the intake took them.
+        False when the bytes are to go after the row instead: no intake, no
+        key, or an intake without the signed path (its 403 INTAKE_NOT_NAMED).
+        Raises SessionError when the intake refused the lodged bytes
+        otherwise, or could not be reached: the row is not committed without
+        its bytes in place, and the input can be sent again."""
         storage = self.runner.storage()
-        if not getattr(storage, "intake_url", "") or not self.runner.private_key:
+        if not getattr(storage, "intake_url", "") or not self._private_key:
             return False
         if self._owner_signature is None:
             message = owner_signature_message(storage.network, self.do_req)
             self._owner_signature = Account.sign_message(
-                encode_defunct(text=message), private_key=self.runner.private_key).signature.hex()
+                encode_defunct(text=message), private_key=self._private_key).signature.hex()
         delivered, refused = storage.deliver_signed(self.do_req, self._owner_signature, [cid])
         if cid in delivered:
             return True
@@ -285,7 +337,9 @@ class EthernityCloudSession:
         to self.outputs). An output row before any attestation is discarded:
         its signer cannot be checked. A verified row whose payload is not
         readable yet is kept, and the rows after it with it, for the next
-        poll, up to PAYLOAD_RETRY_SECONDS."""
+        poll, up to PAYLOAD_RETRY_SECONDS. SessionError on a handle the
+        runner's close() detached."""
+        self._require_attached()
         try:
             count = int(self._caller()._getMetadataCountForDPRequest(self.dp_req))
         except Exception as e:
@@ -366,7 +420,7 @@ class EthernityCloudSession:
             self.runner.logger.warning(
                 f"[session] output {seq}: payload not served under its CID yet; retrying")
             return PAYLOAD_PENDING
-        decrypted = decrypt_nacl(self.runner.private_key, raw.decode("utf-8"))
+        decrypted = decrypt_nacl(self._private_key, raw.decode("utf-8"))
         if not decrypted.get("success"):
             self.runner.logger.error(f"[session] output {seq}: could not decrypt -- DISCARDING")
             return None
@@ -415,12 +469,17 @@ class EthernityCloudSession:
     def on_output(self, callback: Callable[[Dict[str, Any]], None],
                   poll_seconds: int = 5) -> None:
         """Poll in a background thread, invoking callback per verified
-        message, until the session leaves PROCESSING."""
+        message, until the session leaves PROCESSING or the runner's close()
+        detaches the handle."""
         import threading
 
         def loop():
             while self.is_running():
-                for msg in self.poll_outputs():
+                try:
+                    fresh = self.poll_outputs()
+                except SessionError:
+                    return
+                for msg in fresh:
                     try:
                         callback(msg)
                     except Exception as e:
@@ -433,12 +492,15 @@ class EthernityCloudSession:
 
     def close(self, wait: bool = True, timeout: int = 900) -> Optional[Dict[str, Any]]:
         """Commit the close row; optionally wait for the order to settle and
-        return the final task result (the session summary)."""
+        return the final task result (the session summary). The row goes
+        through the contract the handle was made with. SessionError on a
+        handle the runner's close() detached, before the row and during the
+        wait: nothing is sent."""
+        self._require_attached()
         if not self.closed:
             value = f"{SESSION_WIRE_VERSION}:close:{self.order_id}"
-            tx_hash = self.runner.contract.add_metadata_to_request(
-                self.do_req, SESSION_INPUT_KEY, value)
-            self.runner.poll_transaction(tx_hash, max_attempts=60)
+            tx_hash = self._contract.add_metadata_to_request(self.do_req, SESSION_INPUT_KEY, value)
+            self.runner._poll_receipt(self._contract.get_provider().eth, tx_hash, 60, self._attached)
             self.closed = True
             self.runner.logger.info(f"[session] close requested for order {self.order_id}")
         if not wait:

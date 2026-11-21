@@ -237,7 +237,6 @@ def test_set_private_key_is_refused_while_a_session_is_open(chain, monkeypatch):
 
 def test_set_private_key_is_refused_while_a_submission_holds_the_runners_lock(chain):
     runner = _runner(AMOY, key=KEY_A)
-    runner._run_lock = threading.Lock()
     held = _held(runner)
     with runner._run_lock:
         assert not runner.is_running()
@@ -299,7 +298,6 @@ def test_no_log_line_exception_text_or_repr_holds_a_key(chain, caplog, capsys):
         "the refusal during a submission": lambda: runner.set_private_key(KEY_A),
         "the refusal of set_network during a submission": lambda: runner.set_network(*AMOY_POX10),
     }.items():
-        runner._run_lock = threading.Lock()
         with runner._run_lock, pytest.raises(RuntimeError) as refusal:
             call()
         texts[name] = f"{refusal.value} {refusal.value!r}"

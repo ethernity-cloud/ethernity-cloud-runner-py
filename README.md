@@ -143,26 +143,70 @@ Insufficient wallet balance. Required: 30, Available: 29. The token tE10 (0x69A7
 
 Each of the two networks runs its two trustedzones and no other, and they run on no other network: `run()` and `run_session()` raise `ValueError` before any read or transaction for a trustedzone of the table above on another network (`ecld-pynithy-amoy-pox10 is a trustedzone of the POLYGON AMOY_POX10 network and runs on no other: run it there, not on POLYGON AMOY`) and for any other trustedzone on one of the two (`POLYGON AMOY_POX10 runs only its trustedzones (ecld-pynithy-amoy-pox10, ecld-nodenithy-amoy-pox10), and ecld-pynithy-amoy is not one of them`).
 
+This rule and the `-unsafe` rule of "Choosing the trustedzone" are asked by `run()`, by `run_session()` and by `attach_session(order_id, securelock_enclave)`, which reads the trustedzone from the order's request. The steps of a run called directly (`check_allowance()`, `create_task()`, `create_do_request()`, `approve_order()`, `cancel_unclaimed_request()`) and `attach_session(order_id)` without a securelock ask neither rule: they act on the network the runner is on, whatever trustedzone a request names.
+
 The trustedzones of both networks are signed for production and take their sessions from Scontain's CAS, as the mainnets' do; neither network has an `-unsafe` network. Neither is among `ipfs.INTAKE_NETWORKS`: while the storage is the bootnode's payload intake, which is the default, `run()`, `run_session()` and `attach_session(order_id, securelock_enclave)` refuse before any transaction, so call `set_storage_ipfs(url, token)` first (see "Storage and the result read").
 
 ### Changing the network
 
-`runner.set_network(name, type)` moves a runner to another network of the table, before or after `connect()`. On a connected runner it builds the protocol and token contracts again for the network set, as `connect()` builds them, so every later read and transaction goes to that network's contracts at its RPC, signed for its chain; the image registry is read from the network set at the next run. The key, a storage set with `set_storage_ipfs`, the ceiling set with `set_max_fee_per_gas`, the resources and the last run's result stay; the order with its request's challenge and block, the node and the enclave details of the network left are dropped, and an intake storage is rebuilt under the new network's key.
+`runner.set_network(name, type)` moves a runner to another network of the table, before or after `connect()`. On a connected runner it builds the protocol and token contracts again for the network set, as `connect()` builds them, so every later read and transaction goes to that network's contracts at its RPC, signed for its chain; the image registry is read from the network set at the next run. The key, a storage set with `set_storage_ipfs`, the resources and the last run's result stay; the order with its request's challenge and block, the node and the enclave details of the network left are dropped, and an intake storage is rebuilt under the new network's key. The protocol contract of the network left sends nothing more: a transaction asked of it raises `errors.RunEndedError`.
+
+- A ceiling set with `set_max_fee_per_gas` stays with the runner: it is the ceiling on the network set, ahead of that network's default.
+- A call that names the network the runner is on does all of the above as well: on a connected runner the contracts are built again, and the order, the node and the enclave details are dropped.
+- The ESR state cache keeps each network's states under that network: `esr_read` serves a state only on the network it was cached on. In a cache file (`enable_state_cache(file=...)`) the key of an entry is `<network>_<type>|<enclave wallet>|<state key>`, the network and the wallet in lower case (`polygon_amoy|0x5e...|counter`); entries under any other key are not read.
 
 A call that raises leaves the runner on its network, unchanged:
 
 - `ValueError` for a name or a type the table does not hold;
-- `RuntimeError` while a run or a session of the runner is in progress (`is_running()`): after a run it is taken once the run has ended; a runner that opened or attached a session stays in progress until `runner.close()`, after which it takes the key and `connect()` again. Another `EthernityCloudRunner` serves the other network meanwhile;
+- `RuntimeError` while something of the runner is in progress: a run whose thread is at work, after which the call is taken; a `connect()`, a `run_session()` or an `attach_session()` under way in another thread; or a session handle the runner returned, which keeps the runner in progress until `runner.close()`, whatever became of a later `run_session()` or `attach_session()` of the same runner. After `close()` the runner takes the key and `connect()` again. Another `EthernityCloudRunner` serves the other network meanwhile;
+- `RuntimeError` after `close()` while the thread of the run it ended is still at work (see "Closing the runner");
 - `ConnectionError` when the provider of the network set does not answer a connected runner.
 
 ### Changing the wallet
 
-`runner.set_private_key(key)` gives a runner another wallet, before or after `connect()`; the key is 64 hex digits prefixed with `0x`. On a connected runner it builds the protocol contract again for the runner's network with the new signer, as `connect()` builds it, so every later transaction is signed by the new wallet and every read (its balance, its allowance, its orders) is made for it. The network, the storage, the ceiling set with `set_max_fee_per_gas`, the resources, the ESR state cache and the last run's result stay; the order the previous wallet had in hand, with its request's challenge and block and its node, is dropped.
+`runner.set_private_key(key)` gives a runner another wallet, before or after `connect()`; the key is 64 hex digits prefixed with `0x`. On a connected runner it builds the protocol contract again for the runner's network with the new signer, as `connect()` builds it, so every later transaction is signed by the new wallet and every read (its balance, its allowance, its orders) is made for it. The network, the storage, the ceiling set with `set_max_fee_per_gas`, the resources, the ESR state cache and the last run's result stay; the order the previous wallet had in hand, with its request's challenge and block and its node, is dropped. The protocol contract built with the previous signer sends nothing more: a transaction asked of it raises `errors.RunEndedError`.
 
 A call that raises leaves the runner with its wallet, unchanged, and no message of the call holds the key:
 
 - `ValueError` for a string of another form (`Invalid private key format. Must be 64 hex chars prefixed with 0x.`), and the error `eth_account` raises for a key it does not take;
-- `RuntimeError` while a run or a session of the runner is in progress, as `set_network` raises it: another `EthernityCloudRunner` serves the other wallet meanwhile.
+- `RuntimeError` while something of the runner is in progress, and after `close()` while the thread of the run it ended is still at work, as `set_network` raises both: another `EthernityCloudRunner` serves the other wallet meanwhile.
+
+### One runner, several threads
+
+`connect()`, `run()`, `run_session()` and `attach_session()` work under one lock of the runner: `connect()` and `run()` hold it while they build the contract or start the run's thread, `run_session()` and `attach_session()` for the whole call. A call made while another holds the lock waits for it. `set_network()` and `set_private_key()` take the same lock without waiting, so a change of the network or the wallet made from another thread is done before such a call starts or is refused during it, and a submission is sent to one network with one wallet.
+
+An order id names an order of one network and one wallet, those the runner has when `attach_session()` is called. An `attach_session()` that waited for a `set_network()` or a `set_private_key()` reads nothing and raises `RuntimeError`; one that waited for anything else attaches once that is done:
+
+```
+attach_session() waited for a change of this runner, which is on POLYGON AMOY_POX10 with the wallet 0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A; order 7 was asked for on POLYGON AMOY with the wallet 0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A, and an order id names an order of one network and one wallet. Call attach_session() again for the order meant.
+```
+
+`run()`, `run_session()` and `attach_session()` raise `RuntimeError("A task is already running.")` while a run of the runner is in progress, and a refused call changes nothing of that run; `run()` raises it while a session handle of the runner is open as well. One runner serves one run at a time: use one `EthernityCloudRunner` per task for tasks in parallel.
+
+### Session handles
+
+The handle `run_session()` or `attach_session()` returns works through what the runner held when the handle was made, whatever the runner holds later: its input rows and its close row go through that protocol contract (its network, its PoX and its signer), its reads are made on it, its inputs are sealed for the trustedzone certificate of that time, and its signatures and decryptions use the wallet key of that time. An input's bytes go through the storage the runner has when the input is sent, so `set_storage_ipfs` during a session serves the inputs after it.
+
+A handle keeps its runner in progress until `runner.close()`: `set_network()`, `set_private_key()` and `run()` are refused meanwhile, and a `run_session()` or an `attach_session()` of the same runner that fails does not end that. `runner.close()` detaches every handle of the runner (see "Closing the runner").
+
+### Closing the runner
+
+`runner.close()` stops the runner, drops its key, its contracts and its storage, and ends what is in progress:
+
+- A run in progress ends. Its thread sends no transaction after `close()`: a send it reaches raises `errors.RunEndedError` inside the thread and is not made, nothing is tried again, and the runner's status and error stay as `close()` set them. `close()` waits two block times for the thread. A thread still at work after that (in a request to the RPC or the storage, or in a wait between two) is waited for again by the next `connect()`, `run()`, `run_session()`, `attach_session()`, `set_network()` or `set_private_key()`, for up to `RUN_END_WAIT_SECONDS` (30 s, a constant of `ethernity_cloud_runner_py.runner`); the call is taken once the thread has ended and raises `RuntimeError` otherwise:
+
+```
+The run this runner was closed during is still at work in its thread, which was waited for 30 s: connect() is refused until that thread has ended. The thread sends no transaction. Call again later, or use another EthernityCloudRunner.
+```
+
+- A `run_session()` or an `attach_session()` under way in another thread sends nothing more, returns no handle and raises `errors.RunEndedError`; where the call was in a read or a wait when the runner was closed, the error of that step is the cause of the `RunEndedError`.
+- Every session handle the runner returned is detached. Its `send_input()`, `poll_outputs()`, `wait_output()`, `wait_outputs()` and `close()` raise `SessionError` and send nothing, its `is_running()` answers `False`, and it keeps no key:
+
+```
+The runner was closed with close(): this handle of a session on POLYGON AMOY sends and reads nothing more. The session's order stays as it is on chain; attach_session(order_id) on a connected runner of that network and wallet gives a new handle.
+```
+
+- The protocol contract the runner held sends nothing more: a transaction asked of it raises `errors.RunEndedError`.
 
 ### Closing a session
 
@@ -250,6 +294,8 @@ The network's base fee is 426 gwei; the maxFeePerGas computed for the transactio
 ### Storage and the result read
 
 A runner that configures no storage delivers the task's artefacts (the encrypted challenge, code and session inputs) through the bootnode's payload intake: each CID is computed locally and the bytes are posted to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>` once the DO request is on chain, with no token. The intake serves the networks the bootnode's agent runs, today the bloxberg testnet, Polygon Amoy, LitVM LiteForge and Ethereum Sepolia, each with its `-unsafe` twin (`ipfs.INTAKE_NETWORKS`). `set_public_intake()` configures the same storage explicitly, and takes the base URL of another intake.
+
+The bytes queued for the intake belong to one request. A task's blobs are out of the queue once its request has been attempted: delivered when the request is on chain, dropped when the request was not sent or the delivery failed, so the next task posts its own blobs alone. A session input's blob is dropped when its row was not sent or was mined as reverted; one whose row has no receipt yet stays queued for the delivery after the row.
 
 On a network the intake does not serve, a run with the default storage fails at delivery, after the DO request is on chain: the intake answers 404 for the network and the runner stops with a message that names `set_storage_ipfs`. Such a runner must call `set_storage_ipfs(url, token)` before `run()`. On a `MAINNET` network type the runner builds no default at all: `run()`, `run_session()` and `attach_session(order_id, securelock_enclave)` refuse before any transaction unless `set_storage_ipfs` or `set_public_intake` was called.
 

@@ -43,6 +43,7 @@ class Storage:
 class Runner:
     def __init__(self, caller, certificate_pem, storage):
         self.protocol_contract = type("Contract", (), {"caller": lambda _self: caller})()
+        self.contract = None
         self.logger = logging.getLogger("test")
         self.enclave_public_key = certificate_pem
         self.private_key = "0x" + "11" * 32

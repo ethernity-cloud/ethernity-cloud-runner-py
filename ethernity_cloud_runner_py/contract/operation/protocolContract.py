@@ -14,7 +14,8 @@ import requests
 from ..abi.polygonProtocolAbi import contract as polygonAbi
 from ..abi.ECLDAbi import contract as ECLDAbi
 from ...enums import ECNetwork
-from ...errors import suppress_web3_friendly_prefix, raw_rpc_error_message, raw_rpc_error_code, provider_message, FeeCeilingError
+from ...errors import (suppress_web3_friendly_prefix, raw_rpc_error_message, raw_rpc_error_code, provider_message,
+                       FeeCeilingError, RunEndedError)
 from ...rpc import rpc_session
 
 # The environment variable that names the fee ceiling, a positive whole number
@@ -85,12 +86,28 @@ class protocolContract:
         if self.network_config.MIDDLEWARE == "POA":
             self.provider.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         self.signer = signer
+        # What retire() was given: why this contract sends nothing more. None
+        # while it sends.
+        self.retired = None
         self.protocol_contract = self.provider.eth.contract(
             address=self.protocol_address, abi=polygonAbi["abi"]
         )
         self.token_contract = self.provider.eth.contract(
             address=self.token_address, abi=ECLDAbi["abi"]
         )
+    def retire(self, reason: str) -> None:
+        """Ends this contract's sends. `reason` says what its runner did (it
+        was closed, moved to another network, given another wallet): every
+        transaction asked of the contract after it raises
+        errors.RunEndedError with that reason and is not sent
+        (_build_sign_send). The reads go on."""
+        self.retired = reason
+    def _refuse_retired(self) -> None:
+        """Raises errors.RunEndedError on a contract retire() ended."""
+        if self.retired is not None:
+            raise RunEndedError(
+                f"{self.retired}, and the protocol contract it held until then sends nothing after that: "
+                "the transaction was not sent.")
     def get_token_address(self) -> Address:
         return self.token_address
     def get_protocol_address(self) -> Address:
@@ -169,12 +186,15 @@ class protocolContract:
         Build, sign, and send a transaction with retry logic and special handling
         for nonce-related Web3RPCError codes (-32000, -32010). A FeeCeilingError
         is printed like any other failure of an attempt and raised as it is,
-        with no further attempt.
+        with no further attempt. A contract retire() ended raises
+        RunEndedError: before an attempt reads the nonce and the fee, and
+        again before the signed transaction is handed to the node.
         """
         max_attempts = 20
         current_nonce = None
 
         for attempt in range(max_attempts):
+            self._refuse_retired()
             try:
                 options = self.__transaction_object(nonce=current_nonce)
                 # build_transaction fills `gas` with the node's estimate for the
@@ -186,6 +206,7 @@ class protocolContract:
                 signed_tx = self.provider.eth.account.sign_transaction(
                     tx, private_key=self.signer._private_key
                 )
+                self._refuse_retired()
 
                 # Suppress Web3's friendly prefix for this call only
                 with suppress_web3_friendly_prefix():
@@ -226,7 +247,7 @@ class protocolContract:
                 if isinstance(e, requests.exceptions.Timeout):
                     print(f"Attempt {attempt + 1}: Timeout, retrying...")
                     continue
-                elif isinstance(e, FeeCeilingError):
+                elif isinstance(e, (FeeCeilingError, RunEndedError)):
                     raise
                 else:
                     raise Exception(f"Unable to send transaction: {str(e)}")

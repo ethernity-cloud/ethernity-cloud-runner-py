@@ -787,8 +787,9 @@ def _session(chain):
         protocol_contract=SimpleNamespace(caller=lambda: caller),
         retry_operation=lambda read: read(),
         contract=_contract(chain),
-        _seal_artefact=lambda plaintext: ("cid", "digest"),
-        storage=lambda: SimpleNamespace(intake_url=""),
+        enclave_public_key="certificate",
+        _seal_artefact=lambda plaintext, certificate: ("cid", "digest"),
+        storage=lambda: SimpleNamespace(intake_url="", drop_pending=lambda cids: None),
         private_key=KEY,
         logger=logging.getLogger("test"))
     return EthernityCloudSession(runner, ORDER)
