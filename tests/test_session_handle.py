@@ -1,9 +1,9 @@
 """A session handle's outputs and its summary. poll_outputs reads the rows in
 one thread at a time, so on_output, wait_output and close in other threads
 take each message once. close(wait=True) reads the summary with the handle's
-own order and challenge, so a handle attach_session() made, whose runner
-holds no order, returns it too. No chain: the reads, the rows and the
-runner's result read are stand-ins."""
+own order, challenge, attested task wallet, duration and request fields, so a
+handle attach_session() made, whose runner holds no order, reads it too. No
+chain: the reads, the rows and the runner's result read are stand-ins."""
 import logging
 import threading
 from types import SimpleNamespace
@@ -14,8 +14,11 @@ from ethernity_cloud_runner_py.session import EthernityCloudSession
 KEY = "0x" + "11" * 32
 ORDER = 7
 NODE = "0x" + "22" * 20
+TASK_WALLET = "0x" + "33" * 20
 ORDER_STRUCT = [None, NODE, 12, 9, 1]
 SUMMARY = {"success": True, "value": "the session summary"}
+REQUEST = {"input_transaction_hash": "0x" + "a1" * 32, "image_hash": "QmImage:securelock", "script_hash": "QmPayload",
+           "file_set_hash": ""}
 
 
 class _Reads:
@@ -41,14 +44,15 @@ class _Reads:
         return ["etny-so", "the output row"]
 
 
-def _handle(challenge=None):
-    """(handle, runner, reads): a handle of ORDER over a stand-in runner whose close row settles the order and
-    whose get_result_from_order records what it is asked for and answers SUMMARY."""
+def _handle(challenge=None, request=None):
+    """(handle, runner, reads): a handle of ORDER, of `challenge` and `request`, that attested TASK_WALLET, over
+    a stand-in runner whose close row settles the order and whose get_result_from_order records what it is asked
+    for and answers SUMMARY."""
     reads = _Reads()
     asked = []
 
-    def get_result_from_order(order_id, order=None, challenge=None):
-        asked.append((order_id, order, challenge))
+    def get_result_from_order(order_id, order=None, challenge=None, signer=None, request=None):
+        asked.append((order_id, order, challenge, signer, request))
         return dict(SUMMARY)
 
     def close_row(do_req, key, value):
@@ -67,8 +71,8 @@ def _handle(challenge=None):
         get_result_from_order=get_result_from_order,
         _release_session=lambda session: None,
         asked=asked)
-    handle = EthernityCloudSession(runner, ORDER, challenge=challenge)
-    handle._attested_wallet = "0x" + "33" * 20
+    handle = EthernityCloudSession(runner, ORDER, challenge=challenge, request=request)
+    handle._attested_wallet = TASK_WALLET
     return handle, runner, reads
 
 
@@ -102,12 +106,14 @@ def test_two_threads_polling_the_outputs_take_a_message_once():
     assert verified == ["the output row"]
 
 
-def test_close_reads_the_summary_with_the_handles_order_and_challenge():
-    for challenge in (b"the session's challenge", None):
-        handle, runner, _ = _handle(challenge)
+def test_close_reads_the_summary_with_the_handles_order_challenge_task_wallet_duration_and_request():
+    """The order's request is of 1 hour (_Reads._getDORequest)."""
+    for challenge, request in ((b"the session's challenge", REQUEST), (None, None)):
+        handle, runner, _ = _handle(challenge, request)
         handle._verify_output_row = lambda value: None
         assert handle.close(wait=True, timeout=5) == SUMMARY
-        assert runner.asked == [(ORDER, ORDER_STRUCT[:4] + [1], challenge)]
+        assert runner.asked == [(ORDER, ORDER_STRUCT[:4] + [1], challenge, TASK_WALLET,
+                                 dict(request or {}, duration_hours=1))]
 
 
 def test_the_result_read_of_an_order_given_reads_that_order_and_not_the_runners():
@@ -120,6 +126,6 @@ def test_the_result_read_of_an_order_given_reads_that_order_and_not_the_runners(
                                       get_result_from_order=lambda order_id: "not a result")
     runner.protocol_contract = SimpleNamespace(caller=lambda: SimpleNamespace(
         _getDPRequestMetadata=lambda dp_request: dp_requests.append(dp_request) or [None] * 5))
-    assert runner.get_result_from_order(ORDER, order=ORDER_STRUCT, challenge=None) is None
+    assert runner.get_result_from_order(ORDER, order=ORDER_STRUCT, challenge=None, signer=TASK_WALLET) is None
     assert dp_requests == [9]
     assert runner._fault == f"order {ORDER}: operator result could not be parsed"

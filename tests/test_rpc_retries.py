@@ -3,15 +3,20 @@ that web3 sends each request once (rpc.rpc_provider).
 
 A send hands its signed transaction to the node again, the same bytes, while
 the hand-over is not answered: an HTTP 429 or 503, a connection reset, an
-HTTP 504 or a read timeout after the node took it. A node that holds the
-transaction already, or has mined it, gives its hash back, and no second
-transaction is built. attach_session()'s reads of the order and its request,
-esr_version and esr_nonce, the node check and the question whether the RPC
-answers (connect, set_network, check_web3_connection) are asked again while
-the RPC does not serve them; a revert is raised at once.
+HTTP 504, a read timeout or a body that is no JSON-RPC answer after the node
+took it. A node that holds the
+transaction already gives its hash back, and so does any answer after a
+hand-over that lost its answer, an answer that the nonce is used among them,
+and five hand-overs none of which is answered: no second transaction is built
+for the intent, by the send, by the DO request's and the approval's tries,
+or by the approval step. attach_session()'s reads of the order and its
+request, esr_version and esr_nonce, the node check and the question whether
+the RPC answers (connect, set_network, check_web3_connection) are asked again
+while the RPC does not serve them; a revert is raised at once.
 
 No chain: the node of the send cases is a provider that keeps a pool of the
 transactions it took; the other cases use test_set_network.py's chain."""
+import json
 import threading
 from types import SimpleNamespace
 
@@ -19,7 +24,7 @@ import pytest
 import requests
 from eth_account import Account
 from eth_utils import keccak
-from web3.exceptions import ContractLogicError
+from web3.exceptions import BadResponseFormat, ContractLogicError, Web3RPCError
 from web3.providers.base import BaseProvider
 
 import ethernity_cloud_runner_py.contract.operation.protocolContract as protocol_module
@@ -27,18 +32,29 @@ import ethernity_cloud_runner_py.rpc as rpc_module
 import ethernity_cloud_runner_py.runner as runner_module
 from ethernity_cloud_runner_py.contract.operation.protocolContract import protocolContract
 from ethernity_cloud_runner_py.errors import RunEndedError
-from ethernity_cloud_runner_py.runner import EthernityCloudRunner
+from ethernity_cloud_runner_py.runner import RUN_ENDED, RUN_ENDED_REQUEST_SENT, EthernityCloudRunner
 from ethernity_cloud_runner_py.session import EthernityCloudSession
 
-from test_set_network import AMOY, AMOY_POX10, ORDER, REVERTS, _called, _entry, _runner, chain  # noqa: F401
+from test_set_network import (  # noqa: F401 (chain is the fixture the cases ask for)
+    AMOY, AMOY_POX10, ORDER, RESOURCES, REVERTS, WALLET, _called, _entry, _runner, chain,
+)
 from test_runner_lifetime import _in_session
 
 SIGNER = Account.from_key("0x" + "11" * 32)
 NONCE = 7
 GWEI = 10 ** 9
+DO_REQUEST = 41
+NODE_ADDRESS = "0x" + "22" * 20
 TESTNET = ("BLOXBERG", "TESTNET")
 GETH_HELD = {"code": -32000, "message": "already known"}
 PARITY_HELD = {"code": -32010, "message": "Transaction with the same hash was already imported."}
+# What nodes answer to a transaction whose nonce is used: geth and bor, Nethermind, OpenEthereum and Parity
+# (bloxberg's).
+NONCE_USED = {
+    "geth": {"code": -32000, "message": "nonce too low"},
+    "nethermind": {"code": -32010, "message": "OldNonce"},
+    "openethereum": {"code": -32010, "message": "Transaction nonce is too low. Try incrementing the nonce."},
+}
 
 
 @pytest.fixture(autouse=True)
@@ -51,18 +67,23 @@ def no_waits(monkeypatch):
 class _Node(BaseProvider):
     """A node of chain `chain_id` with a pool of the transactions it took (by hash) and a pending nonce that each
     taken transaction raises. Each hand-over (eth_sendRawTransaction) is answered as the next of `handovers`
-    says: "take" takes the transaction and answers its hash; "429", "503" and "reset" do not take it and raise
-    the requests error of an HTTP 429, an HTTP 503 and a connection reset; "504" and "slow" take it and raise the
-    error of an HTTP 504 and of a read timeout; "mined 504" takes and mines it and raises the HTTP 504 error.
-    Once `handovers` is spent a hand-over takes. A transaction in the pool is answered with `held`, or with
-    "nonce too low" once mined. `handed` lists the raw bytes of every hand-over and `reads` every method asked
-    but the hand-overs."""
+    says, and once `handovers` is spent as "take". "429", "503" and "reset" do not reach the node and raise the
+    requests error of an HTTP 429, an HTTP 503 and a connection reset; a dict is the node's error answer, the
+    transaction not taken. The others reach the node, which takes a transaction it does not hold: "take"
+    answers its hash, "504" and "slow" raise the error of an HTTP 504 and of a read timeout, "mined 504" mines
+    it and raises the HTTP 504 error, "html" and "no result" raise web3's errors for a body that is not JSON and
+    for a JSON body with neither a result nor an error. A transaction the node holds is answered "take" with
+    `held`, or with `nonce_used` once mined, and the others raise their errors for it. eth_getTransactionByHash
+    is answered from the pool where `gettx` is "ok"; "429" raises the requests error of an HTTP 429 and "null"
+    answers null, a replica that has not seen the transaction. A receipt is a mined one for a transaction in the
+    pool while `mines` holds, and null otherwise. `handed` lists the raw bytes of every hand-over and `reads`
+    every method asked but the hand-overs."""
 
-    def __init__(self, chain_id, handovers, held=GETH_HELD):
+    def __init__(self, chain_id, handovers, held=GETH_HELD, nonce_used=NONCE_USED["geth"], gettx="ok", mines=True):
         super().__init__()
         self.chain_id = chain_id
         self.handovers = list(handovers)
-        self.held = held
+        self.held, self.nonce_used, self.gettx, self.mines = held, nonce_used, gettx, mines
         self.pool, self.mined, self.handed, self.reads = {}, set(), [], []
 
     def is_connected(self, show_traceback=False):
@@ -80,19 +101,26 @@ class _Node(BaseProvider):
         if method == "eth_estimateGas":
             return self._answer(hex(50_000))
         if method == "eth_getTransactionByHash":
-            return self._answer({"hash": params[0]} if params[0] in self.pool else None)
+            if self.gettx == "429":
+                raise requests.exceptions.HTTPError("429 Client Error: Too Many Requests for url: RPC")
+            found = self.gettx == "ok" and params[0] in self.pool
+            return self._answer({"hash": params[0]} if found else None)
+        if method == "eth_getTransactionReceipt":
+            mined = self.mines and params[0] in self.pool
+            return self._answer({"transactionHash": params[0], "status": "0x1", "blockNumber": "0x1", "logs": []}
+                                if mined else None)
         if method == "eth_sendRawTransaction":
             raw = bytes.fromhex(params[0][2:])
             self.handed.append(raw)
             tx_hash = "0x" + keccak(raw).hex()
-            if tx_hash in self.pool:
-                error = {"code": -32000, "message": "nonce too low"} if tx_hash in self.mined else self.held
-                return {"jsonrpc": "2.0", "id": 1, "error": error}
             answer = self.handovers.pop(0) if self.handovers else "take"
             if answer in ("429", "503"):
                 raise requests.exceptions.HTTPError(f"{answer} Server Error for url: RPC")
             if answer == "reset":
                 raise requests.exceptions.ConnectionError("Connection aborted.")
+            if isinstance(answer, dict):
+                return {"jsonrpc": "2.0", "id": 1, "error": answer}
+            held = tx_hash in self.pool
             self.pool[tx_hash] = raw
             if answer == "mined 504":
                 self.mined.add(tx_hash)
@@ -100,6 +128,12 @@ class _Node(BaseProvider):
                 raise requests.exceptions.HTTPError("504 Server Error: Gateway Timeout for url: RPC")
             if answer == "slow":
                 raise requests.exceptions.ReadTimeout("Read timed out. (read timeout=10)")
+            if answer == "html":
+                raise json.JSONDecodeError("Expecting value", "<html>gateway</html>", 0)
+            if answer == "no result":
+                raise BadResponseFormat("The response was in an unexpected format and unable to be parsed.")
+            if held:
+                return {"jsonrpc": "2.0", "id": 1, "error": self.nonce_used if tx_hash in self.mined else self.held}
             return self._answer(tx_hash)
         raise AssertionError(f"unexpected request {method}")
 
@@ -141,27 +175,171 @@ def test_a_hand_over_whose_answer_was_lost_is_followed_by_no_second_transaction(
     assert node.reads.count("eth_getTransactionCount") == 1
 
 
+@pytest.mark.parametrize("unreadable", ["html", "no result"])
+def test_a_hand_over_whose_answer_cannot_be_read_is_followed_by_no_second_transaction(unreadable):
+    """The node took the transaction and the RPC answered a body that is no JSON-RPC answer."""
+    node = _Node(80002, [unreadable])
+    assert _contract(node).approve_order(ORDER) == _taken(node)
+    assert len(node.handed) == 2 and node.handed[0] == node.handed[1]
+    assert node.reads.count("eth_getTransactionCount") == 1
+
+
 def test_bloxbergs_answer_for_a_transaction_it_holds_gives_its_hash_back():
     node = _Node(8995, ["504"], held=PARITY_HELD)
     assert _contract(node, TESTNET).approve_order(ORDER) == _taken(node)
     assert len(node.handed) == 2
 
 
-def test_a_transaction_mined_before_its_answer_was_lost_is_found_by_its_hash():
-    node = _Node(80002, ["mined 504"])
-    assert _contract(node).approve_order(ORDER) == _taken(node)
-    assert node.reads.count("eth_getTransactionByHash") == 1
+# The sends of the protocol contract, by the name of their method.
+SENDS = {
+    "set_allowance": lambda contract: contract.set_allowance(3),
+    "faucet": lambda contract: contract.faucet(),
+    "add_do_request": lambda contract: contract.add_do_request("image", "code", "input", "", RESOURCES),
+    "add_metadata_to_request": lambda contract: contract.add_metadata_to_request(DO_REQUEST, "etny-si", "v1:0:7:c:d"),
+    "approve_order": lambda contract: contract.approve_order(ORDER),
+    "cancel_do_request": lambda contract: contract.cancel_do_request(DO_REQUEST),
+}
+
+
+def _first_hash(node):
+    """The hash of the transaction the first hand-over carried."""
+    return "0x" + keccak(node.handed[0]).hex()
+
+
+@pytest.mark.parametrize("gettx", ["ok", "429", "null"])
+@pytest.mark.parametrize("client", list(NONCE_USED))
+@pytest.mark.parametrize("send", list(SENDS))
+def test_a_transaction_mined_before_its_answer_was_lost_gives_its_hash_back_and_no_second_one(send, client, gettx):
+    """The node took and mined the transaction, and the answer of its hand-over was lost. The same bytes go to
+    it again and it answers that their nonce is used: the send takes the hash whether the transaction is found
+    by its hash, not found (null, a replica that has not seen it) or not read (an HTTP 429)."""
+    node = _Node(80002, ["mined 504"], nonce_used=NONCE_USED[client], gettx=gettx)
+    assert SENDS[send](_contract(node)) == _taken(node)
+    assert len(node.handed) == 2 and node.handed[0] == node.handed[1]
     assert node.reads.count("eth_getTransactionCount") == 1
 
 
-def test_a_send_no_hand_over_of_which_is_answered_raises_and_builds_no_second_transaction():
+def test_any_answer_after_a_lost_answer_gives_the_hash_back_and_no_transaction_is_built_at_another_nonce():
+    """The hand-over's connection was reset, and the next hand-over is answered that another transaction holds
+    the nonce in the pool: the first may be held by another replica, and the receipt decides."""
+    node = _Node(80002, ["reset", {"code": -32000, "message": "replacement transaction underpriced"}])
+    assert _contract(node).approve_order(ORDER) == _first_hash(node)
+    assert len(node.handed) == 2 and len(set(node.handed)) == 1
+    assert node.pool == {}
+    assert node.reads.count("eth_getTransactionCount") == 1
+
+
+def test_a_send_none_of_whose_hand_overs_is_answered_gives_its_hash_back_and_builds_no_second_transaction():
     node = _Node(80002, ["429"] * protocol_module.HANDOVER_ATTEMPTS)
-    with pytest.raises(Exception, match="^Unable to send transaction: 429 Server Error"):
-        _contract(node).approve_order(ORDER)
+    assert _contract(node).approve_order(ORDER) == _first_hash(node)
     assert len(node.handed) == protocol_module.HANDOVER_ATTEMPTS
     assert len(set(node.handed)) == 1
     assert node.pool == {}
     assert node.reads.count("eth_getTransactionCount") == 1
+
+
+@pytest.mark.parametrize("answer", [GETH_HELD, {"code": -32000, "message": "known transaction: 5180e592"},
+                                    {"code": -32010, "message": "AlreadyKnown"}, PARITY_HELD],
+                         ids=["geth", "geth before 1.9", "nethermind", "openethereum"])
+def test_a_node_that_answers_it_holds_the_transaction_gives_its_hash(answer):
+    node = _Node(80002, [answer])
+    assert _contract(node).approve_order(ORDER) == _first_hash(node)
+    assert len(node.handed) == 1
+
+
+def test_an_answer_that_holds_a_held_phrase_inside_a_word_is_the_nodes_refusal():
+    """"unknown transaction" is not "known transaction": the node refused the transaction, and the send raises
+    its error."""
+    node = _Node(80002, [{"code": -32000, "message": "rlp: unknown transaction type 7"}] * 20)
+    with pytest.raises(Web3RPCError):
+        _contract(node).approve_order(ORDER)
+    assert node.pool == {}
+
+
+# ---- no second transaction at the steps that call a send ----
+
+@pytest.fixture
+def submitting(monkeypatch, tmp_path):
+    """A POLYGON AMOY runner of SIGNER whose protocol contract is a real one over a node of its own: call it with
+    the node. No wait takes time, a receipt is polled for a tenth of a second (a hundred blocks of 1 ms), the
+    request's receipt carries the event of request DO_REQUEST and the order read after an approval names
+    NODE_ADDRESS. The held cache is a directory of the test's own."""
+    monkeypatch.setenv("ETHERNITY_CLOUD_HELD_DIR", str(tmp_path / "held"))
+    monkeypatch.setattr(runner_module.time, "sleep", lambda seconds: None)
+
+    def build(node):
+        runner = EthernityCloudRunner(*AMOY)
+        runner.signer, runner.resources, runner.running, runner.block_time = SIGNER, RESOURCES, True, 0.001
+        runner.contract = _contract(node)
+        runner.contract.get_order = lambda order_id: [WALLET, NODE_ADDRESS, DO_REQUEST, 9, 1]
+        log = SimpleNamespace(args=SimpleNamespace(_rowNumber=DO_REQUEST))
+        runner.protocol_contract = SimpleNamespace(events=SimpleNamespace(_addDORequestEV=lambda: SimpleNamespace(
+            process_receipt=lambda receipt, errors: [log])))
+        runner.order_id = ORDER
+        return runner
+    return build
+
+
+def test_a_request_none_of_whose_hand_overs_is_answered_is_sent_once(submitting):
+    """The node takes the request at the first of five hand-overs and none of their answers comes."""
+    node = _Node(80002, ["504"] * protocol_module.HANDOVER_ATTEMPTS)
+    runner = submitting(node)
+    assert runner.create_do_request("image", "code", "input", "") is True
+    assert runner.do_hash == _taken(node) and runner.do_request == DO_REQUEST
+    assert len(set(node.handed)) == 1
+
+
+def test_an_approval_none_of_whose_hand_overs_is_answered_is_sent_once(submitting):
+    node = _Node(80002, ["504"] * protocol_module.HANDOVER_ATTEMPTS)
+    runner = submitting(node)
+    assert runner.approve_task() is True
+    assert runner.node_address == NODE_ADDRESS
+    _taken(node)
+    assert len(set(node.handed)) == 1
+
+
+def test_an_approval_whose_receipt_does_not_come_is_not_followed_by_another(submitting):
+    """The node takes the approval and its receipt is not read within the hundred blocks."""
+    node = _Node(80002, [], mines=False)
+    runner = submitting(node)
+    assert runner.approve_task() is False
+    _taken(node)
+    assert len(node.handed) == 1
+
+
+def test_an_approval_whose_order_read_fails_after_it_is_mined_is_not_followed_by_another(submitting):
+    node = _Node(80002, [])
+    runner = submitting(node)
+
+    def order_not_read(order_id):
+        raise Web3RPCError("header not found", rpc_response={"jsonrpc": "2.0", "id": 1, "error": {
+            "code": -32000, "message": "header not found"}})
+
+    runner.contract.get_order = order_not_read
+    with pytest.raises(RuntimeError) as failed:
+        runner.approve_task()
+    tx = _taken(node)
+    assert str(failed.value) == (f"The approval {tx} of order {ORDER} was handed to the node, and a read after it "
+                                 "failed: header not found")
+    assert len(node.handed) == 1
+
+
+def test_a_submission_close_ended_while_its_requests_hand_over_answers_were_lost_names_the_request(submitting,
+                                                                                                    monkeypatch):
+    """The node takes the request at its first hand-over, whose answer is lost; close() is called in the wait
+    before the next hand-over."""
+    node = _Node(80002, ["504"])
+    runner = submitting(node)
+    monkeypatch.setattr(protocol_module, "time", SimpleNamespace(sleep=lambda seconds: runner.close()))
+    with pytest.raises(RunEndedError) as ended:
+        with runner._submission():
+            runner.create_do_request("image", "code", "input", "")
+    tx = _taken(node)
+    assert ended.value.request_hash == tx and ended.value.request_id is None
+    assert str(ended.value) == RUN_ENDED + RUN_ENDED_REQUEST_SENT.format(request_hash=tx)
+    assert isinstance(ended.value.__cause__, RunEndedError) and ended.value.__cause__.transaction_hash == tx
+    assert tx in str(ended.value.__cause__)
+    assert len(node.handed) == 1
 
 
 def test_a_contract_retired_between_two_hand_overs_hands_nothing_more_over(monkeypatch):

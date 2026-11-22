@@ -298,7 +298,7 @@ def test_a_first_run_after_set_network_reads_and_sends_on_the_network_set(chain,
 @EVERY_SWITCH
 def test_a_session_submitted_after_set_network_reads_and_sends_on_the_network_set(chain, monkeypatch, first, second):
     monkeypatch.setattr(session_module, "EthernityCloudSession",
-                        lambda runner, order_id, challenge=None: SimpleNamespace(order_id=order_id))
+                        lambda runner, order_id, challenge=None, request=None: SimpleNamespace(order_id=order_id))
     runner = _runner(first)
     runner.set_network(*second)
     assert runner.run_session(RESOURCES, SECURELOCK, "v3", "code").order_id == ORDER
@@ -468,7 +468,7 @@ def test_set_network_is_refused_while_a_run_is_in_progress(chain):
 
 def test_set_network_is_refused_while_a_session_is_open(chain, monkeypatch):
     monkeypatch.setattr(session_module, "EthernityCloudSession",
-                        lambda runner, order_id, challenge=None: SimpleNamespace(order_id=order_id))
+                        lambda runner, order_id, challenge=None, request=None: SimpleNamespace(order_id=order_id))
     runner = _runner(AMOY)
     runner.run_session(RESOURCES, SECURELOCK, "v3", "code")
     held = _held(runner)

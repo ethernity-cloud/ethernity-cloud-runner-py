@@ -18,6 +18,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from web3 import Web3
+from web3.exceptions import ProviderConnectionError
 
 # The (connect, read) timeout of one request, in seconds. The connect timeout
 # covers the TCP connection and the TLS handshake; the read timeout is the
@@ -97,13 +98,23 @@ def read_again(read: Callable[[], Any], ended: Callable[[], bool] = lambda: Fals
 
 
 def rpc_answers(w3: Web3, ended: Callable[[], bool] = lambda: False) -> bool:
-    """Whether the RPC of `w3` answers web3_clientVersion (Web3.is_connected,
-    which answers False for a request the RPC does not serve as for one it
-    refuses), asked up to RPC_READ_ATTEMPTS times RPC_READ_RETRY_SECONDS apart
-    while it does not, and not again once `ended()` holds."""
+    """Whether the RPC of `w3` answers web3_clientVersion (Web3.is_connected).
+    A question the RPC refuses or drops (an HTTP error status such as 429 or
+    503, a connection refused or reset, an error answer) is asked again, up
+    to RPC_READ_ATTEMPTS times RPC_READ_RETRY_SECONDS apart, and not again
+    once `ended()` holds. A question that timed out (requests.Timeout: no
+    connection within the connect timeout, no answer within the read
+    timeout) is not asked again: an RPC that does not answer takes one
+    request, RPC_REQUEST_MAX_SECONDS at its longest."""
     for attempt in range(1, RPC_READ_ATTEMPTS + 1):
-        if w3.is_connected():
-            return True
+        try:
+            if w3.is_connected(show_traceback=True):
+                return True
+        except ProviderConnectionError as error:
+            # is_connected raises it inside its handler of the request's
+            # error, which is its __context__.
+            if isinstance(error.__context__, requests.exceptions.Timeout):
+                return False
         if attempt == RPC_READ_ATTEMPTS or ended():
             return False
         time.sleep(RPC_READ_RETRY_SECONDS)

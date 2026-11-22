@@ -3,7 +3,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Union
+from typing import Any, Optional, Union
 from eth_account.messages import encode_defunct
 from eth_typing import Address, HexStr
 from web3 import Web3
@@ -11,7 +11,7 @@ from web3.contract.contract import Contract
 from web3.contract.contract import ContractFunction
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.types import TxParams
-from web3.exceptions import Web3RPCError
+from web3.exceptions import BadResponseFormat, Web3RPCError
 import requests
 from ..abi.polygonProtocolAbi import contract as polygonAbi
 from ..abi.ECLDAbi import contract as ECLDAbi
@@ -32,11 +32,24 @@ SEND_READ_RETRY_SECONDS = 1
 # (protocolContract._hand_over).
 HANDOVER_ATTEMPTS = 5
 HANDOVER_RETRY_SECONDS = 2
+# What a hand-over raises when the RPC does not answer it, or answers what is
+# not a JSON-RPC answer: a requests error (no connection, a connection reset,
+# a timeout, an HTTP error status), a body that is not JSON
+# (json.JSONDecodeError, a ValueError), a JSON body with neither a result nor
+# an error (BadResponseFormat).
+UNANSWERED = (requests.exceptions.RequestException, ValueError, BadResponseFormat)
 # What nodes answer to a transaction they hold already, in lower case: geth
 # and bor ("already known", formerly "known transaction"), Nethermind
 # ("AlreadyKnown"), OpenEthereum and Parity, bloxberg's ("Transaction with the
-# same hash was already imported.").
+# same hash was already imported."). Each is matched as a whole phrase
+# (_names_any): "unknown transaction" does not name "known transaction".
 ALREADY_HELD = ("already known", "alreadyknown", "known transaction", "already imported")
+
+
+def _names_any(message: str, phrases: tuple) -> bool:
+    """Whether `message` holds one of `phrases` as a whole phrase: neither
+    preceded nor followed by a letter or a digit."""
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", message) for phrase in phrases)
 
 
 def _gwei(wei: int) -> str:
@@ -124,12 +137,19 @@ class protocolContract:
         with self._send_lock:
             if self.retired is None:
                 self.retired = reason
-    def _refuse_retired(self) -> None:
-        """Raises errors.RunEndedError on a contract retire() ended."""
-        if self.retired is not None:
-            raise RunEndedError(
-                f"{self.retired}, and the protocol contract it held until then sends nothing after that: "
-                "the transaction was not sent.")
+    def _refuse_retired(self, handed_hash: Optional[str] = None) -> None:
+        """Raises errors.RunEndedError on a contract retire() ended.
+        `handed_hash` is the hash of a transaction a hand-over of which went
+        unanswered (_hand_over): the error names it as one the node may hold
+        and mine, in its message and its transaction_hash."""
+        if self.retired is None:
+            return
+        stopped = f"{self.retired}, and the protocol contract it held until then sends nothing after that: "
+        if handed_hash is None:
+            raise RunEndedError(stopped + "the transaction was not sent.")
+        raise RunEndedError(
+            stopped + f"the transaction {handed_hash}, a hand-over of which to the node went unanswered, is not "
+            "handed over again, and the node may hold it and mine it.", transaction_hash=handed_hash)
     def get_token_address(self) -> Address:
         return self.token_address
     def get_protocol_address(self) -> Address:
@@ -215,9 +235,12 @@ class protocolContract:
         from that the RPC does not serve (requests.RequestException: no
         connection, no answer within rpc.RPC_TIMEOUT, an HTTP error status)
         ends the attempt, and the next attempt, after SEND_READ_RETRY_SECONDS,
-        reads again. The signed transaction is handed over by _hand_over; when
-        none of its hand-overs is answered, the send raises and builds no
-        other transaction, since the node may hold that one.
+        reads again. The signed transaction is handed over by _hand_over. A
+        node error answering its first hand-over says the node did not take
+        it: a nonce error above gives another attempt, and any other is
+        raised. Once a hand-over has gone unanswered the node may hold the
+        transaction, and _hand_over returns its hash whatever comes after,
+        so that no other transaction is built for the send.
         """
         max_attempts = 20
         current_nonce = None
@@ -281,50 +304,55 @@ class protocolContract:
 
     def _hand_over(self, signed_tx: Any) -> HexStr:
         """Hands the signed transaction to the node and returns its hash. A
-        hand-over the RPC does not answer (requests.RequestException: no
-        connection, a connection reset, no answer within rpc.RPC_TIMEOUT, an
-        HTTP error status such as 429, 503 or 504) is made again with the same
-        signed bytes, up to HANDOVER_ATTEMPTS times HANDOVER_RETRY_SECONDS
-        apart: the same bytes are the same transaction, so a node that took an
-        earlier hand-over whose answer was lost is not given a second
-        transaction. The transaction is the node's, and its hash is returned,
-        when the node answers that it holds it already (ALREADY_HELD), and when,
-        after a hand-over whose answer was lost, it answers that its nonce is
-        used and the transaction is found by its hash (it was mined). Each
-        hand-over is made under the lock retire() takes, after the retirement
-        check. The last RequestException, and any other node error, is
-        raised."""
+        hand-over the RPC does not answer (UNANSWERED: no connection, a
+        connection reset, no answer within rpc.RPC_TIMEOUT, an HTTP error
+        status such as 429, 503 or 504, a body that is no JSON-RPC answer) is
+        made again with the same signed bytes, up to HANDOVER_ATTEMPTS times
+        HANDOVER_RETRY_SECONDS apart: the same bytes are the same transaction,
+        so a node that took an earlier hand-over is not given a second one.
+        The hash is returned when the node takes the transaction and when it
+        answers that it holds it already (ALREADY_HELD). Once a hand-over has
+        gone unanswered, the node, or another replica behind the RPC, may hold
+        the transaction:
+        the hash is returned whatever the node answers next, and when no
+        hand-over is answered, and the transaction's receipt decides. An
+        answer that its nonce is used (geth's and bor's "nonce too low",
+        Nethermind's "OldNonce", OpenEthereum's "Transaction nonce is too
+        low") is that of a node that mined it, and equally of one that mined
+        another transaction at that nonce. A node error answering the first
+        hand-over is raised. Each hand-over is made under the lock retire()
+        takes, after the retirement check; after a hand-over that went
+        unanswered the RunEndedError of a retired contract names the
+        transaction."""
         tx_hash = self.provider.to_hex(signed_tx.hash)
         lost = False
         for attempt in range(1, HANDOVER_ATTEMPTS + 1):
             with self._send_lock:
-                self._refuse_retired()
+                self._refuse_retired(tx_hash if lost else None)
                 try:
                     # Suppress Web3's friendly prefix for this call only
                     with suppress_web3_friendly_prefix():
                         return self.provider.to_hex(self.provider.eth.send_raw_transaction(signed_tx.raw_transaction))
-                except requests.exceptions.RequestException as e:
+                except UNANSWERED as e:
+                    lost = True
                     if attempt == HANDOVER_ATTEMPTS:
-                        raise
+                        print(f"Hand-over {attempt} of {tx_hash} not answered ({type(e).__name__}: {e}); none of "
+                              f"its {HANDOVER_ATTEMPTS} hand-overs was answered and the node may hold it, so its "
+                              "receipt decides and no other transaction is built")
+                        return tx_hash
                     print(f"Hand-over {attempt} of {tx_hash} not answered ({type(e).__name__}: {e}); handing the "
                           "same transaction over again...")
-                    lost = True
                 except Web3RPCError as e:
                     message = raw_rpc_error_message(e).lower()
-                    if any(phrase in message for phrase in ALREADY_HELD):
+                    if _names_any(message, ALREADY_HELD):
                         return tx_hash
-                    if lost and "nonce too low" in message and self._holds(tx_hash):
+                    if lost:
+                        print(f"Hand-over {attempt} of {tx_hash} answered {raw_rpc_error_message(e)!r} after a "
+                              "hand-over that went unanswered; the node may hold the transaction, so its receipt "
+                              "decides and no other transaction is built")
                         return tx_hash
                     raise
             time.sleep(HANDOVER_RETRY_SECONDS)
-
-    def _holds(self, tx_hash: HexStr) -> bool:
-        """Whether the node finds the transaction `tx_hash`; False when the
-        read fails."""
-        try:
-            return self.provider.eth.get_transaction(tx_hash) is not None
-        except Exception:
-            return False
 
     def get_signer(self) -> Any:
         return self.signer

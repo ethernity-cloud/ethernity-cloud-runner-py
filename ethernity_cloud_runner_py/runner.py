@@ -915,7 +915,10 @@ class EthernityCloudRunner:
         """Create a DO request on the contract. The run the calling thread
         works for (a run() or a session submission) records the request's
         transaction hash once it is sent and its id once read from the
-        receipt (_Run.request_hash, _Run.request_id)."""
+        receipt (_Run.request_hash, _Run.request_id). A request a hand-over
+        of which went unanswered before close() retired the contract may be
+        mined: the run records its hash from the errors.RunEndedError that
+        names it (transaction_hash), which is raised on."""
         run = getattr(self._calling, "run", None)
         if not self.contract:
             raise RuntimeError("Contract not initialized.")
@@ -932,7 +935,13 @@ class EthernityCloudRunner:
             return self._sender().add_do_request(image_metadata, code_metadata, input_metadata, node_address, self.resources)
         # A request the fee ceiling refuses is not sent again: the refusal
         # ends the tries and the submission.
-        transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2, final=(FeeCeilingError,))
+        try:
+            transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2,
+                                                    final=(FeeCeilingError,))
+        except RunEndedError as ended:
+            if run is not None and ended.transaction_hash is not None:
+                run.request_hash = ended.transaction_hash
+            raise
         if not transaction_hash:
             return False
         self.do_hash = transaction_hash
@@ -1059,6 +1068,16 @@ class EthernityCloudRunner:
                         continue
         return result
 
+    def _request_fields(self) -> Dict[str, Any]:
+        """The result fields of the DO request the runner sent last: its
+        transaction hash, its image, its payload and its input."""
+        return {
+            "input_transaction_hash": self.do_hash,
+            "image_hash": f"{self.enclave_image_ipfs_hash}:{self.securelock_enclave}",
+            "script_hash": self.script_hash,
+            "file_set_hash": self.file_set_hash,
+        }
+
     def _dp_request_rows(self, dp_request: int) -> List[tuple]:
         """The (key, value) metadata rows of a DP request."""
         caller = self.protocol_contract.caller()
@@ -1066,15 +1085,28 @@ class EthernityCloudRunner:
         return [tuple(caller._getMetadataValueForDPRequest(dp_request, i)) for i in range(count)]
 
     def get_result_from_order(self, order_id: int, order: Optional[Any] = None,
-                              challenge: Optional[bytes] = None) -> Optional[Dict[str, Any]]:
+                              challenge: Optional[bytes] = None, signer: Optional[str] = None,
+                              request: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Get and verify result from order.
 
-        `order` is the order's struct (_getOrder) and `challenge` the
-        challenge of its request: when `order` is not given, those of the
-        task the runner has in hand (self.order, self.challenge_hash). A
-        session handle gives its own (EthernityCloudSession.close); an
-        attached handle knows no challenge, and its result's signer is then
-        not checked against one.
+        `order` is the order's struct (_getOrder). When it is not given, the
+        task the runner has in hand is read: self.order, the challenge of its
+        request (self.challenge_hash), the duration of self.resources, and
+        the runner's request transaction, image, payload and input in the
+        result. A session handle gives its own order
+        (EthernityCloudSession.close) with what it knows of it: `challenge`,
+        the challenge of its request, which run_session() knows; `signer`,
+        the task wallet the trustedzone attested in the session's etny-sw
+        row, the wallet both trustedzones sign the result with; and
+        `request`, a dict of the order's "duration_hours" (1 when not given)
+        and the result's "input_transaction_hash", "image_hash",
+        "script_hash" and "file_set_hash" (None when not given).
+
+        The result's signer is checked against the wallet the challenge
+        derives when there is a challenge, else against `signer`. With
+        neither, nothing is read and None is returned: a result whose signer
+        is not checked is not taken, and its envelope sets neither the ESR
+        wallet of the enclave nor the state cache (_apply_envelope).
 
         On failure this returns None and, when the failure is attributable to
         the node operator (timeout, unusable output, operator-fault task code),
@@ -1082,15 +1114,22 @@ class EthernityCloudRunner:
         DO request."""
         if order is None:
             order, challenge = self.order, self.challenge_hash
+            request = dict(self._request_fields(),
+                           duration_hours=(getattr(self, "resources", None) or {}).get("duration", 1))
+        request = request or {}
         decrypted_data: Dict[str, Any] = {}
         max_retries = 10
         self._fault = None
+        if not challenge and not signer:
+            self.logger.error(
+                f"The signer of the result of order {order_id} cannot be checked: neither the challenge of its "
+                "request nor the task wallet its trustedzone attested is known. The result is not read.")
+            return None
         self.logger.info(f"Operator {order[1]} is processing task {order_id}")
         # An honest node holds an order at most its duration plus the node
         # agent's own result wait (~62 min); past that the operator is hung or
         # offline and the order will never leave PROCESSING on its own.
-        duration_hours = (getattr(self, "resources", None) or {}).get("duration", 1)
-        deadline = time.time() + duration_hours * 3600 + 900
+        deadline = time.time() + request.get("duration_hours", 1) * 3600 + 900
         # The RPC is load-balanced over replicas that lag one another, so a read
         # of an order placed moments ago can revert on one that has not seen it.
         status = self.retry_operation(lambda: self.contract.get_status_from_order(order_id), max_retries)
@@ -1187,12 +1226,14 @@ class EthernityCloudRunner:
         self.logger.info("Verifying ZK proof")
         if challenge:
             wallet = generate_wallet(challenge.decode("utf-8"), transaction_result["enclave_challenge"])
-            if not wallet or wallet != transaction_result["from"]:
-                self.logger.error("Integrity check failed, signer wallet address is wrong")
-                self.logger.error("Tokens will be refunded after validation. Please try again.")
-                self._fault = f"order {order_id}: result signer verification failed"
-                return None
-            self.logger.info("Verification successful!")
+        else:
+            wallet = signer
+        if not wallet or wallet.lower() != str(transaction_result["from"]).lower():
+            self.logger.error("Integrity check failed, signer wallet address is wrong")
+            self.logger.error("Tokens will be refunded after validation. Please try again.")
+            self._fault = f"order {order_id}: result signer verification failed"
+            return None
+        self.logger.info("Verification successful!")
         self.logger.info(f"The result is signed by: {transaction_result['from']}")
         ipfs_result = self._read_result(parsed_order_result["result_ipfs_hash"], deadline)
         if ipfs_result is None:
@@ -1215,13 +1256,13 @@ class EthernityCloudRunner:
             return None
         return self._apply_envelope({
             "contract_address": self.contract.get_protocol_address(),
-            "input_transaction_hash": self.do_hash,
+            "input_transaction_hash": request.get("input_transaction_hash"),
             "output_transaction_hash": "",
             "order_id": order_id,
             "success": task_code_int == 0,
-            "image_hash": f"{self.enclave_image_ipfs_hash}:{self.securelock_enclave}",
-            "script_hash": self.script_hash,
-            "file_set_hash": self.file_set_hash,
+            "image_hash": request.get("image_hash"),
+            "script_hash": request.get("script_hash"),
+            "file_set_hash": request.get("file_set_hash"),
             "public_timestamp": 0,
             "result_hash": parsed_order_result["result_ipfs_hash"],
             "result_task_code": transaction_result["task_code_string"],
@@ -1324,14 +1365,18 @@ class EthernityCloudRunner:
         self.logger.error(f"Request {self.do_request} could not be cancelled: {cancel_error}")
         return False
     def approve_task(self) -> bool:
-        """Approve the task."""
+        """Approve the task: approve_order's outcome. approve_order is called
+        again, a block time apart and up to 100 times, while it raises a node
+        error (Web3RPCError) before its approval is handed to the node. Once
+        it has handed one over it sends no other for the order, whatever its
+        receipt says: its outcome is returned, and a failure after it is
+        raised as RuntimeError."""
         self.logger.info(f"Approving task {self.order_id}...")
         max_attempts = 100
         retry_count = 0
         while self.is_running() and retry_count < max_attempts:
             try:
-                if self.approve_order():
-                    return True
+                return self.approve_order()
             except Web3RPCError as e:
                 self.logger.error(f"Approval failed: {raw_rpc_error_message(e)}")
             time.sleep(self.block_time)
@@ -1391,7 +1436,12 @@ class EthernityCloudRunner:
                 return True
         return False
     def approve_order(self) -> bool:
-        """Approve the order."""
+        """Approve the order with one _approveOrder transaction: True once it
+        is mined, False when it reverts or its receipt is not read within 100
+        blocks. The send is tried again (retry_operation) while it fails
+        before the transaction is handed to the node; the last such failure
+        is raised. A node error of a read after the hand-over (the receipt,
+        the order) is raised as RuntimeError naming the approval."""
         if self.node_address != "":
             self.logger.info(f"Transaction is delegated to {self.node_address}, skipping approval")
             return True
@@ -1400,13 +1450,19 @@ class EthernityCloudRunner:
             return self._sender().approve_order(self.order_id)
 
         transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2)
-        # wait_for_transaction_to_be_processed returns a bool, not a receipt:
-        # subscripting it raised TypeError and killed the approval.
-        approved = self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100)
+        try:
+            # wait_for_transaction_to_be_processed returns a bool, not a
+            # receipt.
+            approved = self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100)
+            if approved:
+                # The receipt came from one RPC replica; the order read can
+                # land on one that has not seen the order yet and revert.
+                self.node_address = self.retry_operation(lambda: self.contract.get_order(self.order_id))[1]
+        except Web3RPCError as e:
+            raise RuntimeError(
+                f"The approval {transaction_hash} of order {self.order_id} was handed to the node, and a read "
+                f"after it failed: {raw_rpc_error_message(e)}") from e
         if approved:
-            # The receipt came from one RPC replica; the order read can land on
-            # one that has not seen the order yet and revert.
-            self.node_address = self.retry_operation(lambda: self.contract.get_order(self.order_id))[1]
             self.logger.info(f"{transaction_hash} confirmed!")
             self.logger.info(f"Task {self.order_id} approved successfully!")
             return True
@@ -2059,7 +2115,8 @@ class EthernityCloudRunner:
                     if not self.approve_task():
                         raise ValueError("Task approval failed.")
                     self.logger.info(f"Session order {self.order_id} is processing")
-                    session = EthernityCloudSession(self, self.order_id, challenge=self.challenge_hash)
+                    session = EthernityCloudSession(self, self.order_id, challenge=self.challenge_hash,
+                                                    request=self._request_fields())
                     self._hold_session(run, session)
                 except BaseException:
                     # The flag stays set for the handles the runner holds,

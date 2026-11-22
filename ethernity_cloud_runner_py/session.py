@@ -92,14 +92,19 @@ class SessionError(Exception):
 
 
 class EthernityCloudSession:
-    def __init__(self, runner, order_id: int, challenge: Optional[bytes] = None):
+    def __init__(self, runner, order_id: int, challenge: Optional[bytes] = None,
+                 request: Optional[Dict[str, Any]] = None):
         """The handle of session order `order_id` of `runner`. `challenge` is
-        the challenge of the session's request, which run_session() knows and
-        attach_session() does not: close(wait=True) checks the summary's
-        signer against it when given."""
+        the challenge of the session's request and `request` the result
+        fields of that request (EthernityCloudRunner._request_fields), which
+        run_session() knows and attach_session() does not. close(wait=True)
+        checks the summary's signer against the challenge when given, else
+        against the task wallet the trustedzone attested, and the summary
+        carries `request`'s fields, None for those not given."""
         self.runner = runner
         self.order_id = int(order_id)
         self._challenge = challenge
+        self._request = dict(request or {})
         # What the runner holds as the handle is made, kept for the handle's
         # life: the protocol contract its rows go through (a network, a PoX
         # and a signer), the web3 contract its reads are made on, the
@@ -536,10 +541,13 @@ class EthernityCloudSession:
         """Commit the close row; optionally wait for the order to settle and
         return the final task result (the session summary). The row goes
         through the contract the handle was made with. The summary is read
-        with the handle's own order and challenge
-        (EthernityCloudRunner.get_result_from_order), so an attached handle
-        returns it too, its signer not checked against a challenge the
-        attaching process does not know. SessionError on a
+        with the handle's own order, its duration, its request's fields and
+        its challenge (EthernityCloudRunner.get_result_from_order). A handle
+        without the challenge, which attach_session() makes, checks the
+        result's signer against the task wallet the trustedzone attested in
+        the session's etny-sw row: a result another wallet signed gives no
+        summary, and neither does a handle that has verified no
+        attestation. SessionError on a
         handle the runner's close() detached, before the row and during the
         wait: nothing is sent. Once a close(wait=True) has returned the
         summary, the handle is out of the runner's handles
@@ -571,10 +579,13 @@ class EthernityCloudSession:
             self.poll_outputs()
             time.sleep(5)
         # Final drain, then the ordinary result path (summary + transcript),
-        # with the handle's own order and challenge.
+        # with the handle's own order, request and challenge, and the task
+        # wallet the drain may have attested.
         self.poll_outputs()
         try:
-            summary = self.runner.get_result_from_order(self.order_id, order=self._order, challenge=self._challenge)
+            summary = self.runner.get_result_from_order(
+                self.order_id, order=self._order, challenge=self._challenge, signer=self._attested_wallet,
+                request=dict(self._request, duration_hours=self.duration_hours))
         except Exception as e:
             self.runner.logger.warning(f"[session] final result not readable: {e}")
             summary = None

@@ -138,12 +138,17 @@ class RunEndedError(RuntimeError):
     EthernityCloudRunner.retry_operation). `request_id` and `request_hash`
     name the DO request a session submission close() ended had sent, its id
     once read from the receipt and its transaction hash; None when it sent
-    none."""
+    none. `transaction_hash` is the transaction a retired protocol contract
+    had handed to the node in a hand-over that went unanswered, which the
+    node may hold and mine (protocolContract._hand_over); None when there
+    was none."""
 
-    def __init__(self, message: str, request_id: Optional[int] = None, request_hash: Optional[str] = None) -> None:
+    def __init__(self, message: str, request_id: Optional[int] = None, request_hash: Optional[str] = None,
+                 transaction_hash: Optional[str] = None) -> None:
         super().__init__(message)
         self.request_id = request_id
         self.request_hash = request_hash
+        self.transaction_hash = transaction_hash
 
 
 # ---------- Filter (global) ----------

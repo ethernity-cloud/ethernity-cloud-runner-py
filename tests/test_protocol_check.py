@@ -416,7 +416,7 @@ def _submitting_runner(monkeypatch, orders_count, storage_admission=None, networ
     runner._resolve_storage = lambda: None
     monkeypatch.setattr(runner_module, "ImageRegistryContract", step("registry", SimpleNamespace()))
     monkeypatch.setattr(session_module, "EthernityCloudSession",
-                        lambda runner, order_id, challenge=None: SimpleNamespace(order_id=order_id))
+                        lambda runner, order_id, challenge=None, request=None: SimpleNamespace(order_id=order_id))
     monkeypatch.setattr(runner_module.time, "sleep", lambda seconds: None)
     return runner
 

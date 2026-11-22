@@ -388,7 +388,8 @@ def _settles_on_its_close_row(chain):
 def _summarizing(runner):
     """The runner's final result read answers SUMMARY; returns the order ids it was asked for."""
     asked = []
-    runner.get_result_from_order = lambda order_id, order=None, challenge=None: asked.append(order_id) or dict(SUMMARY)
+    runner.get_result_from_order = lambda order_id, order=None, challenge=None, signer=None, request=None: (
+        asked.append(order_id) or dict(SUMMARY))
     return asked
 
 

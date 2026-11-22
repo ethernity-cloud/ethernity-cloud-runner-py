@@ -152,6 +152,75 @@ def test_a_provider_keeps_the_chain_id_and_asks_every_other_request_each_time(an
     assert answering_rpc.count("web3_clientVersion") == 3
 
 
+# ---- the question whether the RPC answers ----
+
+@pytest.fixture
+def short_questions(monkeypatch):
+    """A question takes a read timeout of 0.3 s at most, and none waits for the next."""
+    monkeypatch.setattr(rpc_module, "RPC_TIMEOUT", (2, 0.3))
+    monkeypatch.setattr(rpc_module, "RPC_READ_RETRY_SECONDS", 0)
+
+
+def _keyed(network=AMOY):
+    runner = EthernityCloudRunner(*network)
+    runner.set_private_key("0x" + "11" * 32)
+    return runner
+
+
+QUESTIONS = {
+    "connect()": lambda runner: runner.connect(),
+    # A connected runner moved to POLYGON AMOY; the stand-in is the contract it holds.
+    "set_network()": lambda runner: (setattr(runner, "contract", SimpleNamespace()),
+                                     runner.set_network(*AMOY)),
+}
+
+
+@pytest.mark.parametrize("call", list(QUESTIONS))
+def test_a_call_that_asks_an_rpc_that_does_not_answer_asks_once(hanging_rpc, short_questions, call):
+    """The question timed out: the RPC had the whole timeout, and is not asked again."""
+    runner = _keyed(("BLOXBERG", "TESTNET") if call == "set_network()" else AMOY)
+    started = time.monotonic()
+    with pytest.raises(ConnectionError):
+        QUESTIONS[call](runner)
+    assert len(hanging_rpc) == 1
+    assert time.monotonic() - started < 1.5
+
+
+@pytest.fixture
+def refusing_rpc(monkeypatch):
+    """POLYGON AMOY's RPC is an HTTP server on 127.0.0.1 that answers every request 503; the list given lists
+    the methods asked."""
+    asked = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *arguments):
+            pass
+
+        def do_POST(self):
+            asked.append(json.loads(self.rfile.read(int(self.headers["Content-Length"])))["method"])
+            body = b"Service Unavailable"
+            self.send_response(503)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(ECNetwork.POLYGON.AMOY, "RPC_URL", f"http://127.0.0.1:{server.server_address[1]}")
+    yield asked
+    server.shutdown()
+    server.server_close()
+
+
+def test_a_connect_to_an_rpc_that_refuses_asks_again(refusing_rpc, short_questions):
+    with pytest.raises(ConnectionError):
+        _keyed().connect()
+    assert refusing_rpc == ["web3_clientVersion"] * rpc_module.RPC_READ_ATTEMPTS
+
+
 # ---- what the runner reads again ----
 
 def test_the_receipt_poll_reads_again_after_a_read_the_rpc_did_not_answer(monkeypatch):
