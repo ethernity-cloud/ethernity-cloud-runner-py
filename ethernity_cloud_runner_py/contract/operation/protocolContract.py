@@ -40,8 +40,9 @@ HANDOVER_RETRY_SECONDS = 2
 # an error (BadResponseFormat).
 UNANSWERED = (requests.exceptions.RequestException, ValueError, BadResponseFormat)
 # The HTTP statuses with which an RPC answers a request it did not take: 429
-# Too Many Requests, 503 Service Unavailable (refused_untaken).
-UNTAKEN_STATUSES = (429, 503)
+# Too Many Requests (refused_untaken). A 503 Service Unavailable is not one
+# of them: a gateway answers it also for a request it passed on.
+UNTAKEN_STATUSES = (429,)
 # What nodes answer to a transaction they hold already, in lower case: geth
 # and bor ("already known", formerly "known transaction"), Nethermind
 # ("AlreadyKnown"), OpenEthereum and Parity, bloxberg's ("Transaction with the
@@ -63,7 +64,7 @@ def refused_untaken(error: BaseException) -> bool:
     a connection refused, a name that does not resolve), before which
     nothing was sent. Every other error of UNANSWERED may follow the node's
     receipt of the request: a timeout or a reset after the request was sent,
-    an HTTP 504 or another status, a body that is no JSON-RPC answer."""
+    an HTTP 503, 504 or another status, a body that is no JSON-RPC answer."""
     if isinstance(error, requests.exceptions.HTTPError):
         return error.response is not None and error.response.status_code in UNTAKEN_STATUSES
     if isinstance(error, requests.exceptions.ConnectTimeout):
@@ -338,11 +339,11 @@ class protocolContract:
         so a node that took an earlier hand-over is not given a second one.
         The hash is returned when the node takes the transaction and when it
         answers that it holds it already (ALREADY_HELD). A hand-over whose
-        error shows that no node took it (refused_untaken: an HTTP 429 or
-        503, a connection never made) leaves the transaction the runner's
-        alone; when every hand-over is refused so, the last error is raised.
-        Once a hand-over has gone unanswered in any other way (a timeout or a
-        reset after the request was sent, an HTTP 504, a body that is no
+        error shows that no node took it (refused_untaken: an HTTP 429, a
+        connection never made) leaves the transaction the runner's alone;
+        when every hand-over is refused so, the last error is raised. Once a
+        hand-over has gone unanswered in any other way (a timeout or a reset
+        after the request was sent, an HTTP 503 or 504, a body that is no
         JSON-RPC answer), the node, or another replica behind the RPC, may
         hold the transaction: the hash is returned whatever the node answers
         next, and when no later hand-over is answered, and the transaction's

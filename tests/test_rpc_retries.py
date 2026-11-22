@@ -92,7 +92,8 @@ class _Node(BaseProvider):
     is the node's error answer, the transaction not taken. The others reach the node. A transaction whose nonce is below the count, and which
     the node does not hold, is answered `nonce_used`. Else the node takes a transaction it does not hold:
     "take" answers its hash, "504" and "slow" raise the error of an HTTP 504 and of a read timeout, "mined 504"
-    mines it and raises the HTTP 504 error, "html" and "no result" raise web3's errors for a body that is not
+    and "mined 503" mine it and raise the error of an HTTP 504 and of an HTTP 503 (a gateway that passed the
+    request on), "html" and "no result" raise web3's errors for a body that is not
     JSON and for a JSON body with neither a result nor an error. A transaction the node holds is answered
     "take" with `held`, or with `nonce_used` once mined, and the others raise their errors for it.
     eth_getTransactionByHash is answered from the pool where `gettx` is "ok"; "429" raises the requests error
@@ -164,10 +165,12 @@ class _Node(BaseProvider):
             if not held and _nonce_of(raw) < self.count():
                 return {"jsonrpc": "2.0", "id": 1, "error": self.nonce_used}
             self.pool[tx_hash] = raw
-            if answer == "mined 504":
+            if answer in ("mined 504", "mined 503"):
                 self.mined.add(tx_hash)
             if answer in ("504", "mined 504"):
                 raise requests.exceptions.HTTPError("504 Server Error: Gateway Timeout for url: RPC")
+            if answer == "mined 503":
+                raise _http_error(503)
             if answer == "slow":
                 raise requests.exceptions.ReadTimeout("Read timed out. (read timeout=10)")
             if answer == "html":
@@ -271,9 +274,11 @@ def test_any_answer_after_a_lost_answer_gives_the_hash_back_and_no_transaction_i
     assert node.reads.count("eth_getTransactionCount") == 1
 
 
-def test_a_send_none_of_whose_hand_overs_is_answered_gives_its_hash_back_and_builds_no_second_transaction():
-    """A gateway answers each hand-over with an HTTP 504: it may have passed the request on."""
-    node = _Node(80002, ["lost 504"] * protocol_module.HANDOVER_ATTEMPTS)
+@pytest.mark.parametrize("status", ["lost 504", "503"])
+def test_a_send_none_of_whose_hand_overs_is_answered_gives_its_hash_back_and_builds_no_second_transaction(status):
+    """A gateway answers each hand-over with an HTTP 504 or 503: it may have passed the request on, and the
+    receipt decides."""
+    node = _Node(80002, [status] * protocol_module.HANDOVER_ATTEMPTS)
     assert _contract(node).approve_order(ORDER) == _first_hash(node)
     assert len(node.handed) == protocol_module.HANDOVER_ATTEMPTS
     assert len(set(node.handed)) == 1
@@ -281,7 +286,27 @@ def test_a_send_none_of_whose_hand_overs_is_answered_gives_its_hash_back_and_bui
     assert node.reads.count("eth_getTransactionCount") == 1
 
 
-UNTAKEN = ["429", "503", "refused", "connect timeout"]
+def test_a_request_every_hand_over_of_which_is_answered_503_is_not_built_again(submitting):
+    """The gateway passes none of the five hand-overs on and answers each HTTP 503: the transaction may be
+    held, its receipt does not come, and the request ends without another transaction."""
+    node = _Node(80002, ["503"] * protocol_module.HANDOVER_ATTEMPTS)
+    runner = submitting(node)
+    assert runner.create_do_request("image", "code", "input", "") is False
+    assert len(node.handed) == protocol_module.HANDOVER_ATTEMPTS and len(set(node.handed)) == 1
+    assert node.pool == {}
+
+
+def test_a_request_mined_behind_a_gateways_503_is_sent_once(submitting):
+    """The gateway passes the request on, the node mines it, and the gateway answers HTTP 503; the same bytes
+    go to the node again, which answers that their nonce is used: one request, mined, and its receipt read."""
+    node = _Node(80002, ["mined 503"])
+    runner = submitting(node)
+    assert runner.create_do_request("image", "code", "input", "") is True
+    assert runner.do_hash == _taken(node) and runner.do_request == DO_REQUEST
+    assert len(node.handed) == 2 and len(set(node.handed)) == 1
+
+
+UNTAKEN = ["429", "refused", "connect timeout"]
 
 
 @pytest.mark.parametrize("refusal", UNTAKEN)
@@ -305,7 +330,7 @@ def test_a_hand_over_that_went_unanswered_among_refusals_gives_the_hash_back(ref
 
 
 @pytest.mark.parametrize("error, untaken", [
-    (_http_error(429), True), (_http_error(503), True), (_http_error(504), False), (_http_error(502), False),
+    (_http_error(429), True), (_http_error(503), False), (_http_error(504), False), (_http_error(502), False),
     (requests.exceptions.ConnectionError(MaxRetryError(None, "/", NewConnectionError(None, "refused"))), True),
     (requests.exceptions.ConnectTimeout(MaxRetryError(None, "/", ConnectTimeoutError(None, "timed out"))), True),
     (requests.exceptions.ConnectionError("Connection aborted."), False),
