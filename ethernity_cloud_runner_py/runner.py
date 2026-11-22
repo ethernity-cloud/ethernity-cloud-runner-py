@@ -20,7 +20,7 @@ from .contract.abi.bloxbergAbi import contract as bloxbergAbi
 from .contract.abi.polygonProtocolAbi import contract as polygonAbi
 from .contract.abi.ECLDAbi import contract as ECLDAbi
 from .contract.operation.imageRegistryContract import ImageRegistryContract
-from .contract.operation.protocolContract import protocolContract
+from .contract.operation.protocolContract import protocolContract, send_and_wait
 from .contract.operation.esrContract import ESRContract
 from .rpc import read_again, rpc_answers
 from .state_cache import StateCache, parse_result_envelope
@@ -639,7 +639,9 @@ class EthernityCloudRunner:
         the token is read (_read_before_request), and when it is below the
         request's escrow (protocolContract.request_escrow, the amount the PoX
         pulls with transferFrom) the protocol is approved for exactly the
-        escrow and the approval is waited for; an allowance at or above the
+        escrow and the approval is waited for, and sent again when it is not
+        mined because another transaction of the wallet took its nonce
+        (send_and_wait); an allowance at or above the
         escrow is left as it is. Where the protocol is the token (BLOXBERG
         MAINNET and TESTNET_POX10) nothing is read or approved. Raises
         RuntimeError naming the token, the wallet, the protocol and the
@@ -660,8 +662,9 @@ class EthernityCloudRunner:
                 f"for {protocol} at {self.contract.get_token_address()}: {provider_message(e)}") from e
         if allowance < Web3.to_wei(escrow, "ether"):
             self.logger.info(f"Approving allowance for {escrow} {self.network_config.TOKEN_NAME}")
-            transaction_hash = self._sender().set_allowance(escrow)
-            receipt = self.poll_transaction(transaction_hash, max_attempts=100)
+            _, receipt = send_and_wait(self._sender(), lambda: self._sender().set_allowance(escrow),
+                                       lambda tx_hash: self.poll_transaction(tx_hash, max_attempts=100),
+                                       self.is_running)
             if not receipt or receipt["status"] != 1:
                 raise ValueError("Allowance approval failed.")
             self.logger.info("Allowance approved")
@@ -918,7 +921,10 @@ class EthernityCloudRunner:
         receipt (_Run.request_hash, _Run.request_id). A request a hand-over
         of which went unanswered before close() retired the contract may be
         mined: the run records its hash from the errors.RunEndedError that
-        names it (transaction_hash), which is raised on."""
+        names it (transaction_hash), which is raised on. A request that is
+        not mined because another transaction of the wallet took its nonce is
+        sent again (send_and_wait), and the run records the hash of the one
+        sent last."""
         run = getattr(self._calling, "run", None)
         if not self.contract:
             raise RuntimeError("Contract not initialized.")
@@ -933,24 +939,31 @@ class EthernityCloudRunner:
         node_address = Web3.to_checksum_address(node_address) if node_address else ""
         def send_tx():
             return self._sender().add_do_request(image_metadata, code_metadata, input_metadata, node_address, self.resources)
-        # A request the fee ceiling refuses is not sent again: the refusal
-        # ends the tries and the submission.
-        try:
-            transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2,
-                                                    final=(FeeCeilingError,))
-        except RunEndedError as ended:
-            if run is not None and ended.transaction_hash is not None:
-                run.request_hash = ended.transaction_hash
-            raise
-        if not transaction_hash:
-            return False
-        self.do_hash = transaction_hash
-        if run is not None:
-            run.request_hash = transaction_hash
+
+        def send_request():
+            # A request the fee ceiling refuses is not sent again: the
+            # refusal ends the tries and the submission.
+            try:
+                transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2,
+                                                        final=(FeeCeilingError,))
+            except RunEndedError as ended:
+                if run is not None and ended.transaction_hash is not None:
+                    run.request_hash = ended.transaction_hash
+                raise
+            if transaction_hash:
+                self.do_hash = transaction_hash
+                if run is not None:
+                    run.request_hash = transaction_hash
+            return transaction_hash
+
         # The receipt poll_transaction returns is the one the event is read
         # from: a second read can land on an RPC replica that has not seen the
         # transaction yet and raise TransactionNotFound.
-        receipt = self.poll_transaction(transaction_hash, max_attempts=100)
+        transaction_hash, receipt = send_and_wait(
+            self._sender(), send_request, lambda tx_hash: self.poll_transaction(tx_hash, max_attempts=100),
+            self.is_running)
+        if not transaction_hash:
+            return False
         if not receipt or receipt['status'] != 1:
             reason = self.get_reason(self.protocol_contract, transaction_hash) if receipt else "no receipt"
             self.logger.error(f"Unable to create DO request: {reason}")
@@ -1345,14 +1358,20 @@ class EthernityCloudRunner:
         """The DO request had no order after the wait: cancel it, which
         returns its escrow, and return False. The contract refuses the cancel
         once a node has booked the request; the order that node placed is
-        then taken (True) and the task goes on with it."""
+        then taken (True) and the task goes on with it. A cancel that is not
+        mined because another transaction of the wallet took its nonce is
+        sent again (send_and_wait)."""
         self.logger.warning(f"No node took request {self.do_request} within {wait_seconds} s; cancelling it")
         cancel_error = None
         try:
-            transaction_hash = self._sender().cancel_do_request(self.do_request)
-            if self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100):
+            transaction_hash, receipt = send_and_wait(
+                self._sender(), lambda: self._sender().cancel_do_request(self.do_request),
+                lambda tx_hash: self.poll_transaction(tx_hash, max_attempts=100), self.is_running)
+            if receipt and receipt["status"] == 1:
                 self.logger.info(f"Request {self.do_request} cancelled; its escrow is returned")
                 return False
+            if receipt:
+                self.logger.error(f"Transaction failed: {self.get_reason(self.contract, transaction_hash)}")
             cancel_error = f"cancel transaction {transaction_hash} failed"
         except Exception as e:
             cancel_error = raw_rpc_error_message(e) if isinstance(e, Web3RPCError) else str(e)
@@ -1368,9 +1387,10 @@ class EthernityCloudRunner:
         """Approve the task: approve_order's outcome. approve_order is called
         again, a block time apart and up to 100 times, while it raises a node
         error (Web3RPCError) before its approval is handed to the node. Once
-        it has handed one over it sends no other for the order, whatever its
-        receipt says: its outcome is returned, and a failure after it is
-        raised as RuntimeError."""
+        it has handed one over it is not called again, whatever the receipt
+        says: its outcome is returned, and a failure after it is raised as
+        RuntimeError. approve_order sends the approval again only when
+        another transaction of the wallet took its nonce."""
         self.logger.info(f"Approving task {self.order_id}...")
         max_attempts = 100
         retry_count = 0
@@ -1440,8 +1460,10 @@ class EthernityCloudRunner:
         is mined, False when it reverts or its receipt is not read within 100
         blocks. The send is tried again (retry_operation) while it fails
         before the transaction is handed to the node; the last such failure
-        is raised. A node error of a read after the hand-over (the receipt,
-        the order) is raised as RuntimeError naming the approval."""
+        is raised. An approval that is not mined because another transaction
+        of the wallet took its nonce is sent again (send_and_wait). A node
+        error of a read after the hand-over (the receipt, the order) is
+        raised as RuntimeError naming the approval."""
         if self.node_address != "":
             self.logger.info(f"Transaction is delegated to {self.node_address}, skipping approval")
             return True
@@ -1449,23 +1471,29 @@ class EthernityCloudRunner:
         def send_tx():
             return self._sender().approve_order(self.order_id)
 
-        transaction_hash = self.retry_operation(send_tx, max_retries=50, backoff_factor=2)
-        try:
-            # wait_for_transaction_to_be_processed returns a bool, not a
-            # receipt.
-            approved = self.wait_for_transaction_to_be_processed(self.contract, transaction_hash, max_attempts=100)
-            if approved:
-                # The receipt came from one RPC replica; the order read can
-                # land on one that has not seen the order yet and revert.
-                self.node_address = self.retry_operation(lambda: self.contract.get_order(self.order_id))[1]
-        except Web3RPCError as e:
-            raise RuntimeError(
-                f"The approval {transaction_hash} of order {self.order_id} was handed to the node, and a read "
-                f"after it failed: {raw_rpc_error_message(e)}") from e
-        if approved:
+        def read_after(transaction_hash, read):
+            """`read()`, a read after the hand-over of the approval `transaction_hash`."""
+            try:
+                return read()
+            except Web3RPCError as e:
+                raise RuntimeError(
+                    f"The approval {transaction_hash} of order {self.order_id} was handed to the node, and a read "
+                    f"after it failed: {raw_rpc_error_message(e)}") from e
+
+        transaction_hash, receipt = send_and_wait(
+            self._sender(), lambda: self.retry_operation(send_tx, max_retries=50, backoff_factor=2),
+            lambda tx_hash: read_after(tx_hash, lambda: self.poll_transaction(tx_hash, max_attempts=100)),
+            self.is_running)
+        if receipt and receipt["status"] == 1:
+            # The receipt came from one RPC replica; the order read can land
+            # on one that has not seen the order yet and revert.
+            self.node_address = read_after(
+                transaction_hash, lambda: self.retry_operation(lambda: self.contract.get_order(self.order_id)))[1]
             self.logger.info(f"{transaction_hash} confirmed!")
             self.logger.info(f"Task {self.order_id} approved successfully!")
             return True
+        if receipt:
+            self.logger.error(f"Transaction failed: {self.get_reason(self.contract, transaction_hash)}")
         self.logger.error(f"Approval failed for transaction {transaction_hash}.")
         return False
     @property

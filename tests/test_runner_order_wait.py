@@ -19,8 +19,9 @@ def _runner(cancel, order_after_cancel=None):
     def cancel_do_request(request_id):
         calls["cancel"].append(request_id)
         return cancel()
-    r.contract = SimpleNamespace(cancel_do_request=cancel_do_request)
-    r.wait_for_transaction_to_be_processed = lambda contract, tx, max_attempts=10: tx == TX
+    r.contract = SimpleNamespace(cancel_do_request=cancel_do_request, superseded=lambda tx: False)
+    r.poll_transaction = lambda tx, max_attempts=10: {"status": 1 if tx == TX else 0}
+    r.get_reason = lambda contract, tx: "reverted"
 
     def find_order(doreq):
         if calls["cancel"] and order_after_cancel is not None:

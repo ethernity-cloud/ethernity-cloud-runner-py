@@ -22,8 +22,10 @@ from types import SimpleNamespace
 
 import pytest
 import requests
+import rlp
 from eth_account import Account
 from eth_utils import keccak
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, NewConnectionError
 from web3.exceptions import BadResponseFormat, ContractLogicError, Web3RPCError
 from web3.providers.base import BaseProvider
 
@@ -64,20 +66,39 @@ def no_waits(monkeypatch):
     monkeypatch.setattr(rpc_module, "RPC_READ_RETRY_SECONDS", 0)
 
 
+def _http_error(status):
+    """The requests error of an answer of HTTP status `status`, as raise_for_status raises it."""
+    response = requests.Response()
+    response.status_code = status
+    return requests.exceptions.HTTPError(f"{status} Server Error for url: RPC", response=response)
+
+
+def _nonce_of(raw):
+    """The nonce of a signed transaction: a type-2 one, or a legacy one."""
+    fields = rlp.decode(raw[1:]) if raw[0] == 2 else rlp.decode(raw)
+    return int.from_bytes(fields[1] if raw[0] == 2 else fields[0], "big")
+
+
 class _Node(BaseProvider):
-    """A node of chain `chain_id` with a pool of the transactions it took (by hash) and a pending nonce that each
-    taken transaction raises. Each hand-over (eth_sendRawTransaction) is answered as the next of `handovers`
-    says, and once `handovers` is spent as "take". "429", "503" and "reset" do not reach the node and raise the
-    requests error of an HTTP 429, an HTTP 503 and a connection reset; a dict is the node's error answer, the
-    transaction not taken. The others reach the node, which takes a transaction it does not hold: "take"
-    answers its hash, "504" and "slow" raise the error of an HTTP 504 and of a read timeout, "mined 504" mines
-    it and raises the HTTP 504 error, "html" and "no result" raise web3's errors for a body that is not JSON and
-    for a JSON body with neither a result nor an error. A transaction the node holds is answered "take" with
-    `held`, or with `nonce_used` once mined, and the others raise their errors for it. eth_getTransactionByHash
-    is answered from the pool where `gettx` is "ok"; "429" raises the requests error of an HTTP 429 and "null"
-    answers null, a replica that has not seen the transaction. A receipt is a mined one for a transaction in the
-    pool while `mines` holds, and null otherwise. `handed` lists the raw bytes of every hand-over and `reads`
-    every method asked but the hand-overs."""
+    """A node of chain `chain_id` with a pool of the transactions it took (by hash). The wallet's transaction
+    count, at the latest block and pending alike, is NONCE, raised by each transaction taken and each one
+    another sender of the wallet mined (`stolen`). Each hand-over (eth_sendRawTransaction) is answered as the
+    next of `handovers` says, and once `handovers` is spent as "take". "429" and "503" are answered by the
+    RPC, which does not pass the request on, with that HTTP status; "refused" and "connect timeout" raise
+    requests' errors for a connection that was never made (refused, or not made within the connect timeout);
+    "reset" raises the error of a connection reset after the request was sent, which does not reach the node;
+    "lost 504" is an HTTP 504 of a gateway that did not pass the request on; "stolen 504" is an HTTP 504 after
+    another transaction of the wallet was mined at the current nonce; a dict is the node's error answer, the
+    transaction not taken. The others reach the node. A transaction whose nonce is below the count, and which
+    the node does not hold, is answered `nonce_used`. Else the node takes a transaction it does not hold:
+    "take" answers its hash, "504" and "slow" raise the error of an HTTP 504 and of a read timeout, "mined 504"
+    mines it and raises the HTTP 504 error, "html" and "no result" raise web3's errors for a body that is not
+    JSON and for a JSON body with neither a result nor an error. A transaction the node holds is answered
+    "take" with `held`, or with `nonce_used` once mined, and the others raise their errors for it.
+    eth_getTransactionByHash is answered from the pool where `gettx` is "ok"; "429" raises the requests error
+    of an HTTP 429 and "null" answers null, a replica that has not seen the transaction. A receipt is a mined
+    one for a transaction in the pool while `mines` holds, and null otherwise. `handed` lists the raw bytes of
+    every hand-over and `reads` every method asked but the hand-overs."""
 
     def __init__(self, chain_id, handovers, held=GETH_HELD, nonce_used=NONCE_USED["geth"], gettx="ok", mines=True):
         super().__init__()
@@ -85,6 +106,10 @@ class _Node(BaseProvider):
         self.handovers = list(handovers)
         self.held, self.nonce_used, self.gettx, self.mines = held, nonce_used, gettx, mines
         self.pool, self.mined, self.handed, self.reads = {}, set(), [], []
+        self.stolen = 0
+
+    def count(self):
+        return NONCE + len(self.pool) + self.stolen
 
     def is_connected(self, show_traceback=False):
         return True
@@ -95,14 +120,14 @@ class _Node(BaseProvider):
         if method == "eth_chainId":
             return self._answer(hex(self.chain_id))
         if method == "eth_getTransactionCount":
-            return self._answer(hex(NONCE + len(self.pool)))
+            return self._answer(hex(self.count()))
         if method == "eth_getBlockByNumber":
             return self._answer({"number": "0x1", "baseFeePerGas": hex(20 * GWEI)})
         if method == "eth_estimateGas":
             return self._answer(hex(50_000))
         if method == "eth_getTransactionByHash":
             if self.gettx == "429":
-                raise requests.exceptions.HTTPError("429 Client Error: Too Many Requests for url: RPC")
+                raise _http_error(429)
             found = self.gettx == "ok" and params[0] in self.pool
             return self._answer({"hash": params[0]} if found else None)
         if method == "eth_getTransactionReceipt":
@@ -114,13 +139,24 @@ class _Node(BaseProvider):
             self.handed.append(raw)
             tx_hash = "0x" + keccak(raw).hex()
             answer = self.handovers.pop(0) if self.handovers else "take"
-            if answer in ("429", "503"):
-                raise requests.exceptions.HTTPError(f"{answer} Server Error for url: RPC")
+            if answer in ("429", "503", "lost 504"):
+                raise _http_error(int(answer[-3:]))
+            if answer == "stolen 504":
+                self.stolen += 1
+                raise _http_error(504)
+            if answer == "refused":
+                raise requests.exceptions.ConnectionError(MaxRetryError(None, "/", NewConnectionError(
+                    None, "Failed to establish a new connection: [WinError 10061] No connection could be made")))
+            if answer == "connect timeout":
+                raise requests.exceptions.ConnectTimeout(MaxRetryError(None, "/", ConnectTimeoutError(
+                    None, "Connection to 127.0.0.1 timed out. (connect timeout=5)")))
             if answer == "reset":
                 raise requests.exceptions.ConnectionError("Connection aborted.")
             if isinstance(answer, dict):
                 return {"jsonrpc": "2.0", "id": 1, "error": answer}
             held = tx_hash in self.pool
+            if not held and _nonce_of(raw) < self.count():
+                return {"jsonrpc": "2.0", "id": 1, "error": self.nonce_used}
             self.pool[tx_hash] = raw
             if answer == "mined 504":
                 self.mined.add(tx_hash)
@@ -230,12 +266,50 @@ def test_any_answer_after_a_lost_answer_gives_the_hash_back_and_no_transaction_i
 
 
 def test_a_send_none_of_whose_hand_overs_is_answered_gives_its_hash_back_and_builds_no_second_transaction():
-    node = _Node(80002, ["429"] * protocol_module.HANDOVER_ATTEMPTS)
+    """A gateway answers each hand-over with an HTTP 504: it may have passed the request on."""
+    node = _Node(80002, ["lost 504"] * protocol_module.HANDOVER_ATTEMPTS)
     assert _contract(node).approve_order(ORDER) == _first_hash(node)
     assert len(node.handed) == protocol_module.HANDOVER_ATTEMPTS
     assert len(set(node.handed)) == 1
     assert node.pool == {}
     assert node.reads.count("eth_getTransactionCount") == 1
+
+
+UNTAKEN = ["429", "503", "refused", "connect timeout"]
+
+
+@pytest.mark.parametrize("refusal", UNTAKEN)
+def test_a_send_every_hand_over_of_which_was_refused_untaken_raises(refusal):
+    """No node took the request: the send raises, and the transaction is the runner's to build again."""
+    node = _Node(80002, [refusal] * protocol_module.HANDOVER_ATTEMPTS)
+    with pytest.raises(Exception, match="^Unable to send transaction: "):
+        _contract(node).approve_order(ORDER)
+    assert len(node.handed) == protocol_module.HANDOVER_ATTEMPTS and len(set(node.handed)) == 1
+    assert node.pool == {}
+
+
+@pytest.mark.parametrize("refusal", UNTAKEN)
+def test_a_hand_over_that_went_unanswered_among_refusals_gives_the_hash_back(refusal):
+    """One HTTP 504 among the refusals: the node may hold the transaction."""
+    handovers = [refusal] * protocol_module.HANDOVER_ATTEMPTS
+    handovers[2] = "lost 504"
+    node = _Node(80002, handovers)
+    assert _contract(node).approve_order(ORDER) == _first_hash(node)
+    assert len(set(node.handed)) == 1 and node.pool == {}
+
+
+@pytest.mark.parametrize("error, untaken", [
+    (_http_error(429), True), (_http_error(503), True), (_http_error(504), False), (_http_error(502), False),
+    (requests.exceptions.ConnectionError(MaxRetryError(None, "/", NewConnectionError(None, "refused"))), True),
+    (requests.exceptions.ConnectTimeout(MaxRetryError(None, "/", ConnectTimeoutError(None, "timed out"))), True),
+    (requests.exceptions.ConnectionError("Connection aborted."), False),
+    (requests.exceptions.ReadTimeout("Read timed out."), False),
+    (requests.exceptions.HTTPError("429 Server Error"), False),
+    (json.JSONDecodeError("Expecting value", "<html>", 0), False),
+], ids=["429", "503", "504", "502", "refused", "connect timeout", "reset", "read timeout", "no response",
+        "not json"])
+def test_the_errors_that_show_no_node_took_the_request(error, untaken):
+    assert protocol_module.refused_untaken(error) is untaken
 
 
 @pytest.mark.parametrize("answer", [GETH_HELD, {"code": -32000, "message": "known transaction: 5180e592"},
@@ -289,6 +363,18 @@ def test_a_request_none_of_whose_hand_overs_is_answered_is_sent_once(submitting)
     assert len(set(node.handed)) == 1
 
 
+@pytest.mark.parametrize("refusal", UNTAKEN)
+def test_a_request_refused_untaken_at_every_hand_over_is_sent_again_at_its_nonce(submitting, refusal):
+    """The first transaction reached no node: retry_operation signs the request again at the same nonce, so
+    no second escrow can be mined, and the step goes on without waiting for a receipt."""
+    node = _Node(80002, [refusal] * protocol_module.HANDOVER_ATTEMPTS)
+    runner = submitting(node)
+    assert runner.create_do_request("image", "code", "input", "") is True
+    assert runner.do_hash == _taken(node) and runner.do_request == DO_REQUEST
+    assert [_nonce_of(raw) for raw in node.handed] == [NONCE] * (protocol_module.HANDOVER_ATTEMPTS + 1)
+    assert node.reads.count("eth_getTransactionReceipt") == 1
+
+
 def test_an_approval_none_of_whose_hand_overs_is_answered_is_sent_once(submitting):
     node = _Node(80002, ["504"] * protocol_module.HANDOVER_ATTEMPTS)
     runner = submitting(node)
@@ -340,6 +426,139 @@ def test_a_submission_close_ended_while_its_requests_hand_over_answers_were_lost
     assert isinstance(ended.value.__cause__, RunEndedError) and ended.value.__cause__.transaction_hash == tx
     assert tx in str(ended.value.__cause__)
     assert len(node.handed) == 1
+
+
+# ---- a transaction whose nonce another transaction of the wallet took ----
+
+def test_a_transaction_whose_nonce_another_took_and_that_the_node_does_not_find_is_superseded():
+    """Another sender of the wallet mines a transaction at the nonce while the hand-over's answer is lost; the
+    next hand-over is answered that the nonce is used."""
+    node = _Node(80002, ["stolen 504"])
+    contract = _contract(node)
+    tx = contract.approve_order(ORDER)
+    assert tx == _first_hash(node) and node.pool == {}
+    assert contract.superseded(tx) is True
+
+
+def test_a_transaction_the_node_finds_is_not_superseded():
+    """The node holds the approval and has not mined it; the wallet's count is past its nonce."""
+    node = _Node(80002, [], mines=False)
+    contract = _contract(node)
+    tx = contract.approve_order(ORDER)
+    assert node.count() > NONCE
+    assert contract.superseded(tx) is False
+
+
+def test_a_transaction_whose_nonce_is_not_past_is_not_superseded():
+    node = _Node(80002, ["lost 504"] * protocol_module.HANDOVER_ATTEMPTS)
+    contract = _contract(node)
+    tx = contract.approve_order(ORDER)
+    assert node.count() == NONCE
+    assert contract.superseded(tx) is False
+
+
+def test_a_transaction_the_node_is_not_asked_about_is_not_superseded():
+    """The read of the transaction by its hash is answered HTTP 429."""
+    node = _Node(80002, ["stolen 504"], gettx="429")
+    contract = _contract(node)
+    assert contract.superseded(contract.approve_order(ORDER)) is False
+
+
+def test_a_transaction_the_contract_did_not_sign_is_not_superseded():
+    node = _Node(80002, [])
+    node.stolen = 3
+    assert _contract(node).superseded("0x" + "ef" * 32) is False
+    assert "eth_getTransactionCount" not in node.reads
+
+
+def test_a_wait_that_ended_with_the_step_no_longer_in_progress_sends_nothing_again():
+    sent, asked = [], []
+    contract = SimpleNamespace(superseded=lambda tx_hash: asked.append(tx_hash) or True)
+    tx_hash, receipt = protocol_module.send_and_wait(
+        contract, lambda: sent.append("tx") or "0x" + "01" * 32, lambda tx_hash: None, lambda: False)
+    assert (tx_hash, receipt) == ("0x" + "01" * 32, None)
+    assert sent == ["tx"] and asked == []
+
+
+def test_a_transaction_superseded_at_every_send_is_sent_a_bounded_number_of_times():
+    sent = []
+    contract = SimpleNamespace(superseded=lambda tx_hash: True)
+    tx_hash, receipt = protocol_module.send_and_wait(
+        contract, lambda: sent.append("tx") or f"0x{len(sent):064x}", lambda tx_hash: None, lambda: True)
+    assert receipt is None and len(sent) == protocol_module.SUPERSEDED_RESENDS + 1
+
+
+def _taken_at(node, nonce):
+    """The hash of the one transaction the node took, which is at `nonce`."""
+    tx = _taken(node)
+    assert _nonce_of(node.pool[tx]) == nonce
+    return tx
+
+
+def test_a_request_whose_nonce_another_took_is_sent_again(submitting):
+    node = _Node(80002, ["stolen 504"])
+    runner = submitting(node)
+    assert runner.create_do_request("image", "code", "input", "") is True
+    assert runner.do_hash == _taken_at(node, NONCE + 1) and runner.do_request == DO_REQUEST
+
+
+def test_an_approval_whose_nonce_another_took_is_sent_again(submitting):
+    node = _Node(80002, ["stolen 504"])
+    runner = submitting(node)
+    assert runner.approve_task() is True
+    _taken_at(node, NONCE + 1)
+
+
+def test_an_allowance_approval_whose_nonce_another_took_is_sent_again(submitting):
+    node = _Node(80002, ["stolen 504"])
+    runner = submitting(node)
+    runner.token_contract = SimpleNamespace(functions=SimpleNamespace(
+        allowance=lambda owner, spender: SimpleNamespace(call=lambda: 0)))
+    runner.check_allowance()
+    _taken_at(node, NONCE + 1)
+
+
+def test_a_cancel_whose_nonce_another_took_is_sent_again(submitting):
+    node = _Node(80002, ["stolen 504"])
+    runner = submitting(node)
+    runner.do_request = DO_REQUEST
+    runner.find_order = lambda do_request: pytest.fail("the cancel was mined")
+    assert runner.cancel_unclaimed_request(1800) is False
+    _taken_at(node, NONCE + 1)
+
+
+class _SessionReads:
+    """The reads of session order ORDER on DO request DO_REQUEST, PROCESSING within its hour."""
+
+    def _getOrder(self, order_id):
+        return [WALLET, NODE_ADDRESS, DO_REQUEST, 9, 1]
+
+    def _getDORequest(self, do_request):
+        return [WALLET, 1, 1, 10, 1, 1, 3, 1]
+
+    def _getMetadataCountForRequest(self, do_request):
+        return 0
+
+
+def test_session_rows_whose_nonce_another_took_are_sent_again(submitting):
+    """An input row and the close row; the input is sealed as "cid" and its storage has no intake."""
+    node = _Node(80002, ["stolen 504"])
+    poller = submitting(node)
+    reads = _SessionReads()
+    storage = SimpleNamespace(intake_url="", flush_pending=lambda do_request, operation=None: None,
+                              release_held=lambda cids: None, drop_pending=lambda key, cids=None: None)
+    runner = SimpleNamespace(
+        protocol_contract=SimpleNamespace(caller=lambda: reads), retry_operation=lambda read: read(),
+        contract=poller.contract, enclave_public_key="certificate", private_key="0x" + "11" * 32,
+        logger=poller.logger, storage=lambda: storage, _poll_receipt=poller._poll_receipt,
+        _seal_artefact=lambda plaintext, certificate, operation: ("cid", "digest"))
+    session = EthernityCloudSession(runner, ORDER)
+    assert session.send_input("hello") == 0
+    row = _taken_at(node, NONCE + 1)
+    node.handovers = ["stolen 504"]
+    session.close(wait=False)
+    closes = [tx for tx in node.pool if tx != row]
+    assert len(closes) == 1 and _nonce_of(node.pool[closes[0]]) == NONCE + 3
 
 
 def test_a_contract_retired_between_two_hand_overs_hands_nothing_more_over(monkeypatch):
