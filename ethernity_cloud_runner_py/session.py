@@ -40,7 +40,6 @@ from typing import Any, Callable, Dict, List, Optional
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
-from .contract.operation.protocolContract import send_and_wait
 from .crypto import decrypt_nacl, encrypt, verify_certificate_signature
 from .ipfs import INTAKE_NOT_NAMED, owner_signature_message
 from .rpc import read_again
@@ -173,13 +172,6 @@ class EthernityCloudSession:
         if self._detached is not None:
             raise SessionError(self._detached)
 
-    def _row_receipt(self, tx_hash: str) -> Optional[Dict[str, Any]]:
-        """The receipt of the handle's row `tx_hash`, read through the
-        contract the handle was made with for up to 60 blocks while the
-        handle is attached (EthernityCloudRunner._poll_receipt); None when it
-        does not come."""
-        return self.runner._poll_receipt(self._contract.get_provider().eth, tx_hash, 60, self._attached)
-
     def _caller(self):
         """The read interface of the contract the handle was made with."""
         self._require_attached()
@@ -297,9 +289,7 @@ class EthernityCloudSession:
         sealed for the certificate, and its row sent through the contract,
         the handle was made with. Through an intake its bytes are queued
         under the handle's key (_blobs), which no task and no other handle of
-        the runner delivers or drops. A row that is not mined because another
-        transaction of the wallet took its nonce is sent again
-        (send_and_wait). An input whose row was not sent, or was
+        the runner delivers or drops. An input whose row was not sent, or was
         mined as reverted, leaves no blob in the intake's queue
         (IPFSClient.drop_pending): no row names it, and the intake refuses
         it when a later input's delivery posts the handle's queue."""
@@ -329,16 +319,9 @@ class EthernityCloudSession:
             # row without bytes.
             self._lodge_input(cid)
             value = f"{SESSION_WIRE_VERSION}:{self._input_seq}:{self.order_id}:{cid}:{digest}"
-
-            def send_row():
-                # A row sent again replaces one that can never be mined.
-                nonlocal row_sent
-                row_sent = False
-                sent = self._contract.add_metadata_to_request(self.do_req, SESSION_INPUT_KEY, value)
-                row_sent = True
-                return sent
-
-            tx_hash, receipt = send_and_wait(self._contract, send_row, self._row_receipt, self._attached)
+            tx_hash = self._contract.add_metadata_to_request(self.do_req, SESSION_INPUT_KEY, value)
+            row_sent = True
+            receipt = self.runner._poll_receipt(self._contract.get_provider().eth, tx_hash, 60, self._attached)
             if receipt and receipt["status"] != 1:
                 row_sent = False
             if not receipt or receipt["status"] != 1:
@@ -557,9 +540,7 @@ class EthernityCloudSession:
     def close(self, wait: bool = True, timeout: int = 900) -> Optional[Dict[str, Any]]:
         """Commit the close row; optionally wait for the order to settle and
         return the final task result (the session summary). The row goes
-        through the contract the handle was made with, and is sent again when
-        it is not mined because another transaction of the wallet took its
-        nonce (send_and_wait). The summary is read
+        through the contract the handle was made with. The summary is read
         with the handle's own order, its duration, its request's fields and
         its challenge (EthernityCloudRunner.get_result_from_order). A handle
         without the challenge, which attach_session() makes, checks the
@@ -581,8 +562,8 @@ class EthernityCloudSession:
             return self._summary if wait else None
         if not self.closed:
             value = f"{SESSION_WIRE_VERSION}:close:{self.order_id}"
-            send_and_wait(self._contract, lambda: self._contract.add_metadata_to_request(
-                self.do_req, SESSION_INPUT_KEY, value), self._row_receipt, self._attached)
+            tx_hash = self._contract.add_metadata_to_request(self.do_req, SESSION_INPUT_KEY, value)
+            self.runner._poll_receipt(self._contract.get_provider().eth, tx_hash, 60, self._attached)
             self.closed = True
             self.runner.logger.info(f"[session] close requested for order {self.order_id}")
         if not wait:

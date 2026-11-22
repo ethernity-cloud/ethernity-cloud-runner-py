@@ -3,7 +3,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Optional, Union
 from eth_account.messages import encode_defunct
 from eth_typing import Address, HexStr
 from web3 import Web3
@@ -11,7 +11,7 @@ from web3.contract.contract import Contract
 from web3.contract.contract import ContractFunction
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.types import TxParams
-from web3.exceptions import BadResponseFormat, TransactionNotFound, Web3RPCError
+from web3.exceptions import BadResponseFormat, Web3RPCError
 import requests
 from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 from ..abi.polygonProtocolAbi import contract as polygonAbi
@@ -42,10 +42,6 @@ UNANSWERED = (requests.exceptions.RequestException, ValueError, BadResponseForma
 # The HTTP statuses with which an RPC answers a request it did not take: 429
 # Too Many Requests, 503 Service Unavailable (refused_untaken).
 UNTAKEN_STATUSES = (429, 503)
-# How many times a step sends its transaction again when the one it sent was
-# not mined and another transaction of the wallet took its nonce
-# (send_and_wait, protocolContract.superseded).
-SUPERSEDED_RESENDS = 3
 # What nodes answer to a transaction they hold already, in lower case: geth
 # and bor ("already known", formerly "known transaction"), Nethermind
 # ("AlreadyKnown"), OpenEthereum and Parity, bloxberg's ("Transaction with the
@@ -78,27 +74,6 @@ def refused_untaken(error: BaseException) -> bool:
             reason = reason.reason
         return isinstance(reason, ConnectTimeoutError)
     return False
-
-
-def send_and_wait(contract: Any, send: Callable[[], str], wait: Callable[[str], Any],
-                  in_progress: Callable[[], bool]) -> tuple:
-    """(hash, receipt) of the transaction `send()` sends through `contract`,
-    waited for with `wait(hash)`, which answers its receipt or None. When the
-    wait ends without a receipt while `in_progress()` holds, and the
-    transaction can never be mined because another transaction of the wallet
-    took its nonce (contract.superseded), `send()` is called again, up to
-    SUPERSEDED_RESENDS times. Any other wait without a receipt is returned
-    as it is: the transaction may still be mined."""
-    tx_hash = send()
-    receipt = wait(tx_hash) if tx_hash else None
-    for _ in range(SUPERSEDED_RESENDS):
-        if receipt is not None or not tx_hash or not in_progress() or not contract.superseded(tx_hash):
-            break
-        print(f"Transaction {tx_hash} was not mined and another transaction of the wallet took its nonce: it can "
-              "never be mined, so the transaction is sent again")
-        tx_hash = send()
-        receipt = wait(tx_hash) if tx_hash else None
-    return tx_hash, receipt
 
 
 def _gwei(wei: int) -> str:
@@ -169,9 +144,6 @@ class protocolContract:
         # passed the check is handed over before retire() returns, and one
         # that has not is refused.
         self._send_lock = threading.Lock()
-        # The nonce of each transaction this contract signed, by its hash
-        # (superseded).
-        self._signed_nonces: Dict[str, int] = {}
         self.protocol_contract = self.provider.eth.contract(
             address=self.protocol_address, abi=polygonAbi["abi"]
         )
@@ -313,7 +285,6 @@ class protocolContract:
                 signed_tx = self.provider.eth.account.sign_transaction(
                     tx, private_key=self.signer._private_key
                 )
-                self._signed_nonces[self.provider.to_hex(signed_tx.hash)] = int(tx["nonce"])
                 handed_over = True
                 return self._hand_over(signed_tx)
 
@@ -375,12 +346,12 @@ class protocolContract:
         JSON-RPC answer), the node, or another replica behind the RPC, may
         hold the transaction: the hash is returned whatever the node answers
         next, and when no later hand-over is answered, and the transaction's
-        receipt decides (send_and_wait). An answer that its nonce is used
-        (geth's and bor's "nonce too low", Nethermind's "OldNonce",
-        OpenEthereum's "Transaction nonce is too low") is that of a node that
-        mined it, and equally of one that mined another transaction at that
-        nonce. A node error answering a hand-over before any went unanswered
-        so is raised. Each hand-over is made under the lock retire() takes,
+        receipt decides; no other transaction is built for it. An answer that
+        its nonce is used (geth's and bor's "nonce too low", Nethermind's
+        "OldNonce", OpenEthereum's "Transaction nonce is too low") is that of
+        a node that mined it, and equally of one that mined another
+        transaction at that nonce. A node error answering a hand-over before
+        any went unanswered so is raised. Each hand-over is made under the lock retire() takes,
         after the retirement check; after a hand-over that went unanswered the
         RunEndedError of a retired contract names the transaction."""
         tx_hash = self.provider.to_hex(signed_tx.hash)
@@ -416,27 +387,6 @@ class protocolContract:
                         return tx_hash
                     raise
             time.sleep(HANDOVER_RETRY_SECONDS)
-
-    def superseded(self, tx_hash: str) -> bool:
-        """Whether the transaction `tx_hash` this contract signed can never be
-        mined because another transaction of the wallet took its nonce: the
-        wallet's mined nonce (its transaction count at the latest block) is
-        past the transaction's, and the node does not find the transaction.
-        False for a transaction this contract did not sign, while that nonce
-        is not past, when the node finds the transaction, and when a read is
-        not answered."""
-        nonce = self._signed_nonces.get(tx_hash)
-        if nonce is None:
-            return False
-        try:
-            if self.provider.eth.get_transaction_count(self.signer.address, "latest") <= nonce:
-                return False
-            self.provider.eth.get_transaction(tx_hash)
-        except TransactionNotFound:
-            return True
-        except Exception:
-            return False
-        return False
 
     def get_signer(self) -> Any:
         return self.signer

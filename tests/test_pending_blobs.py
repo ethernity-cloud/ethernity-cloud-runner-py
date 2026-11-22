@@ -232,16 +232,14 @@ class Caller:
 
 def _session(send, receipt=None):
     """(session, client): a session whose rows are `send` and whose receipts are `receipt` (a mined one by
-    default), over an intake client that queues what the session seals. No other transaction of the wallet
-    takes a row's nonce."""
+    default), over an intake client that queues what the session seals."""
     client = IPFSClient(f"{INTAKE}/api/v0", intake_url=INTAKE, network="polygon_amoy")
     caller = Caller()
     eth = SimpleNamespace()
     runner = SimpleNamespace(
         protocol_contract=SimpleNamespace(caller=lambda: caller),
         retry_operation=lambda read: read(),
-        contract=SimpleNamespace(add_metadata_to_request=send, get_provider=lambda: SimpleNamespace(eth=eth),
-                                 superseded=lambda tx_hash: False),
+        contract=SimpleNamespace(add_metadata_to_request=send, get_provider=lambda: SimpleNamespace(eth=eth)),
         enclave_public_key="certificate",
         _seal_artefact=lambda plaintext, certificate, operation: (
             client.upload_to_ipfs(b"sealed:" + plaintext, operation=operation), "digest"),
@@ -287,27 +285,6 @@ def test_an_input_whose_row_is_mined_as_reverted_leaves_no_blob_queued(sealed, m
     session, client = _session(_sent, {"status": 0})
     with pytest.raises(SessionError, match="input row transaction failed"):
         session.send_input("hello")
-    assert client.pending == {}
-
-
-def test_an_input_whose_superseded_row_is_refused_when_sent_again_leaves_no_blob_queued(sealed, monkeypatch):
-    """The first row has no receipt and another transaction of the wallet took its nonce, so it can never be
-    mined; sending the row again is refused by the fee ceiling: no row names the blob."""
-    post_answering(monkeypatch, NOT_NAMED)
-    rows = []
-
-    def send(*arguments):
-        rows.append(arguments)
-        if len(rows) > 1:
-            raise FeeCeilingError("the fee is above the ceiling")
-        return TX
-
-    session, client = _session(send)
-    session.runner._poll_receipt = lambda provider, tx_hash, max_attempts, in_progress: None
-    session._contract.superseded = lambda tx_hash: True
-    with pytest.raises(FeeCeilingError):
-        session.send_input("hello")
-    assert len(rows) == 2
     assert client.pending == {}
 
 

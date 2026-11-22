@@ -743,7 +743,7 @@ def test_an_order_approval_goes_out_under_a_ceiling_raised_between_its_tries(mon
     runner = _submitting_runner(monkeypatch, chain)
     runner.running = True
     runner.order_id = 9
-    runner.poll_transaction = lambda transaction_hash, max_attempts=10: {"status": 1}
+    runner.wait_for_transaction_to_be_processed = lambda contract, transaction_hash, max_attempts: True
     runner.contract.get_order = lambda order_id: (SIGNER.address, NODE)
 
     def wait(seconds):
