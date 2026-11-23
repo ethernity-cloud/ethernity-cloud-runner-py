@@ -1,0 +1,347 @@
+"""matching (MATCHING-DESIGN.md 3.10, 3.15, 4.4 to 4.6; spec/matching.md
+sections 3 to 9, 13 and 17) on the shared fixtures of
+pox-smart-contract-litvm spec/ at 0c8a06b, held byte for byte in
+tests/spec/matching/ with their MANIFEST lines.
+
+ranking.json holds, per ranking case, the reader's `candidates` answers;
+the runner's merge of those pages, its list hash, its matching count, the
+band it gives each entry and its mandated sequence equal the reader's
+answers and each roll node's turn. matching-rank.json holds the reference
+rule's results: the seed, the keys, the need, the template and image keys,
+the list's order, the mandated sequence, the stop band, the steps, the
+pages of a paged read, the approval rule's decisions and the bid a raise
+sends. result-fields.json holds the results whose fields 15 to 17 are read
+and those whose fields are not."""
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+from eth_utils import keccak
+
+from ethernity_cloud_runner_py import matching
+from ethernity_cloud_runner_py.contract.abi.polygonProtocolAbi import contract as polygon_abi
+from ethernity_cloud_runner_py.runner import EthernityCloudRunner
+
+SPEC = Path(__file__).resolve().parent / "spec" / "matching"
+SOURCE = Path(__file__).resolve().parents[2] / "pox-smart-contract-litvm"
+SOURCE_COMMIT = "0c8a06b"
+COPIES = ["matching-rank.json", "matching.md", "ranking.json", "result-fields.json"]
+RANKING = json.loads((SPEC / "ranking.json").read_text(encoding="utf-8"))
+RANK = json.loads((SPEC / "matching-rank.json").read_text(encoding="utf-8"))
+FIELDS = json.loads((SPEC / "result-fields.json").read_text(encoding="utf-8"))
+RANK_CASES = {case["name"]: case for case in RANK["ranking"]}
+
+
+def manifest():
+    entries = {}
+    for line in (SPEC / "MANIFEST.sha256").read_text(encoding="ascii").splitlines():
+        digest, _, name = line.partition("  ")
+        entries[name] = digest
+    return entries
+
+
+@pytest.mark.parametrize("name", COPIES)
+def test_each_copy_hashes_to_its_manifest_line(name):
+    assert hashlib.sha256((SPEC / name).read_bytes()).hexdigest() == manifest()[name]
+
+
+@pytest.mark.parametrize("name", COPIES)
+def test_each_copy_is_the_source_commit_s(name):
+    if not (SOURCE / ".git").exists():
+        pytest.skip(f"no pox-smart-contract-litvm checkout at {SOURCE}")
+    shown = subprocess.run(["git", "-C", str(SOURCE), "show", f"{SOURCE_COMMIT}:spec/{name}"], capture_output=True)
+    if shown.returncode != 0:
+        pytest.skip(f"{SOURCE} holds no commit {SOURCE_COMMIT}")
+    assert (SPEC / name).read_bytes() == shown.stdout
+
+
+def test_the_manifest_lines_are_the_source_commit_s():
+    if not (SOURCE / ".git").exists():
+        pytest.skip(f"no pox-smart-contract-litvm checkout at {SOURCE}")
+    shown = subprocess.run(["git", "-C", str(SOURCE), "show", f"{SOURCE_COMMIT}:spec/MANIFEST.sha256"],
+                           capture_output=True, text=True)
+    if shown.returncode != 0:
+        pytest.skip(f"{SOURCE} holds no commit {SOURCE_COMMIT}")
+    source = dict(reversed(line.split("  ")) for line in shown.stdout.splitlines())
+    assert {name: source[name] for name in COPIES} == manifest()
+
+
+# ------------------------------------------------------------- helpers
+
+def word_of(e):
+    """The reader's list word of a fixture entry (spec/matching.md 3)."""
+    return (int(e["node"], 16) << 96 | e["score"] << 80 | int(e["fit"]) << 73 | int(e["match"]) << 72
+            | e["listedOrdinal"] << 48 | e["dpRequestId"])
+
+
+def page_of(stamp, entries, read):
+    return {"roundStamp": stamp, "eligible": [word_of(e) for e in entries],
+            "tips": [int(e["tipWei"]) for e in entries], "indexes": [e["index"] for e in entries],
+            "hOut": bytes.fromhex(read["listHash"][2:]), "matchFoundOut": read["matchFound"],
+            "done": read["done"], "settled": read["settled"]}
+
+
+def roll_bands(case):
+    return {(e["node"], b["band"]) for b in case["roll"]["bands"] for e in b["entries"]}
+
+
+def set_of(case):
+    return case["parameterSets"][case["expected"]["parameterSetIndex"]]
+
+
+def entries_of(rank_case):
+    """The eligible entries of a matching-rank.json ranking case in roll
+    order, decoded from the words its list holds."""
+    expected = rank_case["expected"]
+    params = set_of(rank_case)
+    base = int(expected["baseWei"]) if "baseWei" in expected else 0
+    listed = sorted(expected.get("list", []), key=lambda e: (-e["band"], e["rollIndex"]))
+    return [matching.decode_eligible(int(e["word"], 16), int(e["priceWei"]) - base, e["rollIndex"],
+                                     params["bandWidth"]) for e in listed]
+
+
+def seed_of(rank_case):
+    expected = rank_case["expected"]
+    return bytes.fromhex(expected["seed"][2:])
+
+
+def closed_step(block, round_block, step_blocks, lead_blocks):
+    """The last step whose last block is `block` or earlier (4.5), as
+    requestInfo answers it."""
+    return max(0, matching.step_at(block + 1, round_block, step_blocks, lead_blocks) - 1)
+
+
+def code_of(result):
+    """Field 1 of a result string, the task code."""
+    return int(result.split(":")[1])
+
+
+# ------------------------------------------------------------- ranking.json
+
+@pytest.mark.parametrize("case", RANKING["cases"], ids=[c["name"] for c in RANKING["cases"]])
+def test_the_merged_read_is_the_reader_s(case):
+    params = case["parameterSet"]
+    read = case["candidates"]["read"]
+    stamp = b"\x01" * 32
+    pages = [page_of(stamp, read["eligible"], read)]
+    beyond = case["candidates"].get("beyond")
+    if beyond:
+        pages.append(page_of(stamp, beyond["eligible"], dict(beyond, listHash=read["listHash"],
+                                                             matchFound=read["matchFound"])))
+    if not read["settled"]:
+        with pytest.raises(matching.Unsettled):
+            matching.merge_candidates(pages, params["bandWidth"], params["maxSteps"])
+        pages = [dict(page, settled=True) for page in pages]
+    merged = matching.merge_candidates(pages, params["bandWidth"], params["maxSteps"])
+    assert "0x" + merged.list_hash.hex() == read["listHash"]
+    assert merged.match_found == read["matchFound"]
+    bands = roll_bands(case)
+    for e in merged.entries:
+        assert (e.node, e.band) in bands, e.node
+    schedule = matching.Schedule(merged.entries, bytes.fromhex(case["request"]["seed"][2:]), params["maxSteps"])
+    for turn in case["turns"]:
+        if not turn["eligible"] or not turn["done"]:
+            continue
+        step = schedule.mandated.index(turn["node"]) + 1 if turn["node"] in schedule.mandated else 0
+        assert step == turn["mandateStep"], turn["node"]
+
+
+def test_a_page_of_another_stamp_restarts_the_read():
+    case = RANKING["cases"][0]
+    read = case["candidates"]["read"]
+    first = page_of(b"\x01" * 32, read["eligible"][:2], dict(read, done=False))
+    second = page_of(b"\x02" * 32, read["eligible"][2:], read)
+    with pytest.raises(matching.StampChanged):
+        matching.merge_candidates([first, second], 1000, 8)
+
+
+def test_an_unsettled_page_is_not_ranked_on():
+    case = RANKING["cases"][0]
+    read = dict(case["candidates"]["read"], settled=False)
+    with pytest.raises(matching.Unsettled):
+        matching.merge_candidates([page_of(b"\x01" * 32, read["eligible"], read)], 1000, 8)
+
+
+def test_a_page_left_out_is_found_by_the_hash():
+    case = RANKING["cases"][0]
+    read = case["candidates"]["read"]
+    with pytest.raises(ValueError):
+        matching.merge_candidates([page_of(b"\x01" * 32, read["eligible"][1:], read)], 1000, 8)
+
+
+# ------------------------------------------------------- matching-rank.json
+
+@pytest.mark.parametrize("case", RANK["ranking"], ids=[c["name"] for c in RANK["ranking"]])
+def test_the_ranking_case(case):
+    expected = case["expected"]
+    request = case["request"]
+    params = set_of(case)
+    assert keccak(bytes.fromhex(request["seedStamp"][2:]) + request["id"].to_bytes(32, "big")) == seed_of(case)
+    assert matching.need_of(request["maxGflopsArg"]) == (expected["needGflops"], expected["ceilGflops"])
+    assert "0x" + matching.template_key(expected["templateName"]).hex() == expected["templateKey"]
+    assert "0x" + matching.image_key(request["metadata1"].split(":")[1]).hex() == expected["imageKey"]
+    entries = entries_of(case)
+    for e, listed in zip(entries, sorted(expected.get("list", []), key=lambda x: (-x["band"], x["rollIndex"]))):
+        assert (e.node, e.band, e.fit, e.match, e.listed_ordinal, e.dp_request_id) == (
+            listed["node"], listed["band"], listed["fit"], listed["match"], listed["listedOrdinal"],
+            listed["dpRequestId"])
+        assert "0x%064x" % matching.key_of(seed_of(case), e.node) == listed["key"]
+    if not expected["ranked"]:
+        assert entries == []
+        return
+    h, found, stop = matching.list_hash_of(entries, params["maxSteps"])
+    assert ("0x" + h.hex(), found, stop) == (expected["listHash"], expected["matchFound"], expected["stopBand"])
+    schedule = matching.Schedule(entries, seed_of(case), params["maxSteps"])
+    assert [e.node for e in schedule.order] == [e["node"] for e in expected["list"]]
+    assert schedule.position == {e["node"]: e["position"] for e in expected["list"]}
+    assert schedule.mandated == expected["mandated"]
+    for node, turn in expected["turns"].items():
+        step = schedule.mandated.index(node) + 1 if node in schedule.mandated else 0
+        assert step == turn["mandateStep"], node
+    for block in expected["steps"]:
+        assert matching.step_at(block["block"], expected["roundBlock"], params["stepBlocks"],
+                                params["leadBlocks"]) == block["step"]
+        assert closed_step(block["block"], expected["roundBlock"], params["stepBlocks"],
+                           params["leadBlocks"]) == block["closedStep"]
+
+
+@pytest.mark.parametrize("case", RANK["paging"], ids=[c["name"] for c in RANK["paging"]])
+def test_the_paged_read(case):
+    setup = RANK_CASES[case["setup"]]
+    params = set_of(setup)
+    expected = case["expected"]
+    stamp = b"\x03" * 32
+    pages = []
+    for page in expected["pages"]:
+        entries = [matching.decode_eligible(int(e["word"], 16), int(e["tipWei"]), e["index"], params["bandWidth"])
+                   for e in page["eligible"]]
+        for e, listed in zip(entries, page["eligible"]):
+            assert e.band == listed["band"]
+        pages.append({"roundStamp": stamp, "eligible": [int(e["word"], 16) for e in page["eligible"]],
+                      "tips": [int(e["tipWei"]) for e in page["eligible"]],
+                      "indexes": [e["index"] for e in page["eligible"]],
+                      "hOut": bytes.fromhex(page["hOut"][2:]), "matchFoundOut": page["matchFoundOut"],
+                      "done": page["done"], "settled": True})
+        merged = matching.merge_candidates(pages, params["bandWidth"], params["maxSteps"])
+        assert merged.done == page["done"]
+    assert "0x" + merged.list_hash.hex() == expected["listHash"]
+    assert (merged.match_found, merged.stop_band) == (expected["matchFound"], expected["stopBand"])
+
+
+def standings_of(case, nodes):
+    found = {}
+    for node in nodes:
+        given = case["nodes"].get(node, {})
+        found[node] = matching.Standing(given.get("score", matching.SCORE_MAX), given.get("canAnswer", True),
+                                        given.get("lastFailureSlot", 0))
+    return found
+
+
+@pytest.mark.parametrize("case", RANK["approvals"], ids=[c["name"] for c in RANK["approvals"]])
+def test_the_approval_rule(case):
+    setup = RANK_CASES[case["setup"]]
+    params = set_of(setup)
+    round_block = setup["rounds"][setup["round"]]["block"]
+    schedule = matching.Schedule(entries_of(setup), seed_of(setup), params["maxSteps"])
+    claims = {c["node"]: matching.ClaimView(c["block"], case["nodes"].get(c["node"], {}).get("approvable", True), 0)
+              for c in case["claims"]}
+    standings = standings_of(case, set(schedule.mandated) | set(claims))
+    if case.get("developerMinScore") is not None:
+        min_score = case["developerMinScore"]
+    else:
+        min_score = matching.DEFAULT_MIN_SCORE if case["minimumOn"] else 0
+    closed = closed_step(case["readBlock"], round_block, params["stepBlocks"], params["leadBlocks"])
+    decision = matching.decide_approval(schedule.mandated, schedule.position, claims, standings, (), closed,
+                                        min_score, case["recentFailureSlots"], case["slotNow"], round_block,
+                                        params["stepBlocks"], params["leadBlocks"])
+    expected = case["expected"]
+    assert closed == expected["closedStep"]
+    assert decision.approve == expected["approve"]
+    assert decision.rule == expected["rule"]
+    if "inTime" in expected:
+        assert decision.in_time == expected["inTime"]
+    assert decision.wait == expected.get("wait", False)
+
+
+def test_an_excluded_mandated_node_is_passed_over_at_once():
+    case = next(c for c in RANK["approvals"] if c["name"] == "wait-for-n1-step")
+    setup = RANK_CASES[case["setup"]]
+    params = set_of(setup)
+    schedule = matching.Schedule(entries_of(setup), seed_of(setup), params["maxSteps"])
+    n1, n5 = schedule.mandated[0], schedule.mandated[1]
+    claims = {n1: matching.ClaimView(1001, True, 0), n5: matching.ClaimView(1001, True, 0)}
+    standings = standings_of(case, set(schedule.mandated) | set(claims))
+    decision = matching.decide_approval(schedule.mandated, schedule.position, claims, standings, {n1}, 0, 0, 14,
+                                        case["slotNow"], 1000, params["stepBlocks"], params["leadBlocks"])
+    assert (decision.approve, decision.rule) == (n5, 1)
+
+
+def test_claims_below_the_minimum_are_named_when_none_stands():
+    case = next(c for c in RANK["approvals"] if c["name"] == "recent-failure-taken-last")
+    setup = RANK_CASES[case["setup"]]
+    params = set_of(setup)
+    schedule = matching.Schedule(entries_of(setup), seed_of(setup), params["maxSteps"])
+    n1 = schedule.mandated[0]
+    claims = {n1: matching.ClaimView(1001, True, 0)}
+    standings = {n: matching.Standing(4999 if n == n1 else matching.SCORE_MAX, True, 0) for n in schedule.mandated}
+    decision = matching.decide_approval(schedule.mandated, schedule.position, claims, standings, (), 6, 5000, 14,
+                                        case["slotNow"], 1000, params["stepBlocks"], params["leadBlocks"])
+    assert decision == matching.Decision(None, None, None, False, [n1])
+
+
+@pytest.mark.parametrize("case", RANK["quotes"], ids=[c["name"] for c in RANK["quotes"]])
+def test_the_bid_a_raise_sends(case):
+    expected = case["expected"]
+    if "sendBidWei" not in expected:
+        pytest.skip("a quote for terms names no bid in force")
+    assert matching.send_bid(int(expected["minBidWei"]), int(expected["bidWei"])) == int(expected["sendBidWei"])
+
+
+def quote_of(case):
+    expected = case["expected"]
+    return matching.Quote(b"\x00" * 32, expected["counted"], expected["canClaimNow"], int(expected["minBidWei"]),
+                          int(expected["baseNowWei"]), int(expected["bidWei"]), 0)
+
+
+@pytest.mark.parametrize("name", ["quote-raise-example", "quote-with-ceiling-min-score", "quote-fallen-price"])
+def test_a_quote_no_claim_can_come_at_is_raised_to_its_bid(name):
+    case = next(c for c in RANK["quotes"] if c["name"] == name)
+    decision = matching.decide_raise(quote_of(case), 0, 0, False, 1, 8, 0, 5, 10**19)
+    assert decision == matching.RaiseDecision(matching.RAISE, int(case["expected"]["sendBidWei"]), decision.reason)
+
+
+def test_a_quote_with_claimable_nodes_waits():
+    case = next(c for c in RANK["quotes"] if c["name"] == "quote-without-ceiling")
+    assert matching.decide_raise(quote_of(case), 0, 0, False, 1, 8, 0, 5, 10**19).action == matching.WAIT
+    assert matching.decide_raise(quote_of(case), 1, 0, False, 1, 8, 0, 5, 10**19).action == matching.WAIT
+    raised = matching.decide_raise(quote_of(case), 2, 0, False, 9, 8, 0, 5, 10**19)
+    assert raised.action == matching.RAISE and raised.bid_wei == int(case["expected"]["sendBidWei"])
+
+
+# ------------------------------------------------------- result-fields.json
+
+@pytest.mark.parametrize("vector", FIELDS["accepted"], ids=[v["name"] for v in FIELDS["accepted"]])
+def test_the_three_fields_are_read(vector):
+    expected = vector["expected"]
+    assert code_of(vector["result"]) == expected["code"]
+    assert matching.result_fields(vector["result"]) == matching.ResultFields(
+        int(expected["landedAt"]), int(expected["ranUntil"]), expected["slClass"])
+
+
+@pytest.mark.parametrize("vector", FIELDS["refused"], ids=[v["name"] for v in FIELDS["refused"]])
+def test_the_three_fields_are_not_read(vector):
+    assert code_of(vector["result"]) == vector["expected"]["code"]
+    assert matching.result_fields(vector["result"]) is None
+
+
+@pytest.mark.parametrize("vector", FIELDS["accepted"] + FIELDS["refused"],
+                         ids=[v["name"] for v in FIELDS["accepted"] + FIELDS["refused"]])
+def test_the_stored_result_carries_its_result_string(vector):
+    runner = EthernityCloudRunner("LOCAL", "LOCAL")
+    runner.protocol_abi = polygon_abi["abi"]
+    stored = runner.parse_order_result(vector["stored"])
+    parsed = runner.parse_transaction_bytes(runner.hex_to_bytes(stored["transaction_bytes"]))
+    assert parsed["result"] == vector["result"]
+    assert parsed["order_id"] == FIELDS["transaction"]["orderId"]

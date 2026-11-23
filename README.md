@@ -302,6 +302,27 @@ By providing these resource requirements in the `resources` object, the task exe
 
 When no node places an order on the request within the order wait (`runner.set_order_wait(seconds)`, default 1800), the runner cancels the request, which returns its escrow, and the task fails. If a node booked the request just before the cancel, the cancel is refused by the contract and the task goes on with that node's order.
 
+### Requests served by claims (PoX 2.0 matching)
+
+A network entry that names a PoxMatching (`MATCHING_ADDRESS`) and its reader (`MATCH_READER_ADDRESS`) serves its requests by claims while PoxMatching's `claimsOn()` answers true; the runner reads it before each request. No entry names one yet. On every other network, the PoX 1.0 networks among them, and while claims are off, a request is added and approved as described above. On a network with PoxMatching a request pinned to a node (`node_address`) that is banned is refused before it is sent, with the end of the ban.
+
+A request served by claims is added with `addDORequestV2` and takes these keys of `resources` besides the ones above:
+
+| Key | Meaning | Default |
+|---|---|---|
+| `max_price_per_cu_hour_wei` | the bid per CU-hour, wei | required |
+| `escrow_wei` | the escrow `addDORequestV2` pulls, wei (the work at the bid with its fees, plus the chain fee) | required |
+| `max_gflops` | the GFLOPS ceiling of the node paid for (one CU is 100 GFLOPS) | 0, none |
+| `required_gflops` | the GFLOPS the request requires | 0, one CU |
+| `relays_per_hour`, `gas_level` | the chain fee's relays per hour and gas level (1e18 the average gas price) | 0, 1e18 |
+| `max_bid_per_cu_hour_wei` | the bid ceiling a raise of the bid stays within | none: a raise is reported, not sent |
+| `min_node_score` | the minimum node score, in points (0.50); 0 switches the test off | see below |
+| `recent_failure_slots` | a claimer whose last failed order is fewer slots ago is approved only when no other claim stands | 14 |
+| `allow_marked_image` | send a request for an image marked likely broken | False |
+| `expire_unstarted`, `note_refund`, `note_ambiguous` | end an order not started 900 s after its approval; record an expired order against its node; send `noteAmbiguous` an hour after a result the validators have not noted | True |
+
+Before the add the runner reads the trustedzone template's record, the image's health (a marked image is refused unless `allow_marked_image` is set), the image registry's records (an image its session name's newest version is not bound to is refused, naming the dApp's current image) and the quote at the request's terms (`bidQuoteFor`). After the add it reads the request at every block, approves a claim by the design's rule (3.10), the node mandated for the step first, an in-time claim before a late one, and raises the bid to the quote's lowest matching bid within `max_bid_per_cu_hour_wei` when no claim it would approve can come. The minimum score is `min_node_score` when set; else, for a dApp of the default class, 0.50 once the network's first node reached 1.00 (`minimumOn()`); else the top tier of the request's round (`tierScore`). The runner passes over the nodes of its local list (two of its orders of the dApp on the node ended in 20, 62, 59 or 63 within 7 days) and, for a paid class, those the image's counted failures of the last 7 days name. What it tells the client is logged and kept in `runner.matching_notices`; a code 20, 62, 44, 47, 59 or 63 is reported by the class the result states in `last_error` and the result's `end_report`. An expiry the PoX does not admit yet and a `noteAmbiguous` due later are kept in `runner.matching_pending` and sent by `runner.settle_matching()`, which a later request served by claims calls before its add.
+
 ### The fee ceiling
 
 On a network with EIP-1559 fees (Polygon mainnet and Polygon Amoy, the IoTeX Testnet, Ethereum Sepolia, LitVM LiteForge) every transaction the runner sends (the token approval, the DO request, the approval of an order, the cancel of a request, a session's input and close rows, a testnet faucet draw) offers a `maxFeePerGas` of the latest block's base fee plus 10 %, plus the network's priority fee, and is sent only when that fee is within a ceiling. The ceiling is, in this order:

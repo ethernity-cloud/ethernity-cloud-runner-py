@@ -417,9 +417,12 @@ class protocolContract:
         """Approves the protocol for `tokens` on the token: the wallet's
         allowance for the protocol becomes that amount, in wei. Returns the
         approval's transaction hash."""
-        contract_fn = self.token_contract.functions.approve(
-            self.protocol_address, Web3.to_wei(tokens, "ether")
-        )
+        return self.set_allowance_wei(Web3.to_wei(tokens, "ether"))
+
+    def set_allowance_wei(self, wei: int) -> HexStr:
+        """Approves the protocol for `wei` on the token. Returns the
+        approval's transaction hash."""
+        contract_fn = self.token_contract.functions.approve(self.protocol_address, int(wei))
         return self._build_sign_send(contract_fn, 100000)
 
     def faucet(

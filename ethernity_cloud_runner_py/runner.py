@@ -22,6 +22,9 @@ from .contract.abi.ECLDAbi import contract as ECLDAbi
 from .contract.operation.imageRegistryContract import ImageRegistryContract
 from .contract.operation.protocolContract import protocolContract
 from .contract.operation.esrContract import ESRContract
+from .contract.operation.matchingContract import MatchingContracts
+from .claims import ClaimsPath, claims_settings, pinned_ban, settle_pending
+from .matching import LocalList
 from .rpc import read_again, rpc_answers
 from .state_cache import StateCache, parse_result_envelope
 from binascii import hexlify
@@ -317,6 +320,19 @@ class EthernityCloudRunner:
         # .run is the run the calling thread works for (_process_events,
         # _submission); unset in every other thread.
         self._calling = threading.local()
+        # The request in hand when it is served by claims (claims.ClaimsPath),
+        # chosen before each add (_claims_path); None on every other path.
+        self._claims: Optional[ClaimsPath] = None
+        # What the claims path told the client during the last run or
+        # session submission, in order.
+        self.matching_notices: List[str] = []
+        # The work requests served by claims left for later (an expiry the
+        # PoX does not admit yet, a noteAmbiguous due an hour after a
+        # result), which settle_matching() sends when it is due.
+        self.matching_pending: List[dict] = []
+        # The nodes whose claims the runner approves for no request of a
+        # dApp for 7 days (matching.LocalList), from its own orders.
+        self.local_list = LocalList()
     def set_network(self, network_name: str, network_type: str) -> None:
         """Moves the runner to another network, whole. The names, the table
         entry, the default trustedzone and the block time become the
@@ -493,6 +509,7 @@ class EthernityCloudRunner:
         finally:
             if self._run is run:
                 self._run = None
+                self._claims = None
             del self._calling.run
             run.ended.set()
     def _hold_session(self, run: _Run, session: Any) -> None:
@@ -644,7 +661,13 @@ class EthernityCloudRunner:
         MAINNET and TESTNET_POX10) nothing is read or approved. Raises
         RuntimeError naming the token, the wallet, the protocol and the
         provider's message when no read answers, ValueError when the approval
-        is not mined or reverts."""
+        is not mined or reverts. A request served by claims makes the reads
+        before its add (ClaimsPath.check_before_add) and then approves its
+        V2 escrow, in wei (ClaimsPath.check_allowance)."""
+        if self._claims is not None:
+            self._claims.check_before_add(self.enclave_image_ipfs_hash, self._claims.template_name())
+            self._claims.check_allowance()
+            return
         if not self.escrow_needs_allowance():
             return
         self.logger.info("Checking allowance on the current wallet...")
@@ -685,7 +708,10 @@ class EthernityCloudRunner:
         wallet and the amount a transfer has to bring. The balance is read
         with _read_before_request; the RuntimeError of a read no try answered
         (protocolContract.get_balance) is raised as it is, and no faucet is
-        drawn on it."""
+        drawn on it. A request served by claims is checked against its V2
+        escrow (ClaimsPath.check_balance)."""
+        if self._claims is not None:
+            return self._claims.check_balance()
         self.logger.info("Checking wallet balance...")
         balance = int(self._read_before_request(self.contract.get_balance))
         escrow = protocolContract.request_escrow(self.resources)
@@ -932,6 +958,8 @@ class EthernityCloudRunner:
         node_address = normalize_node_address(node_address)
         node_address = Web3.to_checksum_address(node_address) if node_address else ""
         def send_tx():
+            if self._claims is not None:
+                return self._claims.add_request([image_metadata, code_metadata, input_metadata, node_address])
             return self._sender().add_do_request(image_metadata, code_metadata, input_metadata, node_address, self.resources)
         # A request the fee ceiling refuses is not sent again: the refusal
         # ends the tries and the submission.
@@ -1013,6 +1041,7 @@ class EthernityCloudRunner:
                 "task_code_string": task_status_name(task_code_int),
                 "checksum": arr[2],
                 "enclave_challenge": arr[3],
+                "result": result["result"],
             }
         except (IndexError, ValueError) as e:
             raise ValueError(ECError.PARSE_ERROR.value) from e
@@ -1111,7 +1140,15 @@ class EthernityCloudRunner:
         On failure this returns None and, when the failure is attributable to
         the node operator (timeout, unusable output, operator-fault task code),
         records the reason in self._fault so the caller can retry with a new
-        DO request."""
+        DO request.
+
+        For the run's own order of a request served by claims (self._claims)
+        the start is the PoX's orderStartedAt, an order that has not started
+        startTimeoutSeconds after its approval is ended with expireUnstarted
+        (ClaimsPath.unstarted_fault), one whose time is up is expired
+        (ClaimsPath.expired), and a verified result is reported by class
+        (ClaimsPath.after_result), its report's text under "end_report"."""
+        claims = self._claims if order is None else None
         if order is None:
             order, challenge = self.order, self.challenge_hash
             request = dict(self._request_fields(),
@@ -1139,11 +1176,12 @@ class EthernityCloudRunner:
         dp_request = int(order[3])
         window_end = None
         try:
-            if started_row_advertised(caller._getDPRequestMetadata(dp_request)[4]):
+            if claims is None and started_row_advertised(caller._getDPRequestMetadata(dp_request)[4]):
                 window_end = self.protocol_contract.w3.eth.block_number + ORDER_START_WINDOW_BLOCKS
         except Exception as e:
             self.logger.debug(f"DP request {dp_request} not readable ({e}); the start of order {order_id} is not checked")
         started = window_end is None
+        start_watched = claims is not None
         tick = 0
         while self.is_running() and status != 2:
             if time.time() > deadline:
@@ -1152,7 +1190,20 @@ class EthernityCloudRunner:
                     f"(operator hung or offline)"
                 )
                 self.logger.error(self._fault)
+                if claims is not None:
+                    claims.expired(order_id)
                 return None
+            if start_watched:
+                try:
+                    has_started, fault = claims.start_check(order_id)
+                    start_watched = not has_started
+                except Exception as e:
+                    self.logger.debug(f"start check of order {order_id} skipped this tick ({e})")
+                    fault = None
+                if fault:
+                    self._fault = fault
+                    self.logger.error(fault)
+                    return None
             if not started:
                 try:
                     verdict = order_start_verdict(self._dp_request_rows(dp_request), order_id,
@@ -1235,6 +1286,9 @@ class EthernityCloudRunner:
             return None
         self.logger.info("Verification successful!")
         self.logger.info(f"The result is signed by: {transaction_result['from']}")
+        report = None
+        if claims is not None:
+            report = claims.after_result(order_id, order[1], task_code_int, transaction_result["result"])
         ipfs_result = self._read_result(parsed_order_result["result_ipfs_hash"], deadline)
         if ipfs_result is None:
             self.logger.error("Failed to download the IPFS result before the order's deadline.")
@@ -1254,7 +1308,7 @@ class EthernityCloudRunner:
             self.logger.error(f"Integrity check failed: {ipfs_result_checksum} != {transaction_result['checksum']}")
             self._fault = f"order {order_id}: result checksum verification failed"
             return None
-        return self._apply_envelope({
+        result = {
             "contract_address": self.contract.get_protocol_address(),
             "input_transaction_hash": request.get("input_transaction_hash"),
             "output_transaction_hash": "",
@@ -1270,7 +1324,10 @@ class EthernityCloudRunner:
             "result_value": ipfs_result,
             "result_timestamp": 0,
             "value": decrypted_data["data"],
-        })
+        }
+        if report is not None:
+            result["end_report"] = report.text
+        return self._apply_envelope(result)
     def create_task(self, code: str) -> bool:
         """Create a new task: its challenge, code and input are sealed and
         its DO request is sent. With an intake storage the sealed blobs are
@@ -1309,7 +1366,12 @@ class EthernityCloudRunner:
         result = self.get_result_from_order(self.order_id)
         return result if result else None
     def check_order_for_task(self) -> bool:
-        """Check for order creation with backoff."""
+        """Check for order creation with backoff. A request served by claims
+        and pinned to no node is approved by the runner itself
+        (ClaimsPath.await_approval), and cancelled as here when no approval
+        comes within the order wait."""
+        if self._claims is not None and not self.node_address:
+            return self._await_claim_approval()
         self.logger.info("Waiting for Ethernity CLOUD network...")
         initial_delay = self.block_time
         max_delay = 600
@@ -1364,13 +1426,74 @@ class EthernityCloudRunner:
             self.logger.error(f"Could not look the order of request {self.do_request} up: {e}")
         self.logger.error(f"Request {self.do_request} could not be cancelled: {cancel_error}")
         return False
+    def _claims_path(self, resources: Dict[str, Any], node_address: str) -> Optional[ClaimsPath]:
+        """The claims path of the request about to be added (section 8;
+        roll-out step 3). On a network whose entry names PoxMatching
+        (MATCHING_ADDRESS) and its reader (MATCH_READER_ADDRESS) a request
+        pinned to a banned node is refused with ValueError (D33, 8.11), and
+        while claimsOn() answers true the request is served by claims: the
+        work earlier requests left (settle_matching) is sent first, and the
+        task settings are read (claims.claims_settings). None on every other
+        network and while claims are off: the request is served as before,
+        and on a network whose entry names no PoxMatching nothing of it is
+        read."""
+        cfg = self.network_config
+        address = getattr(cfg, "MATCHING_ADDRESS", None)
+        reader = getattr(cfg, "MATCH_READER_ADDRESS", None)
+        if not address or not reader:
+            return None
+        chain = MatchingContracts(self._sender(), address, reader, getattr(cfg, "MATCH_PAGE_ENTRIES", None))
+        node = normalize_node_address(node_address)
+        if node:
+            ban = pinned_ban(chain, node)
+            if ban:
+                raise ValueError(ban)
+        if not chain.claims_on():
+            return None
+        path = ClaimsPath(self, chain, claims_settings(resources))
+        settle_pending(self)
+        return path
+    def _await_claim_approval(self) -> bool:
+        """The wait of a request served by claims and pinned to no node: the
+        runner approves a claim itself (ClaimsPath.await_approval) within
+        the order wait, and the order that approval placed, PROCESSING at
+        once, is the run's; a request with no approval by then is cancelled
+        (cancel_unclaimed_request)."""
+        wait_seconds = getattr(self, "order_wait_seconds", DEFAULT_ORDER_WAIT_SECONDS)
+        self.logger.info(f"Request {self.do_request} is served by claims: approving a claim...")
+        order_id = self._claims.await_approval(self.do_request, wait_seconds)
+        if order_id is None:
+            return self.is_running() and self.cancel_unclaimed_request(wait_seconds)
+        self.order_id = order_id
+        self.order = self.retry_operation(lambda: self.protocol_contract.caller()._getOrder(order_id))
+        self.node_address = self.order[1]
+        return True
+    def _matching_notice(self, text: str, level: int = logging.WARNING) -> None:
+        """Tells the client what the claims path found: the log at `level`
+        and matching_notices."""
+        self.logger.log(level, text)
+        self.matching_notices.append(text)
+    def settle_matching(self) -> None:
+        """Sends the work requests served by claims left for later
+        (matching_pending) that is due: the expireOrder and noteRefund of an
+        order whose time ran out, once the PoX admits the expiry, and the
+        noteAmbiguous of an end the validators' members have not noted an
+        hour after its result (section 8 items 10 and 16). Each is made as a
+        call first; what is not due stays pending, what the contracts refuse
+        is dropped. A run of a request served by claims calls it before its
+        add."""
+        settle_pending(self)
     def approve_task(self) -> bool:
         """Approve the task: approve_order's outcome. approve_order is called
         again, a block time apart and up to 100 times, while it raises a node
         error (Web3RPCError) before its approval is handed to the node. Once
         it has handed one over it sends no other for the order, whatever its
         receipt says: its outcome is returned, and a failure after it is
-        raised as RuntimeError."""
+        raised as RuntimeError. A request served by claims has no approval
+        here: the runner's approval of a claim placed its order PROCESSING,
+        as the node's placement of a pinned request does."""
+        if self._claims is not None:
+            return True
         self.logger.info(f"Approving task {self.order_id}...")
         max_attempts = 100
         retry_count = 0
@@ -1893,6 +2016,7 @@ class EthernityCloudRunner:
             if self._run is run:
                 self._run = None
                 self.running = False
+                self._claims = None
             del self._calling.run
             run.ended.set()
 
@@ -1911,6 +2035,8 @@ class EthernityCloudRunner:
         self.last_error = (
             f"The task failed in the enclave with {result.get('result_task_code')} "
             f"({result.get('result_task_code_int')}); the result holds its error report.")
+        if result.get("end_report"):
+            self.last_error += " " + result["end_report"]
         self.logger.error(self.last_error)
 
     def _run_local_attempt(self, code: str) -> None:
@@ -1986,6 +2112,9 @@ class EthernityCloudRunner:
                 break
             if event == ECEvent.INIT:
                 self.progress = ECEvent.INIT
+                self.matching_notices = []
+                self._claims = None
+                self._claims = self._claims_path(resources, node_address)
                 self._check_balance()
                 self.verify_protocol()
                 self.logger.info("Verifying node address...")
@@ -2088,6 +2217,9 @@ class EthernityCloudRunner:
                 # published.
                 self.running = True
                 try:
+                    self.matching_notices = []
+                    self._claims = None
+                    self._claims = self._claims_path(resources, node_address)
                     self._check_balance()
                     self.verify_protocol()
                     self.logger.info("Verifying node address...")
