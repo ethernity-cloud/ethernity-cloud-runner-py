@@ -5,9 +5,9 @@ before its V2 add, the approval of a claim by the rule of 3.10, the raise of
 noteAmbiguous the members have not sent (3.16, 3.19).
 
 EthernityCloudRunner builds a ClaimsPath for a request on a network whose
-entry names PoxMatching and its reader when claimsOn() answers true before
-the add; on every other network, and while claims are off, it serves the
-request as it did before (8.4)."""
+entry names PoxMatching when claimsOn() answers true before the add, on the
+PoxMatchReader PoxMatching names; on every other network, and while claims
+are off, it serves the request as it did before (8.4)."""
 import logging
 import time
 from collections import namedtuple
@@ -30,13 +30,14 @@ GAS_LEVEL_DEFAULT = 10**18
 
 # The task settings a request served by claims reads from the resources of
 # run() and run_session() (section 8 items 1, 5, 6, 9, 10, 12 and 16):
-# max_price_per_cu_hour_wei, the bid per CU-hour, and escrow_wei, the escrow
-# the V2 add pulls, are required; max_gflops (the GFLOPS ceiling, 0 for
-# none), required_gflops (0: one CU, D38), relays_per_hour and gas_level (the
-# chain fee's) have defaults; max_bid_per_cu_hour_wei is the bid ceiling a
-# raise stays within (none: the quote is reported and nothing is raised);
-# min_node_score the minimum score as points (0.50), 0 switching the test
-# off; recent_failure_slots, allow_marked_image, expire_unstarted,
+# max_price_per_cu_hour_wei, the bid per CU-hour, is required; escrow_wei,
+# when given, is the most the V2 add may pull (the escrow itself is the
+# reader's escrowFor at the request's terms); max_gflops (the GFLOPS ceiling,
+# 0 for none), required_gflops (0: one CU, D38), relays_per_hour and
+# gas_level (the chain fee's) have defaults; max_bid_per_cu_hour_wei is the
+# bid ceiling a raise stays within (none: the quote is reported and nothing
+# is raised); min_node_score the minimum score as points (0.50), 0 switching
+# the test off; recent_failure_slots, allow_marked_image, expire_unstarted,
 # note_refund and note_ambiguous the switches of 3.10, 8.12, 8.9, 8.10 and
 # 8.16.
 ClaimsSettings = namedtuple("ClaimsSettings", "bid_wei escrow_wei max_gflops required_gflops relays_per_hour "
@@ -55,15 +56,15 @@ def _whole(resources: Dict[str, Any], key: str, default: Optional[int] = None) -
 
 def claims_settings(resources: Dict[str, Any]) -> ClaimsSettings:
     """The ClaimsSettings of a run's resources. Raises ValueError, before
-    anything is sent, for a request without a bid or an escrow and for a
-    setting out of its range."""
+    anything is sent, for a request without a bid, for an escrow_wei of 0 and
+    for a setting out of its range."""
     bid = _whole(resources, "max_price_per_cu_hour_wei")
     escrow = _whole(resources, "escrow_wei")
-    if not bid or not escrow:
+    if not bid or escrow == 0:
         raise ValueError(
             "This network serves DO requests by claims (PoxMatching's claimsOn() is true), so a request is added "
-            "with V2 terms: give the task settings max_price_per_cu_hour_wei (the bid per CU-hour, wei) and "
-            "escrow_wei (the escrow addDORequestV2 pulls), above 0.")
+            "with V2 terms: give the task setting max_price_per_cu_hour_wei (the bid per CU-hour, wei), above 0; "
+            "escrow_wei, when given, is the most addDORequestV2 may pull, above 0.")
     min_score = resources.get("min_node_score")
     return ClaimsSettings(
         bid, escrow, _whole(resources, "max_gflops", 0), _whole(resources, "required_gflops", 0),
@@ -73,6 +74,12 @@ def claims_settings(resources: Dict[str, Any]) -> ClaimsSettings:
         _whole(resources, "recent_failure_slots", matching.DEFAULT_RECENT_FAILURE_SLOTS),
         bool(resources.get("allow_marked_image", False)), bool(resources.get("expire_unstarted", True)),
         bool(resources.get("note_refund", True)), bool(resources.get("note_ambiguous", True)))
+
+
+class NoParameterSet(Exception):
+    """requestInfo names no parameter set in force for the request
+    (matching.NO_PARAMETER_SET): it has no schedule, so no claim on it is
+    approved by the rule of 3.10."""
 
 
 def utc(seconds: int) -> str:
@@ -111,6 +118,13 @@ class ClaimsPath:
         self.template: Optional[matching.Template] = None
         self.envelope = matching.ENVELOPE_WHOLE_PASS
         self.default_class = False
+        # The image's records in the image registry (matching.ImageRecords;
+        # None when PoxMatching names no registry) and the dApp's minimum
+        # operator score they hold (matching.dapp_minimum).
+        self.records: Optional[matching.ImageRecords] = None
+        self.dapp_min_score: Optional[int] = None
+        # The escrow the add pulls, escrowFor at the request's terms.
+        self.escrow_wei: Optional[int] = None
         self.params: Optional[Dict[str, int]] = None
         self.round: Optional[_Round] = None
         self.hints: List[int] = []
@@ -127,22 +141,16 @@ class ClaimsPath:
 
     # ------------------------------------------------------- before the add
 
-    def check_balance(self) -> None:
-        """The wallet's balance against the V2 escrow, in wei. Raises
-        ValueError, before anything is sent, for a wallet below it."""
-        balance = Web3.to_wei(self.runner._read_before_request(self.runner.contract.get_balance), "ether")
-        if balance < self.settings.escrow_wei:
-            raise ValueError(f"Insufficient wallet balance: the request's escrow is {self.settings.escrow_wei} wei "
-                             f"of {self.runner.network_config.TOKEN_NAME} and the wallet holds {balance}.")
-
     def check_before_add(self, image_cid: str, template_name: str) -> None:
-        """The reads before the add (8.1, 8.12, 8.13, 3.19): the template's
-        record and the envelope its mark chooses; the image's health, a
-        marked image refused unless the task settings allow it; the image
-        registry's records, an image its session name's newest version is
-        not bound to refused with the dApp's current image named; the class;
-        and the quote at the request's terms. Each refusal is a ValueError
-        raised before anything is sent."""
+        """The reads before the add (8.1, 8.6, 8.12, 8.13, 3.19): the
+        template's record and the envelope its mark chooses; the image's
+        health, a marked image refused unless the task settings allow it; the
+        image registry's records, told to the client (the kind, the network
+        flag, the enclave memory and the dApp's minimum operator score, which
+        the runner applies: D138), an image its session name's newest version
+        is not bound to refused with the dApp's current image named; the
+        class; and the quote at the request's terms. Each refusal is a
+        ValueError raised before anything is sent."""
         self.image_cid = image_cid
         self.template = self.chain.template(template_name)
         self.envelope = matching.envelope_for(self.template)
@@ -161,20 +169,30 @@ class ClaimsPath:
         elif s7 == 0 and f7 == 0:
             self.notice(f"The image {image_cid} has had no counted order in the last 7 days, so no mark of its "
                         "health can show.", logging.INFO)
-        records = self.chain.image_records(image_cid)
-        if records["current_image"]:
+        found = self.chain.image_records(image_cid)
+        self.records = found["records"]
+        self.dapp_min_score = matching.dapp_minimum(self.records)
+        if self.records is not None:
+            self.notice(matching.records_text(image_cid, self.records, found["release_language"]), logging.INFO)
+        if found["current_image"]:
             raise ValueError(f"The image {image_cid} is not the one its session name's newest version is bound to: "
-                             f"the dApp's current image is {records['current_image']}. The request is not sent.")
+                             f"the dApp's current image is {found['current_image']}. The request is not sent.")
+        default_release = self.records is not None and self.records.kind == matching.KIND_DEFAULT_RELEASE
         self.default_class = bool(
-            records["default_release"] and self.template.marked and not self.runner.is_unsafe()
-            and int.from_bytes(records["session"], "big") != 0 and records["latest"] == records["session"])
+            default_release and self.template.marked and not self.runner.is_unsafe()
+            and int.from_bytes(found["session"], "big") != 0 and found["latest"] == found["session"])
         if self.template.marked and not self.default_class:
-            self.notice("The image is of the custom class: a code 20 or 62 of this request is paid to the operator, "
-                        "and the developer and the client carry that risk; the minimum operator score is their "
-                        "protection.", logging.INFO)
+            kind = (f" ({matching.kind_text(self.records, found['release_language'])})"
+                    if self.records is not None and self.records.kind != matching.KIND_NONE else "")
+            self.notice(f"The image is of the custom class{kind}: a code 20 or 62 of this request is paid to the "
+                        "operator, and the developer and the client carry that risk; the minimum operator score is "
+                        "their protection.", logging.INFO)
             if self.settings.min_score is not None:
+                instead = ("the dApp's minimum operator score of "
+                           f"{self.dapp_min_score / matching.SCORE_UNITS_PER_POINT:.4f}"
+                           if self.dapp_min_score is not None else "the top tier")
                 self.notice(f"The minimum node score is set to {self.settings.min_score / 10_000:.4f} for this "
-                            "request, in place of the top tier: a 20 or 62 of it is paid to the operator at the "
+                            f"request, in place of {instead}: a 20 or 62 of it is paid to the operator at the "
                             "client's risk.")
         self._quote_before_add()
 
@@ -183,7 +201,7 @@ class ClaimsPath:
         terms = protocol_terms(resources)
         need, ceiling = matching.need_of(matching.max_gflops_arg(self.settings.required_gflops,
                                                                  self.settings.max_gflops))
-        minimum = matching.minimum_score(self.settings.min_score, None, self.default_class,
+        minimum = matching.minimum_score(self.settings.min_score, self.dapp_min_score, self.default_class,
                                          self.default_class and self.chain.minimum_on(), 0)
         quote = self.chain.bid_quote_for(
             {"cpu": terms["cpu"], "memGB": terms["memory"], "storageGB": terms["storage"],
@@ -199,10 +217,33 @@ class ClaimsPath:
     def template_name(self) -> str:
         return self.runner.trustedZoneImage or self.runner.securelock_enclave
 
-    def check_allowance(self) -> None:
-        """The wallet's allowance for the PoX against the V2 escrow, in wei:
-        approved for exactly the escrow when below it."""
-        self._allow(self.settings.escrow_wei)
+    def check_escrow(self, metadata1: str) -> int:
+        """The escrow the add pulls, the reader's escrowFor at the request's
+        terms and `metadata1` (its fields 1 and 2, the image and the
+        template, carry the publishers' fees), told to the client; the
+        wallet's balance against it; and the wallet's allowance for the PoX,
+        approved for exactly the escrow when below it. Returns the escrow, in
+        wei. Raises ValueError, before anything is sent, for an escrow above
+        the task setting escrow_wei and for a wallet below it."""
+        s = self.settings
+        terms = protocol_terms(self.runner.resources)
+        escrow = self.chain.escrow_for(terms["duration"], s.bid_wei,
+                                       matching.max_gflops_arg(s.required_gflops, s.max_gflops), s.relays_per_hour,
+                                       s.gas_level, metadata1)
+        wei = escrow["escrowWei"]
+        if s.escrow_wei is not None and wei > s.escrow_wei:
+            raise ValueError(f"The request's escrow at its terms is {wei} wei, above the task setting escrow_wei of "
+                             f"{s.escrow_wei}: the request is not sent.")
+        self.notice(f"The request's escrow is {wei} wei: the work {escrow['workWei']} at {escrow['escrowGflops']} "
+                    f"GFLOPS, the fees on it (the publishers' {escrow['trustedZoneFee']} % and "
+                    f"{escrow['secureLockFee']} %) and the chain fee {escrow['chainFeeWei']}.", logging.INFO)
+        balance = Web3.to_wei(self.runner._read_before_request(self.runner.contract.get_balance), "ether")
+        if balance < wei:
+            raise ValueError(f"Insufficient wallet balance: the request's escrow is {wei} wei of "
+                             f"{self.runner.network_config.TOKEN_NAME} and the wallet holds {balance}.")
+        self._allow(wei)
+        self.escrow_wei = wei
+        return wei
 
     def _allow(self, wei: int) -> None:
         runner = self.runner
@@ -239,6 +280,9 @@ class ClaimsPath:
                 order = self._tick(do_request)
                 if order is not None:
                     return order
+            except NoParameterSet as e:
+                self.notice(str(e))
+                return None
             except (matching.StampChanged, matching.Unsettled) as e:
                 self.logger.debug(f"request {do_request}: {e}; read again")
                 self.round = None
@@ -248,12 +292,23 @@ class ClaimsPath:
             time.sleep(self.runner.block_time)
         return None
 
+    def _parameters(self, do_request: int, info: Dict[str, Any]) -> Dict[str, int]:
+        """The parameter set request `do_request` takes, the one its
+        requestInfo `info` names, read once. Raises NoParameterSet when none
+        is in force for it."""
+        if self.params is None:
+            index = int(info["parameterSet"])
+            if index == matching.NO_PARAMETER_SET:
+                raise NoParameterSet(f"No parameter set of PoxMatching is in force for request {do_request}: it has "
+                                     "no schedule, and no claim on it is approved.")
+            self.params = self.chain.parameter_set(index)
+        return self.params
+
     def _tick(self, do_request: int) -> Optional[int]:
         info = self.chain.request_info(do_request)
         if not info["settled"]:
             return None
-        if self.params is None:
-            self.params = self.chain.request_parameters(do_request)
+        self._parameters(do_request, info)
         stamp = bytes(info["roundStamp"])
         if self.round is None or self.round.stamp != stamp:
             self.round = self._read_round(do_request, info)
@@ -294,7 +349,7 @@ class ClaimsPath:
         max_steps = int(self.params["maxSteps"])
         if info["ranked"]:
             pages = self.chain.candidate_pages(do_request, int(info["round"]))
-            read = matching.merge_candidates(pages, int(self.params["bandWidth"]), max_steps)
+            read = matching.merge_candidates(pages, max_steps)
             if read.stamp != stamp:
                 raise matching.StampChanged("the list read answered another round stamp than requestInfo")
             whole = read.match_found < max_steps or read.stop_band == 0
@@ -311,7 +366,7 @@ class ClaimsPath:
         `beyond` from the last page of its read (4.6), for the order of rule
         3."""
         pages = rnd.pages + self.chain.candidate_pages(do_request, int(info["round"]), True, rnd.pages[-1])
-        read = matching.merge_candidates(pages, int(self.params["bandWidth"]), int(self.params["maxSteps"]))
+        read = matching.merge_candidates(pages, int(self.params["maxSteps"]))
         if read.stamp != rnd.stamp:
             raise matching.StampChanged("the read on with beyond answered another round stamp")
         schedule = matching.Schedule(read.entries, bytes(info["seed"]), int(self.params["maxSteps"]))
@@ -319,11 +374,14 @@ class ClaimsPath:
 
     def _minimum(self, do_request: int) -> int:
         """The minimum score of the round (3.10 rule 5, D138): the setting,
-        else for a dApp of the default class D62's default once minimumOn()
-        answers true, else the top tier of the round."""
+        else the dApp's minimum operator score its records hold, else for a
+        dApp of the default class D62's default once minimumOn() answers
+        true, else the top tier of the round."""
         s = self.settings
         if s.min_score is not None:
             return s.min_score
+        if self.dapp_min_score is not None:
+            return self.dapp_min_score
         if self.default_class:
             return matching.minimum_score(None, None, True, self.chain.minimum_on(), None)
         return matching.minimum_score(None, None, False, False, self.chain.tier_score(do_request))
@@ -344,7 +402,8 @@ class ClaimsPath:
 
     def _claims_now(self, do_request: int, info: Dict[str, Any], rnd: _Round) -> tuple:
         """Every claim on the request at this read, each a ClaimView, and
-        whether each mandated node can still claim (scheduleOf's canClaim)."""
+        whether each mandated node can still claim (canClaimOf). Raises
+        StampChanged when canClaimOf answers another round stamp."""
         claims: Dict[str, matching.ClaimView] = {}
         for node, word, approvable in self.chain.claimers(do_request, int(info["claimCount"])):
             claim = matching.decode_claim(word)
@@ -353,10 +412,10 @@ class ClaimsPath:
                                                                          claim.dp_request_id)
         can_claim: Dict[str, bool] = {}
         if rnd.schedule.mandated:
-            schedule = self.chain.schedule_of(do_request)
-            if bytes(schedule["roundStamp"]) == rnd.stamp and schedule["complete"]:
-                can_claim = {matching.address_text(n): bool(c) for n, c in zip(schedule["mandated"],
-                                                                              schedule["canClaim"])}
+            stamp, flags = self.chain.can_claim_of(do_request, rnd.schedule.mandated)
+            if stamp != rnd.stamp:
+                raise matching.StampChanged("canClaimOf answered another round stamp")
+            can_claim = {matching.address_text(n): flag for n, flag in zip(rnd.schedule.mandated, flags)}
         return claims, can_claim
 
     def _standing(self, node: str, can_answer: bool) -> matching.Standing:
@@ -416,12 +475,17 @@ class ClaimsPath:
         once the PoX holds orderStartedAt; while it does not,
         startTimeoutSeconds (900) after the approval, the order is ended with
         expireUnstarted, made as a call first, and the fault that resubmits
-        the task is returned. With the setting off nothing is sent."""
+        the task is returned. With the setting off nothing is sent. The
+        parameter set is the one requestInfo names for the run's request,
+        read here when no approval read it (a pinned request)."""
         if self.chain.order_started_at(order_id):
             return True, None
         if not self.settings.expire_unstarted:
             return False, None
         approved = self.chain.order_approved_at(order_id)
+        if self.params is None:
+            do_request = int(self.runner.do_request)
+            self._parameters(do_request, self.chain.request_info(do_request))
         timeout = int(self.params["startTimeoutSeconds"])
         if self.chain.chain_time() <= approved + timeout:
             return False, None
@@ -454,13 +518,16 @@ class ClaimsPath:
 
     def after_result(self, order_id: int, node: str, code: int, result: str) -> Optional[matching.EndReport]:
         """Section 8 item 16 and 3.19 for an order that closed with a result:
-        the runner's local list records an end it counts, a code 20, 62, 44,
-        47, 59 or 63 is reported by the class the result states, and an end
-        noteAmbiguous takes is kept for settle_matching(), which sends it
-        an hour after the result when the members have not."""
+        a code 33 is judged by PoxMatching's early33, a 33 before its time
+        being settled as a 62; the runner's local list records an end it
+        counts; a code 20, 62, 44, 47, 59 or 63, or a 33 before its time, is
+        reported by the class the result states; and an end noteAmbiguous
+        takes is kept for settle_matching(), which sends it an hour after the
+        result when the members have not."""
         now = self.chain.chain_time()
-        self.runner.local_list.record(self.image_cid, node, code, now)
-        report = matching.end_report(code, matching.result_fields(result))
+        early = code == matching.CODE_TIMEOUT and self.chain.early33(order_id)
+        self.runner.local_list.record(self.image_cid, node, code, now, early)
+        report = matching.end_report(code, matching.result_fields(result), early)
         if report is None:
             return None
         self.notice(report.text)

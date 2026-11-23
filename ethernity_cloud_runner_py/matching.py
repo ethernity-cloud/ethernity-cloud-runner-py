@@ -13,17 +13,17 @@ request through them.
   mandated sequence (Schedule).
 - The runner's approval rule on closed steps (3.10; spec/matching.md 13).
 - The raise within the client's bid ceiling (3.10 rule 4, 3.15, D92).
-- The minimum score (D62, D71, D88), the recent-failure test (D61) and the
-  runner's local list (3.19, D120).
+- The minimum score (D62, D71, D88, D138), the recent-failure test (D61) and
+  the runner's local list (3.19, D120).
 - The three result fields after v5 and the report of an end by class (3.19;
   spec/matching.md 17; section 8 items 15 and 16).
-- The template's record and the envelope its mark chooses (3.19; 8.13)."""
+- The template's record and the envelope its mark chooses (3.19; 8.13).
+- An image's records in ECImageRegistryV4 (8.12; D126, D138, D150)."""
 from collections import namedtuple
 from typing import Dict, Iterable, List, Optional
 
 from eth_utils import keccak
 
-TOP_BAND = 49
 SCORE_MAX = 50_000
 # The GFLOPS a request that states none requires (D38): one CU.
 DEFAULT_NEED_GFLOPS = 100
@@ -42,10 +42,15 @@ DEFAULT_RECENT_FAILURE_SLOTS = 14
 # The runner's local list (3.19, D120): no claim of a node is approved for a
 # dApp for LOCAL_LIST_SECONDS after LOCAL_LIST_ENDS of the runner's orders of
 # that dApp on that node ended, within LOCAL_LIST_SECONDS, in one of
-# LOCAL_LIST_CODES.
+# LOCAL_LIST_CODES or in a code 33 before its time.
 LOCAL_LIST_SECONDS = 7 * 86_400
 LOCAL_LIST_ENDS = 2
 LOCAL_LIST_CODES = frozenset({20, 59, 62, 63})
+# Code 33, EXECUTION_TIMEOUT: before its time (PoxMatching's early33) it is
+# settled as a 62 (3.19).
+CODE_TIMEOUT = 33
+# The parameter set requestInfo names for a request none is in force for.
+NO_PARAMETER_SET = 256
 # The window of an image's health (3.19): the days d - 6 to d.
 HEALTH_WINDOW_DAYS = 7
 DAY_SECONDS = 86_400
@@ -152,21 +157,22 @@ def step_at(block: int, round_block: int, step_blocks: int, lead_blocks: int) ->
 Eligible = namedtuple("Eligible", "node score fit match listed_ordinal dp_request_id tip band index")
 
 
-def band_of(score: int, band_width: int) -> int:
-    """The band a heartbeat writes a score into: min(49, score / bandWidth)
-    (4.4)."""
-    return min(TOP_BAND, int(score) // int(band_width))
+def place_of(band: int, index: int) -> int:
+    """A `candidates` place: band << 32 | the entry's index in its band
+    (spec/matching.md section 8)."""
+    return int(band) << 32 | int(index)
 
 
-def decode_eligible(word: int, tip: int, index: int, band_width: int) -> Eligible:
-    """An Eligible from a `candidates` word, its tip and its index: node << 96
-    | score << 80 | fit << 73 | match << 72 | listedOrdinal << 48 |
-    dpRequestId. The band is the one its score was written into."""
+def decode_eligible(word: int, tip: int, place: int) -> Eligible:
+    """An Eligible from a `candidates` word, its tip and its place: the word
+    is node << 96 | score << 80 | fit << 73 | match << 72 | listedOrdinal <<
+    48 | dpRequestId, the place band << 32 | index, the band being the roll
+    array the entry stands in."""
     word = int(word)
-    score = (word >> 80) & UINT16_MAX
-    return Eligible("0x" + uint(word >> 96, 20).hex(), score, bool((word >> 73) & 1), bool((word >> 72) & 1),
-                    (word >> 48) & (2**24 - 1), word & (2**48 - 1), int(tip), band_of(score, band_width),
-                    int(index))
+    place = int(place)
+    return Eligible("0x" + uint(word >> 96, 20).hex(), (word >> 80) & UINT16_MAX, bool((word >> 73) & 1),
+                    bool((word >> 72) & 1), (word >> 48) & (2**24 - 1), word & (2**48 - 1), int(tip),
+                    (place >> 32) & 255, place & UINT32_MAX)
 
 
 # A claim record (PoxMatchingState.Claim): the offer, the block and time it
@@ -253,15 +259,15 @@ class Unsettled(Exception):
 ListRead = namedtuple("ListRead", "stamp entries list_hash match_found stop_band done")
 
 
-def merge_candidates(pages: Iterable[dict], band_width: int, max_steps: int) -> ListRead:
+def merge_candidates(pages: Iterable[dict], max_steps: int) -> ListRead:
     """One list read from its `candidates` pages in the order they were
     read, each a mapping of the view's answers (roundStamp, eligible, tips,
-    indexes, hOut, matchFoundOut, done, settled). Raises StampChanged when
+    places, hOut, matchFoundOut, done, settled). Raises StampChanged when
     two pages answer different stamps, Unsettled for a page not settled,
     and ValueError when the list hash or the matching count computed from
     the entries differs from the one the last page carried (a page left
     out or answered for another read). The entries are those of every page,
-    in roll order, each in the band its score was written into."""
+    in roll order, each in the band its place names."""
     stamp = None
     entries: List[Eligible] = []
     last = None
@@ -271,8 +277,8 @@ def merge_candidates(pages: Iterable[dict], band_width: int, max_steps: int) -> 
         stamp = bytes(page["roundStamp"])
         if not page["settled"]:
             raise Unsettled("a page of the list read is not settled for the round")
-        for word, tip, index in zip(page["eligible"], page["tips"], page["indexes"]):
-            entries.append(decode_eligible(word, tip, index, band_width))
+        for word, tip, place in zip(page["eligible"], page["tips"], page["places"]):
+            entries.append(decode_eligible(word, tip, place))
         last = page
     if last is None:
         raise ValueError("a list read needs one page at least")
@@ -534,16 +540,18 @@ class LocalList:
     """The runner's local list (3.19, D120): from its own orders, the nodes
     whose claims it approves for no request of a dApp for LOCAL_LIST_SECONDS
     after LOCAL_LIST_ENDS of its orders of that dApp on that node ended, in
-    either class, in code 20, 62, 59 or 63, all within LOCAL_LIST_SECONDS.
-    Held in memory for the runner's life."""
+    either class, in code 20, 62, a 33 before its time, 59 or 63, all within
+    LOCAL_LIST_SECONDS. Held in memory for the runner's life."""
 
     def __init__(self) -> None:
         self._ends: Dict[tuple, List[int]] = {}
 
-    def record(self, image_cid: str, node, code: int, at: int) -> None:
+    def record(self, image_cid: str, node, code: int, at: int, early_33: bool = False) -> None:
         """Records an order of `image_cid` on `node` that ended at `at` with
-        `code`; an end the list does not count is not kept."""
-        if code not in LOCAL_LIST_CODES:
+        `code`, `early_33` stating whether a code 33 was a timeout before its
+        time (PoxMatching's early33); an end the list does not count is not
+        kept."""
+        if code not in LOCAL_LIST_CODES and not (code == CODE_TIMEOUT and early_33):
             return
         self._ends.setdefault((image_cid, address_text(node)), []).append(int(at))
 
@@ -601,8 +609,10 @@ END_NAMES = {
     62: "SECURELOCK_SILENT",
     63: "PAYLOAD_LOST",
 }
+EARLY_TIMEOUT_NAME = "EXECUTION_TIMEOUT, before its time"
 # The ends PoxMatching's noteAmbiguous takes (3.19): 47, 59 and 63 in every
-# class, a default-class 62, and a custom class's 20 and 62.
+# class, a default-class 62, and a custom class's 20 and 62; a 33 before its
+# time as a 62.
 AMBIGUOUS_ANY_CLASS = frozenset({47, 59, 63})
 AMBIGUOUS_CUSTOM_CLASS = frozenset({20, 62})
 
@@ -612,20 +622,25 @@ AMBIGUOUS_CUSTOM_CLASS = frozenset({20, 62})
 EndReport = namedtuple("EndReport", "code name sl_class at_fault settlement ambiguous text")
 
 
-def end_report(code: int, fields: Optional[ResultFields]) -> Optional[EndReport]:
-    """The report of an order that closed with code 20, 62, 44, 47, 59 or 63
-    (section 8 item 16; 3.19), None for any other code. The class is the
-    result's field 17; a result that states none is of a trustedzone before
-    the release, whose 20 and 62 are paid as a valid result."""
-    if code not in END_NAMES:
+def end_report(code: int, fields: Optional[ResultFields], early_33: bool = False) -> Optional[EndReport]:
+    """The report of an order that closed with code 20, 62, 44, 47, 59 or 63,
+    or with a 33 before its time (`early_33`, PoxMatching's early33), which
+    is settled as a 62 (section 8 item 16; 3.19); None for any other code.
+    The class is the result's field 17; a result that states none is of a
+    trustedzone before the release, whose 20 and 62 are paid as a valid
+    result."""
+    early = code == CODE_TIMEOUT and early_33
+    settled = 62 if early else code
+    if settled not in END_NAMES:
         return None
-    name = END_NAMES[code]
+    name = EARLY_TIMEOUT_NAME if early else END_NAMES[code]
+    silent = "33 before its time" if early else "62"
     sl_class = fields.sl_class if fields is not None else None
-    if code in (20, 62) and sl_class == DEFAULT_CLASS:
+    if settled in (20, 62) and sl_class == DEFAULT_CLASS:
         at_fault = "operator"
-        settlement = ("the whole escrow is refunded and the node is charged; a 62 the validators do not charge "
-                      "for want of their probes is refunded with the node's chain costs paid")
-    elif code in (20, 62):
+        settlement = (f"the whole escrow is refunded and the node is charged; a {silent} the validators do not "
+                      "charge for want of their probes is refunded with the node's chain costs paid")
+    elif settled in (20, 62):
         at_fault = "developer and client" if sl_class == CUSTOM_CLASS else "not stated"
         settlement = ("the order is paid to the operator in full, at the developer's and the client's risk"
                       if sl_class == CUSTOM_CLASS else
@@ -641,7 +656,56 @@ def end_report(code: int, fields: Optional[ResultFields]) -> Optional[EndReport]
         at_fault = "the outside service, the network or the operator" if code == 59 else "the backend or the operator"
         until = fields.ran_until if fields is not None else 0
         settlement = f"the work up to {until} (ranUntil) is paid and the work after it is refunded"
-    ambiguous = code in AMBIGUOUS_ANY_CLASS or (code in AMBIGUOUS_CUSTOM_CLASS and sl_class == CUSTOM_CLASS) or (
-        code == 62 and sl_class == DEFAULT_CLASS)
+    ambiguous = settled in AMBIGUOUS_ANY_CLASS or (settled in AMBIGUOUS_CUSTOM_CLASS and sl_class == CUSTOM_CLASS) or (
+        settled == 62 and sl_class == DEFAULT_CLASS)
     text = (f"The order failed with no result, task code {code} ({name}); at fault: {at_fault}; {settlement}.")
     return EndReport(code, name, sl_class, at_fault, settlement, ambiguous and fields is not None, text)
+
+
+# ------------------------------------------------------------- image records
+
+# An image's records as ECImageRegistryV4's imageRecords answers them
+# (IECImageRegistryV4.ImageRecords): the kind, the default release's index,
+# the network flag (D126), the enclave memory in GiB (D150) and the minimum
+# operator score, set or unset, in units (D138).
+ImageRecords = namedtuple("ImageRecords", "kind release network_on enclave_memory_gib min_score_set min_score")
+KIND_NONE = 0
+KIND_DEFAULT_RELEASE = 1
+KIND_NATIVE_PYTHON = 2
+KIND_CUSTOM = 3
+# A default release's language (IECImageRegistryV4.DefaultRelease.language).
+RELEASE_LANGUAGES = {1: "JavaScript", 2: "Python on WebAssembly"}
+
+
+def dapp_minimum(records: Optional[ImageRecords]) -> Optional[int]:
+    """The dApp's minimum operator score its records hold (D138): the score
+    when it is set, 0 included, which switches the test off; None when it is
+    unset or no records are held."""
+    if records is None or not records.min_score_set:
+        return None
+    return int(records.min_score)
+
+
+def kind_text(records: ImageRecords, language: Optional[int]) -> str:
+    """The kind of an image's records in words: a default release with its
+    index and language, native Python, a custom securelock."""
+    if records.kind == KIND_DEFAULT_RELEASE:
+        named = RELEASE_LANGUAGES.get(language, f"language {language}")
+        return f"default release {records.release} ({named})"
+    if records.kind == KIND_NATIVE_PYTHON:
+        return "native Python"
+    if records.kind == KIND_CUSTOM:
+        return "a custom securelock"
+    return f"kind {records.kind}"
+
+
+def records_text(image_cid: str, records: ImageRecords, language: Optional[int]) -> str:
+    """What the image registry shows of an image before an add (8.12): its
+    kind, whether its network is on, its enclave memory and its minimum
+    operator score."""
+    if records.kind == KIND_NONE:
+        return f"The image registry holds no records of the image {image_cid}."
+    minimum = (f"{records.min_score / SCORE_UNITS_PER_POINT:.4f}" if records.min_score_set else "not set")
+    return (f"The image registry records the image {image_cid} as {kind_text(records, language)}: its network is "
+            f"{'on' if records.network_on else 'off'}, its enclave memory {records.enclave_memory_gib} GiB, and "
+            f"its minimum operator score {minimum}.")

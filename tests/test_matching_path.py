@@ -3,7 +3,8 @@ claims path and the path it has served requests by before (MATCHING-DESIGN.md
 section 8 item 4 and section 13, roll-out step 3): a network whose entry
 names no PoxMatching, every PoX 1.0 network among them, reads nothing of
 matching; on one that names it, claimsOn() decides, and with claims off the
-request is added and approved as before. A request pinned to a banned node is
+request is added and approved as before; with claims on the PoxMatchReader is
+the one PoxMatching's reader() names. A request pinned to a banned node is
 refused on such a network whatever claimsOn() answers (D33). No chain: the
 contracts are stand-ins."""
 from types import SimpleNamespace
@@ -45,18 +46,27 @@ def test_a_network_without_pox_matching_reads_nothing_of_it(network_name, type_n
 def test_the_pox_1_0_networks_name_no_pox_matching(network_name, type_name):
     entry = getattr(getattr(ECNetwork, network_name), type_name)
     assert getattr(entry, "MATCHING_ADDRESS", None) is None
-    assert getattr(entry, "MATCH_READER_ADDRESS", None) is None
+
+
+READER = "0x" + "02" * 20
 
 
 class Chain:
-    def __init__(self, claims_on, banned_until=0):
+    def __init__(self, claims_on, banned_until=0, reader=READER):
         self.on = claims_on
         self.banned_until = banned_until
+        self.reader_address = reader
         self.reads = []
 
     def claims_on(self):
         self.reads.append("claimsOn")
         return self.on
+
+    def bind_reader(self):
+        self.reads.append("reader")
+        if int(self.reader_address, 16) == 0:
+            raise ValueError("PoxMatching names no PoxMatchReader (reader() is zero)")
+        return self.reader_address
 
     def node_standing(self, node):
         self.reads.append(("nodeStanding", node))
@@ -68,17 +78,16 @@ class Chain:
 
 @pytest.fixture
 def matching_network(monkeypatch):
-    """BLOXBERG TESTNET's entry naming a PoxMatching and its reader, and the
+    """BLOXBERG TESTNET's entry naming a PoxMatching, and the
     MatchingContracts the runner builds for it."""
     monkeypatch.setattr(ECNetwork.BLOXBERG.TESTNET, "MATCHING_ADDRESS", "0x" + "01" * 20, raising=False)
-    monkeypatch.setattr(ECNetwork.BLOXBERG.TESTNET, "MATCH_READER_ADDRESS", "0x" + "02" * 20, raising=False)
     built = {}
 
-    def build(claims_on, banned_until=0):
-        chain = Chain(claims_on, banned_until)
+    def build(claims_on, banned_until=0, reader=READER):
+        chain = Chain(claims_on, banned_until, reader)
 
-        def contracts(contract, matching_address, reader_address, page_entries):
-            built["args"] = (matching_address, reader_address, page_entries)
+        def contracts(contract, matching_address, page_entries):
+            built["args"] = (matching_address, page_entries)
             return chain
         monkeypatch.setattr(runner_module, "MatchingContracts", contracts)
         return chain
@@ -91,24 +100,37 @@ def test_claims_off_serves_the_request_as_before(matching_network):
     runner = EthernityCloudRunner("BLOXBERG", "TESTNET")
     assert runner._claims_path(V2, "") is None
     assert chain.reads == ["claimsOn"]
-    assert built["args"] == ("0x" + "01" * 20, "0x" + "02" * 20, None)
+    assert built["args"] == ("0x" + "01" * 20, None)
 
 
-def test_claims_on_serves_the_request_by_claims(matching_network):
+def test_claims_on_serves_the_request_by_claims_on_the_reader_pox_matching_names(matching_network):
     build, _ = matching_network
-    build(True)
+    chain = build(True)
     runner = EthernityCloudRunner("BLOXBERG", "TESTNET")
     path = runner._claims_path(V2, "")
-    assert isinstance(path, ClaimsPath)
+    assert isinstance(path, ClaimsPath) and path.chain is chain
+    assert chain.reads == ["claimsOn", "reader"]
     assert path.settings.bid_wei == 10**18 and path.settings.escrow_wei == 3 * 10**18
+    without_escrow = {k: v for k, v in V2.items() if k != "escrow_wei"}
+    assert runner._claims_path(without_escrow, "").settings.escrow_wei is None
+
+
+def test_claims_on_while_pox_matching_names_no_reader_is_refused(matching_network):
+    build, _ = matching_network
+    chain = build(True, reader="0x" + "00" * 20)
+    runner = EthernityCloudRunner("BLOXBERG", "TESTNET")
+    with pytest.raises(ValueError, match="names no PoxMatchReader"):
+        runner._claims_path(V2, "")
+    assert chain.reads == ["claimsOn", "reader"]
 
 
 def test_claims_on_without_v2_terms_is_refused(matching_network):
     build, _ = matching_network
-    build(True)
+    chain = build(True)
     runner = EthernityCloudRunner("BLOXBERG", "TESTNET")
     with pytest.raises(ValueError, match="V2 terms"):
         runner._claims_path(RESOURCES, "")
+    assert chain.reads == ["claimsOn"]
 
 
 @pytest.mark.parametrize("claims_on", [False, True])
@@ -156,6 +178,20 @@ def test_the_path_as_before_adds_the_legacy_request():
     runner, sent = _runner_with_request_event(False)
     assert runner.create_do_request("image", "code", "input", "") is True
     assert sent == [("legacy", "image", "code", "input", "", V2)]
+
+
+def test_the_claims_path_checks_its_escrow_once_its_image_is_known():
+    runner = EthernityCloudRunner("BLOXBERG", "TESTNET")
+    calls = []
+    runner._claims = SimpleNamespace(
+        template_name=lambda: "tz",
+        check_before_add=lambda image, template: calls.append(("before", image, template)),
+        check_escrow=lambda metadata1: calls.append(("escrow", metadata1)))
+    runner.contract = SimpleNamespace(get_balance=lambda: pytest.fail("the balance was read before the image"))
+    runner._check_balance()
+    runner.enclave_image_ipfs_hash = "QmImage"
+    runner.check_allowance()
+    assert calls == [("before", "QmImage", "tz"), ("escrow", "v3:QmImage:tz")]
 
 
 def test_the_claims_path_has_no_approval_of_its_own():

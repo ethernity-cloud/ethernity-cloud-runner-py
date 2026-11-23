@@ -662,11 +662,13 @@ class EthernityCloudRunner:
         RuntimeError naming the token, the wallet, the protocol and the
         provider's message when no read answers, ValueError when the approval
         is not mined or reverts. A request served by claims makes the reads
-        before its add (ClaimsPath.check_before_add) and then approves its
-        V2 escrow, in wei (ClaimsPath.check_allowance)."""
+        before its add (ClaimsPath.check_before_add) and then reads its V2
+        escrow (escrowFor), checks the balance against it and approves it, in
+        wei (ClaimsPath.check_escrow)."""
         if self._claims is not None:
-            self._claims.check_before_add(self.enclave_image_ipfs_hash, self._claims.template_name())
-            self._claims.check_allowance()
+            template = self._claims.template_name()
+            self._claims.check_before_add(self.enclave_image_ipfs_hash, template)
+            self._claims.check_escrow(f"{TRUSTEDZONE_VERSION}:{self.enclave_image_ipfs_hash}:{template}")
             return
         if not self.escrow_needs_allowance():
             return
@@ -709,9 +711,10 @@ class EthernityCloudRunner:
         with _read_before_request; the RuntimeError of a read no try answered
         (protocolContract.get_balance) is raised as it is, and no faucet is
         drawn on it. A request served by claims is checked against its V2
-        escrow (ClaimsPath.check_balance)."""
+        escrow once its image is known, by check_allowance
+        (ClaimsPath.check_escrow), and nothing is read here."""
         if self._claims is not None:
-            return self._claims.check_balance()
+            return
         self.logger.info("Checking wallet balance...")
         balance = int(self._read_before_request(self.contract.get_balance))
         escrow = protocolContract.request_escrow(self.resources)
@@ -1429,20 +1432,20 @@ class EthernityCloudRunner:
     def _claims_path(self, resources: Dict[str, Any], node_address: str) -> Optional[ClaimsPath]:
         """The claims path of the request about to be added (section 8;
         roll-out step 3). On a network whose entry names PoxMatching
-        (MATCHING_ADDRESS) and its reader (MATCH_READER_ADDRESS) a request
-        pinned to a banned node is refused with ValueError (D33, 8.11), and
-        while claimsOn() answers true the request is served by claims: the
-        work earlier requests left (settle_matching) is sent first, and the
-        task settings are read (claims.claims_settings). None on every other
-        network and while claims are off: the request is served as before,
-        and on a network whose entry names no PoxMatching nothing of it is
-        read."""
+        (MATCHING_ADDRESS) a request pinned to a banned node is refused with
+        ValueError (D33, 8.11), and while claimsOn() answers true the request
+        is served by claims: the task settings are read
+        (claims.claims_settings), the PoxMatchReader PoxMatching names
+        (reader()) is bound, refused with ValueError while it names none, and
+        the work earlier requests left (settle_matching) is sent. None on
+        every other network and while claims are off: the request is served
+        as before, and on a network whose entry names no PoxMatching nothing
+        of it is read."""
         cfg = self.network_config
         address = getattr(cfg, "MATCHING_ADDRESS", None)
-        reader = getattr(cfg, "MATCH_READER_ADDRESS", None)
-        if not address or not reader:
+        if not address:
             return None
-        chain = MatchingContracts(self._sender(), address, reader, getattr(cfg, "MATCH_PAGE_ENTRIES", None))
+        chain = MatchingContracts(self._sender(), address, getattr(cfg, "MATCH_PAGE_ENTRIES", None))
         node = normalize_node_address(node_address)
         if node:
             ban = pinned_ban(chain, node)
@@ -1450,7 +1453,9 @@ class EthernityCloudRunner:
                 raise ValueError(ban)
         if not chain.claims_on():
             return None
-        path = ClaimsPath(self, chain, claims_settings(resources))
+        settings = claims_settings(resources)
+        chain.bind_reader()
+        path = ClaimsPath(self, chain, settings)
         settle_pending(self)
         return path
     def _await_claim_approval(self) -> bool:

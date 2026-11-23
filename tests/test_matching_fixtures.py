@@ -1,11 +1,12 @@
 """matching (MATCHING-DESIGN.md 3.10, 3.15, 4.4 to 4.6; spec/matching.md
 sections 3 to 9, 13 and 17) on the shared fixtures of
-pox-smart-contract-litvm spec/ at 0c8a06b, held byte for byte in
-tests/spec/matching/ with their MANIFEST lines.
+pox-smart-contract-litvm spec/ at 7611a81, held byte for byte in
+tests/spec/matching/ with their MANIFEST lines, and the runner's ABI entries
+(contract/abi/matchingAbi.py) against that commit's.
 
 ranking.json holds, per ranking case, the reader's `candidates` answers;
 the runner's merge of those pages, its list hash, its matching count, the
-band it gives each entry and its mandated sequence equal the reader's
+band each entry's place names and its mandated sequence equal the reader's
 answers and each roll node's turn. matching-rank.json holds the reference
 rule's results: the seed, the keys, the need, the template and image keys,
 the list's order, the mandated sequence, the stop band, the steps, the
@@ -21,12 +22,13 @@ import pytest
 from eth_utils import keccak
 
 from ethernity_cloud_runner_py import matching
+from ethernity_cloud_runner_py.contract.abi import matchingAbi
 from ethernity_cloud_runner_py.contract.abi.polygonProtocolAbi import contract as polygon_abi
 from ethernity_cloud_runner_py.runner import EthernityCloudRunner
 
 SPEC = Path(__file__).resolve().parent / "spec" / "matching"
 SOURCE = Path(__file__).resolve().parents[2] / "pox-smart-contract-litvm"
-SOURCE_COMMIT = "0c8a06b"
+SOURCE_COMMIT = "7611a81"
 COPIES = ["matching-rank.json", "matching.md", "ranking.json", "result-fields.json"]
 RANKING = json.loads((SPEC / "ranking.json").read_text(encoding="utf-8"))
 RANK = json.loads((SPEC / "matching-rank.json").read_text(encoding="utf-8"))
@@ -68,6 +70,48 @@ def test_the_manifest_lines_are_the_source_commit_s():
     assert {name: source[name] for name in COPIES} == manifest()
 
 
+# Where each group of the runner's ABI entries comes from in the source
+# commit; an artifact holds its ABI under "abi".
+ABI_SOURCES = {
+    "pox": "abi/EthernityImplementationV2_2_0.json",
+    "matching": "abi/IPoxMatching.json",
+    "reader": "abi/IPoxMatchReader.json",
+    "image_registry": "abi/IECImageRegistryV4.json",
+    "session_registry": "artifacts/PoxMatchingState.sol/IMatchingSessionRegistry.json",
+}
+
+
+def bare(entry):
+    """An ABI entry without the fields that do not change its encoding or
+    names (internalType, and the legacy constant and payable)."""
+    if isinstance(entry, dict):
+        return {k: bare(v) for k, v in entry.items() if k not in ("internalType", "constant", "payable")}
+    if isinstance(entry, list):
+        return [bare(v) for v in entry]
+    return entry
+
+
+def input_types(entry):
+    return [i["type"] for i in entry.get("inputs", [])]
+
+
+@pytest.mark.parametrize("group", list(ABI_SOURCES))
+def test_each_abi_entry_is_the_source_commit_s(group):
+    if not (SOURCE / ".git").exists():
+        pytest.skip(f"no pox-smart-contract-litvm checkout at {SOURCE}")
+    shown = subprocess.run(["git", "-C", str(SOURCE), "show", f"{SOURCE_COMMIT}:{ABI_SOURCES[group]}"],
+                           capture_output=True)
+    if shown.returncode != 0:
+        pytest.skip(f"{SOURCE} holds no commit {SOURCE_COMMIT}")
+    source = json.loads(shown.stdout)
+    source = source["abi"] if isinstance(source, dict) else source
+    for entry in getattr(matchingAbi, group):
+        found = [e for e in source if e.get("type") == entry["type"] and e.get("name") == entry["name"]
+                 and input_types(e) == input_types(entry)]
+        assert len(found) == 1, entry["name"]
+        assert bare(found[0]) == bare(entry), entry["name"]
+
+
 # ------------------------------------------------------------- helpers
 
 def word_of(e):
@@ -78,7 +122,8 @@ def word_of(e):
 
 def page_of(stamp, entries, read):
     return {"roundStamp": stamp, "eligible": [word_of(e) for e in entries],
-            "tips": [int(e["tipWei"]) for e in entries], "indexes": [e["index"] for e in entries],
+            "tips": [int(e["tipWei"]) for e in entries],
+            "places": [matching.place_of(e["band"], e["index"]) for e in entries],
             "hOut": bytes.fromhex(read["listHash"][2:]), "matchFoundOut": read["matchFound"],
             "done": read["done"], "settled": read["settled"]}
 
@@ -95,11 +140,10 @@ def entries_of(rank_case):
     """The eligible entries of a matching-rank.json ranking case in roll
     order, decoded from the words its list holds."""
     expected = rank_case["expected"]
-    params = set_of(rank_case)
     base = int(expected["baseWei"]) if "baseWei" in expected else 0
     listed = sorted(expected.get("list", []), key=lambda e: (-e["band"], e["rollIndex"]))
-    return [matching.decode_eligible(int(e["word"], 16), int(e["priceWei"]) - base, e["rollIndex"],
-                                     params["bandWidth"]) for e in listed]
+    return [matching.decode_eligible(int(e["word"], 16), int(e["priceWei"]) - base,
+                                     matching.place_of(e["band"], e["rollIndex"])) for e in listed]
 
 
 def seed_of(rank_case):
@@ -132,11 +176,13 @@ def test_the_merged_read_is_the_reader_s(case):
                                                              matchFound=read["matchFound"])))
     if not read["settled"]:
         with pytest.raises(matching.Unsettled):
-            matching.merge_candidates(pages, params["bandWidth"], params["maxSteps"])
+            matching.merge_candidates(pages, params["maxSteps"])
         pages = [dict(page, settled=True) for page in pages]
-    merged = matching.merge_candidates(pages, params["bandWidth"], params["maxSteps"])
+    merged = matching.merge_candidates(pages, params["maxSteps"])
     assert "0x" + merged.list_hash.hex() == read["listHash"]
     assert merged.match_found == read["matchFound"]
+    answered = read["eligible"] + (beyond["eligible"] if beyond else [])
+    assert [(e.band, e.index) for e in merged.entries] == [(e["band"], e["index"]) for e in answered]
     bands = roll_bands(case)
     for e in merged.entries:
         assert (e.node, e.band) in bands, e.node
@@ -154,21 +200,41 @@ def test_a_page_of_another_stamp_restarts_the_read():
     first = page_of(b"\x01" * 32, read["eligible"][:2], dict(read, done=False))
     second = page_of(b"\x02" * 32, read["eligible"][2:], read)
     with pytest.raises(matching.StampChanged):
-        matching.merge_candidates([first, second], 1000, 8)
+        matching.merge_candidates([first, second], 8)
 
 
 def test_an_unsettled_page_is_not_ranked_on():
     case = RANKING["cases"][0]
     read = dict(case["candidates"]["read"], settled=False)
     with pytest.raises(matching.Unsettled):
-        matching.merge_candidates([page_of(b"\x01" * 32, read["eligible"], read)], 1000, 8)
+        matching.merge_candidates([page_of(b"\x01" * 32, read["eligible"], read)], 8)
 
 
 def test_a_page_left_out_is_found_by_the_hash():
     case = RANKING["cases"][0]
     read = case["candidates"]["read"]
     with pytest.raises(ValueError):
-        matching.merge_candidates([page_of(b"\x01" * 32, read["eligible"][1:], read)], 1000, 8)
+        matching.merge_candidates([page_of(b"\x01" * 32, read["eligible"][1:], read)], 8)
+
+
+def test_the_band_is_the_place_s_not_the_score_s():
+    """An entry written into its band under another bandWidth stands in the
+    band its place names: two scores of band 24 at a bandWidth of 1,000,
+    one of them in band 12, the second matching entry of a read with
+    maxSteps 2 ending the stop band there."""
+    case = RANKING["cases"][0]
+    first, second = (dict(e) for e in case["candidates"]["read"]["eligible"][:2])
+    first.update(score=24_500, band=24, index=0, match=True)
+    second.update(score=24_900, band=12, index=3, match=True)
+    entries = [matching.decode_eligible(word_of(e), int(e["tipWei"]), matching.place_of(e["band"], e["index"]))
+               for e in (first, second)]
+    h, found, stop = matching.list_hash_of(entries, 2)
+    read = {"listHash": "0x" + h.hex(), "matchFound": found, "done": True, "settled": True}
+    merged = matching.merge_candidates([page_of(b"\x01" * 32, [first, second], read)], 2)
+    assert [(e.band, e.index) for e in merged.entries] == [(24, 0), (12, 3)]
+    assert merged.stop_band == stop == 12
+    assert [e.node for e in matching.Schedule(merged.entries, b"\x00" * 32, 2).order] == [first["node"],
+                                                                                          second["node"]]
 
 
 # ------------------------------------------------------- matching-rank.json
@@ -215,16 +281,16 @@ def test_the_paged_read(case):
     stamp = b"\x03" * 32
     pages = []
     for page in expected["pages"]:
-        entries = [matching.decode_eligible(int(e["word"], 16), int(e["tipWei"]), e["index"], params["bandWidth"])
-                   for e in page["eligible"]]
+        places = [matching.place_of(e["band"], e["index"]) for e in page["eligible"]]
+        entries = [matching.decode_eligible(int(e["word"], 16), int(e["tipWei"]), place)
+                   for e, place in zip(page["eligible"], places)]
         for e, listed in zip(entries, page["eligible"]):
-            assert e.band == listed["band"]
+            assert (e.band, e.index) == (listed["band"], listed["index"])
         pages.append({"roundStamp": stamp, "eligible": [int(e["word"], 16) for e in page["eligible"]],
-                      "tips": [int(e["tipWei"]) for e in page["eligible"]],
-                      "indexes": [e["index"] for e in page["eligible"]],
+                      "tips": [int(e["tipWei"]) for e in page["eligible"]], "places": places,
                       "hOut": bytes.fromhex(page["hOut"][2:]), "matchFoundOut": page["matchFoundOut"],
                       "done": page["done"], "settled": True})
-        merged = matching.merge_candidates(pages, params["bandWidth"], params["maxSteps"])
+        merged = matching.merge_candidates(pages, params["maxSteps"])
         assert merged.done == page["done"]
     assert "0x" + merged.list_hash.hex() == expected["listHash"]
     assert (merged.match_found, merged.stop_band) == (expected["matchFound"], expected["stopBand"])

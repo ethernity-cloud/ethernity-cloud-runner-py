@@ -4,7 +4,7 @@ from web3 import Web3
 
 from ..abi.matchingAbi import (image_registry as image_registry_abi, matching as matching_abi, pox as pox_abi,
                                reader as reader_abi, session_registry as session_registry_abi)
-from ...matching import Template, decode_template, template_key
+from ...matching import KIND_DEFAULT_RELEASE, ImageRecords, Template, decode_template, template_key
 
 # The roll entries one paged read of the reader asks for (`count` of
 # candidates, bidQuote, bidQuoteFor and tierScore) where the network entry
@@ -41,21 +41,32 @@ class MatchingContracts:
     """The PoX 2.0 contracts of a network with matching, as a runner reads
     and sends to them (MATCHING-DESIGN.md section 8): the PoX at the
     protocol contract's address, PoxMatching at the network entry's
-    MATCHING_ADDRESS and PoxMatchReader at its MATCH_READER_ADDRESS, all on
-    the protocol contract's provider. Every transaction is first made as a
-    call from the runner's wallet, and sent through the protocol contract's
-    _build_sign_send only when the call passes; a call that reverts raises
-    what the provider raised and nothing is sent."""
+    MATCHING_ADDRESS and PoxMatchReader at the address PoxMatching's
+    reader() answers (bind_reader), all on the protocol contract's provider.
+    Every transaction is first made as a call from the runner's wallet, and
+    sent through the protocol contract's _build_sign_send only when the call
+    passes; a call that reverts raises what the provider raised and nothing
+    is sent."""
 
-    def __init__(self, contract: Any, matching_address: str, reader_address: str,
-                 page_entries: Optional[int] = None) -> None:
+    def __init__(self, contract: Any, matching_address: str, page_entries: Optional[int] = None) -> None:
         self.contract = contract
         w3 = contract.provider
         self.w3 = w3
         self.pox = w3.eth.contract(address=Web3.to_checksum_address(contract.protocol_address), abi=pox_abi)
         self.matching = w3.eth.contract(address=Web3.to_checksum_address(matching_address), abi=matching_abi)
-        self.reader = w3.eth.contract(address=Web3.to_checksum_address(reader_address), abi=reader_abi)
+        self.reader: Any = None
         self.page_entries = int(page_entries or DEFAULT_PAGE_ENTRIES)
+
+    def bind_reader(self) -> str:
+        """Binds the PoxMatchReader PoxMatching names (reader(), written once
+        by its owner) and returns its address. Raises ValueError while
+        PoxMatching names none."""
+        address = self.matching.functions.reader().call()
+        if int(address, 16) == 0:
+            raise ValueError(f"PoxMatching {self.matching.address} names no PoxMatchReader (reader() is zero): a "
+                             "request cannot be served by claims on this network yet, and none is sent.")
+        self.reader = self.w3.eth.contract(address=Web3.to_checksum_address(address), abi=reader_abi)
+        return address
 
     # ------------------------------------------------------------- sends
 
@@ -137,21 +148,39 @@ class MatchingContracts:
         word, _provider = self.matching.functions.templateOf(template_key(name)).call()
         return decode_template(word)
 
-    def request_parameters(self, do_request_id: int) -> Dict[str, int]:
-        """The parameter set of a request: the one its record names (the
-        index in bits 216 to 223 of requestOf's record), by field name."""
-        record, _price = self.matching.functions.requestOf(int(do_request_id)).call()
-        index = (int(record) >> 216) & 255
-        values = self.matching.functions.parameterSet(index).call()
+    def parameter_set(self, index: int) -> Dict[str, int]:
+        """PoxMatching's parameter set `index`, by field name."""
+        values = self.matching.functions.parameterSet(int(index)).call()
         return dict(zip(_outputs(matching_abi, "parameterSet"), values))
 
+    def early33(self, order_id: int) -> bool:
+        """Whether a code 33 in the order's stored result is a timeout before
+        its time on its template's constants, as PoxMatching judges it."""
+        return bool(self.matching.functions.early33(int(order_id)).call())
+
     def request_info(self, do_request_id: int) -> Dict[str, Any]:
+        """requestInfo by field name; `parameterSet` is the index of the set
+        the request takes, NO_PARAMETER_SET (256) when none is in force."""
         values = self.reader.functions.requestInfo(int(do_request_id)).call()
         return dict(zip(_outputs(reader_abi, "requestInfo"), values))
 
-    def schedule_of(self, do_request_id: int) -> Dict[str, Any]:
-        values = self.reader.functions.scheduleOf(int(do_request_id)).call()
-        return dict(zip(_outputs(reader_abi, "scheduleOf"), values))
+    def can_claim_of(self, do_request_id: int, nodes: List[str]) -> tuple:
+        """(roundStamp, canClaim) of `nodes` at the request's current round:
+        whether each can still claim it, as scheduleOf's canClaim answers it
+        for the mandated nodes."""
+        stamp, flags = self.reader.functions.canClaimOf(
+            int(do_request_id), [Web3.to_checksum_address(n) for n in nodes]).call()
+        return bytes(stamp), [bool(f) for f in flags]
+
+    def escrow_for(self, hours: int, bid_wei: int, max_gflops: int, relays_per_hour: int, gas_level: int,
+                   metadata1: str) -> Dict[str, int]:
+        """What addDORequestV2 pulls for these terms in the latest block, by
+        field name: escrowWei, its work part workWei at escrowGflops,
+        chainFeeWei, and the publishers' fee percents trustedZoneFee and
+        secureLockFee that `metadata1` (fields 1 and 2) carries."""
+        values = self.reader.functions.escrowFor(int(hours), int(bid_wei), int(max_gflops), int(relays_per_hour),
+                                                 int(gas_level), metadata1).call()
+        return {name: int(value) for name, value in zip(_outputs(reader_abi, "escrowFor"), values)}
 
     def candidate_pages(self, do_request_id: int, round_number: int, beyond: bool = False,
                         start: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -248,18 +277,25 @@ class MatchingContracts:
     def image_records(self, image_cid: str) -> Dict[str, Any]:
         """What the image registry PoxMatching names (ECImageRegistryV4)
         and its SessionRegistry hold for the securelock image `image_cid`:
-        `registry` (None when PoxMatching names none), `default_release`
-        (hasDefaultRelease), the session it is bound to (`session`, zero for
-        none), the newest version of that session's name (`latest`) and the
-        image that version is bound to (`current_image`)."""
+        `registry` (None when PoxMatching names none), `records` (an
+        ImageRecords of imageRecords, None without a registry),
+        `release_language` (the language of the default release kind 1
+        records name, else None), the session it is bound to (`session`,
+        zero for none), the newest version of that session's name (`latest`)
+        and the image that version is bound to (`current_image`)."""
         registry = self.matching.functions.imageRegistry().call()
-        found = {"registry": None, "default_release": False, "session": b"\x00" * 32, "latest": b"\x00" * 32,
-                 "current_image": None}
+        found = {"registry": None, "records": None, "release_language": None, "session": b"\x00" * 32,
+                 "latest": b"\x00" * 32, "current_image": None}
         if int(registry, 16) == 0:
             return found
         found["registry"] = registry
         images = self.w3.eth.contract(address=registry, abi=image_registry_abi)
-        found["default_release"] = bool(images.functions.hasDefaultRelease(image_cid).call())
+        held = dict(zip(_outputs(image_registry_abi, "imageRecords"), images.functions.imageRecords(image_cid).call()))
+        records = ImageRecords(int(held["kind"]), int(held["release"]), bool(held["networkOn"]),
+                               int(held["enclaveMemoryGiB"]), bool(held["minScoreSet"]), int(held["minScore"]))
+        found["records"] = records
+        if records.kind == KIND_DEFAULT_RELEASE:
+            found["release_language"] = int(images.functions.defaultRelease(records.release).call()[0])
         sessions_address = images.functions.sessionRegistry().call()
         if int(sessions_address, 16) == 0:
             return found

@@ -103,12 +103,13 @@ UNSAFE_TRUSTEDZONE_SUFFIX = "-unsafe"
 
 
 # An entry of a PoX 2.0 deployment that carries PoxMatching names it in
-# MATCHING_ADDRESS and its PoxMatchReader in MATCH_READER_ADDRESS, and may
-# name the roll entries one paged read of the reader asks for in
-# MATCH_PAGE_ENTRIES (spec/matching.md section 2: 650 on bloxberg, 800 on
-# Polygon and Amoy, 1,450 on LitVM). A request on such a network is served by
-# claims while PoxMatching's claimsOn() answers true (EthernityCloudRunner
-# ._claims_path). No entry names one: no PoxMatching is deployed.
+# MATCHING_ADDRESS, and may name the roll entries one paged read of the
+# reader asks for in MATCH_PAGE_ENTRIES (spec/matching.md section 2: 650 on
+# bloxberg, 800 on Polygon and Amoy, 1,450 on LitVM); the PoxMatchReader is
+# the one PoxMatching's reader() names. A request on such a network is
+# served by claims while PoxMatching's claimsOn() answers true
+# (EthernityCloudRunner._claims_path). No entry names one: no PoxMatching is
+# deployed.
 class ECNetwork:
     class BLOXBERG:
 
