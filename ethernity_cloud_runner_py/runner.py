@@ -1498,8 +1498,10 @@ class EthernityCloudRunner:
         (_read_generation) and kept in self._generation; where its pricing
         names a PoxMatching, self._matching_chain holds the network's
         MatchingContracts, a request pinned to a banned node is refused with
-        ValueError (D33, 8.11), and while claimsOn() answers true the request
-        is served by claims: the task settings are read
+        ValueError (D33, 8.11), and on a PoX answering VERSION() "2.0" (D206;
+        another answer is told to the client and served without claims)
+        while claimsOn() answers true the request is served by claims: the
+        task settings are read
         (claims.claims_settings), the PoxMatchReader PoxMatching names
         (reader()) is bound, refused with ValueError while it names none, and
         the work earlier requests left (settle_matching) is sent. None on
@@ -1520,6 +1522,11 @@ class EthernityCloudRunner:
             ban = pinned_ban(chain, node)
             if ban:
                 raise ValueError(ban)
+        if self._generation.version != "2.0":
+            self._matching_notice(f"The PoX answers VERSION() {self._generation.version!r}: a request is served by "
+                                  "claims only on a PoX answering \"2.0\", so this one is served without claims.",
+                                  logging.INFO)
+            return None
         if not chain.claims_on():
             return None
         settings = claims_settings(resources)

@@ -13,9 +13,11 @@ score test (a quote with a minimum score above 0) precedes the add and the
 score units of the setting; or names a refusal, raised as a ValueError whose
 message holds the case's message before anything is sent. A metadata bound
 is tested after the approval (D206), so a metadata refusal follows the
-approval and no add is sent. runner-terms-reads.json, which both runners
-hold byte for byte, names the quote and the escrow each adding case reads
-before its add (none off the claims path)."""
+approval and no add is sent. The claims path is taken only on a PoX
+answering "2.0" (D206), where runner-terms.json at 2f600f6 takes it on "1.2"
+too: DECIDED holds that case's outcome. runner-terms-reads.json, which both
+runners hold byte for byte, names the quote and the escrow each adding case
+reads before its add (none off the claims path)."""
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +45,9 @@ APPROVAL = "token.approve(pox, escrowWei)"
 ADD = "addDORequestV2"
 BOUNDS = matching.TermBounds(TERMS["rules"]["bounds"]["gflopsMax"], TERMS["rules"]["bounds"]["maxOrderHours"])
 METADATA_REFUSALS = {"metadata1 too long", "metadata too long"}
+# The outcomes the owner's decisions set where runner-terms.json at 2f600f6
+# states another: D206, the claims path only on a PoX answering "2.0".
+DECIDED = {"version-1.2": {"claimsPath": False}}
 
 
 class Sender:
@@ -81,9 +86,11 @@ class TermsChain(Images):
         super().__init__(runner)
         self.sender, self.version = sender, version
         self.claims_on_answer = claims_on
+        self.claims_on_reads = 0
         self.epc_need = image_epc
 
     def claims_on(self):
+        self.claims_on_reads += 1
         return self.claims_on_answer
 
     def bind_reader(self):
@@ -153,7 +160,7 @@ def selector_of(abi):
 @pytest.mark.parametrize("case", TERMS["cases"], ids=[c["name"] for c in TERMS["cases"]])
 def test_the_runner_terms_case(case, monkeypatch):
     runner, sender, chain, refusal = replay(case, monkeypatch)
-    expected = case["expected"]
+    expected = dict(case["expected"], **DECIDED.get(case["name"], {}))
     if "refused" in expected:
         assert refusal is not None, "the request was not refused"
         assert expected["refused"]["message"] in str(refusal)
@@ -186,6 +193,20 @@ def test_the_runner_terms_case(case, monkeypatch):
     escrow = reads["escrow"]
     assert chain.escrow_reads == [(escrow["hours"], int(escrow["bidWei"]), int(escrow["maxGflops"]),
                                    escrow["relaysPerHour"], int(escrow["gasLevel"]), escrow["metadata1"])]
+
+
+def test_a_1_2_pox_whose_pricing_names_a_pox_matching_serves_no_claims(monkeypatch):
+    """D206: claimsOn() is not read, the client is told, and the request is
+    added with its V2 terms in the "1.2" form, without the EPC bits."""
+    case = next(c for c in TERMS["cases"] if c["name"] == "version-1.2")
+    runner, sender, chain, refusal = replay(case, monkeypatch)
+    assert refusal is None and runner._claims is None and runner._termed.version == "1.2"
+    assert chain.claims_on_reads == 0 and chain.quotes_for == [] and chain.escrow_reads == []
+    assert any('served by claims only on a PoX answering "2.0"' in n for n in runner.matching_notices)
+    assert selector_of(sender.add[0])[0] == TERMS["selectors"]["addDORequestV2 before"]
+    case = next(c for c in TERMS["cases"] if c["name"] == "defaults")
+    runner, sender, chain, refusal = replay(case, monkeypatch)
+    assert isinstance(runner._claims, ClaimsPath) and chain.claims_on_reads == 1
 
 
 def test_every_adding_case_has_its_reads():

@@ -9,10 +9,7 @@
       "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "4294967296", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
     },
     "defaults-claims-off": {"quote": null, "escrow": null},
-    "version-1.2": {
-      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 1, "template": "ecld-nodenithy-matching", "minScore": 0},
-      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "4294967296", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
-    },
+    "version-1.2": {"quote": null, "escrow": null},
     "ceiling-and-need": {
       "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 150, "ceilGflops": 250, "epcUnits": 1, "template": "ecld-nodenithy-matching", "minScore": 0},
       "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "4304797946", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
