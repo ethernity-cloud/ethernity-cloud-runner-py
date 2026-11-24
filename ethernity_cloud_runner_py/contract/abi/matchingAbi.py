@@ -1,5 +1,6 @@
 # The ABI entries the runner calls on a PoX 2.0 deployment, each equal to its
-# entry in pox-smart-contract-litvm at 52e36e0:
+# entry in pox-smart-contract-litvm at 2f600f6, and each selector and topic
+# its row of that commit's spec/abi-selectors.json:
 # abi/EthernityImplementationV2_2_0.json (pox, every selector of the
 # implementation and its two extensions answering at the PoX's address),
 # abi/IPoxPricing.json (pricing), abi/IPoxMatching.json (matching),

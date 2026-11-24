@@ -21,6 +21,7 @@ from eth_utils import keccak
 from ethernity_cloud_runner_py import matching
 from ethernity_cloud_runner_py.contract.abi import matchingAbi
 from ethernity_cloud_runner_py.contract.abi.polygonProtocolAbi import contract as polygon_abi
+from ethernity_cloud_runner_py.contract.operation import matchingContract
 from ethernity_cloud_runner_py.runner import EthernityCloudRunner
 from spec_copies import SOURCE_COMMIT, checkout, load, shown
 
@@ -43,15 +44,19 @@ ABI_SOURCES = {
     "image_registry": "abi/IECImageRegistryV4.json",
     "session_registry": "artifacts/PoxMatchingState.sol/IMatchingSessionRegistry.json",
 }
-# The selectors of the entries whose arguments the EPC commit changed, now
-# and in the 1.2 form (MATCHING-SYNC-PLAN.md 3.9; spec/abi-selectors.json at
-# the spec round's commit).
-SELECTORS = {
-    ("pox", "addDORequestV2"): "0x9f74fcce",
-    ("pox_1_2", "addDORequestV2"): "0x9fdaa26e",
-    ("reader", "bidQuoteFor"): "0xd1d5decb",
-    ("reader", "escrowFor"): "0xdc4e3133",
+# The file of abi-selectors.json's `entries` each group's rows are in. The
+# session registry (ethernity-cas's SessionRegistry, read through
+# IMatchingSessionRegistry) is not among the ABIs abi-selectors.json lists;
+# pox_1_2 is the `before` form of its `changed` addDORequestV2.
+SELECTOR_FILES = {
+    "pox": "EthernityImplementationV2_2_0.json",
+    "pricing": "IPoxPricing.json",
+    "matching": "IPoxMatching.json",
+    "reader": "IPoxMatchReader.json",
+    "image_registry": "ECImageRegistryV4.json",
 }
+SELECTORS = load("abi-selectors.json")
+CHANGED = {c["name"]: c for c in SELECTORS["changed"]}
 
 
 def bare(entry):
@@ -83,11 +88,55 @@ def test_each_abi_entry_is_the_source_commit_s(group):
         assert bare(found[0]) == bare(entry), entry["name"]
 
 
-@pytest.mark.parametrize("group,name", list(SELECTORS), ids=[f"{g}.{n}" for g, n in SELECTORS])
-def test_the_selector_of_each_changed_entry(group, name):
+def canonical(param):
+    """A parameter's type in a canonical signature: a tuple as its
+    components' types in parentheses, with the tuple's array suffix."""
+    kind = param["type"]
+    if kind.startswith("tuple"):
+        return "(" + ",".join(canonical(c) for c in param["components"]) + ")" + kind[len("tuple"):]
+    return kind
+
+
+def signature_of(entry):
+    return f"{entry['name']}({','.join(canonical(i) for i in entry.get('inputs', []))})"
+
+
+def selector_of(entry):
+    """An event's topic0, a function's or an error's selector (abi-selectors.json
+    `rule`)."""
+    digest = keccak(text=signature_of(entry))
+    return "0x" + (digest if entry["type"] == "event" else digest[:4]).hex()
+
+
+@pytest.mark.parametrize("group", list(SELECTOR_FILES))
+def test_each_abi_entry_is_its_row_of_abi_selectors(group):
+    rows = {(r["abi"], r["kind"], r["signature"]): r.get("selector", r.get("topic0")) for r in SELECTORS["entries"]}
+    for entry in getattr(matchingAbi, group):
+        key = (SELECTOR_FILES[group], entry["type"], signature_of(entry))
+        assert key in rows, key
+        assert selector_of(entry) == rows[key], key
+
+
+def test_the_1_2_add_is_the_before_form_of_the_changed_add():
+    entry = next(e for e in matchingAbi.pox_1_2 if e.get("name") == "addDORequestV2")
+    changed = CHANGED["addDORequestV2"]
+    assert (signature_of(entry), selector_of(entry)) == (changed["before"], changed["beforeValue"])
+    entry = next(e for e in matchingAbi.pox if e.get("name") == "addDORequestV2")
+    assert (signature_of(entry), selector_of(entry)) == (changed["signature"], changed["now"])
+
+
+@pytest.mark.parametrize("group,name", [("reader", "bidQuoteFor"), ("reader", "escrowFor")])
+def test_each_changed_entry_the_runner_calls_is_its_now_form(group, name):
     entry = next(e for e in getattr(matchingAbi, group) if e.get("name") == name)
-    signature = f"{name}({','.join(input_types(entry))})"
-    assert "0x" + keccak(text=signature)[:4].hex() == SELECTORS[(group, name)]
+    assert (signature_of(entry), selector_of(entry)) == (CHANGED[name]["signature"], CHANGED[name]["now"])
+
+
+def test_the_generation_signals_are_the_selectors_the_runner_reads():
+    version = next(e for e in matchingAbi.pox if e.get("name") == "VERSION")
+    matching_fn = next(e for e in matchingAbi.pricing if e.get("name") == "matching")
+    assert selector_of(version) == SELECTORS["signals"]["version"]["selector"]
+    assert selector_of(matching_fn) == SELECTORS["signals"]["matching"]["selector"]
+    assert set(matchingContract.V2_ADD_ABI) == {a["value"] for a in SELECTORS["signals"]["version"]["answers"]}
 
 
 # ------------------------------------------------------------- helpers
