@@ -106,6 +106,18 @@ def ecc_read_key(public_key_file: str) -> Any:
         return key
 
 
+# The statement form of a trustedzone's own statements (spec/matching.md
+# 3.7; spec/reserved-prefixes.json statementForm, SF19): the identity key
+# signs 0xFF || "ecld-stmt-1" || 0x00 || UTF-8(statement). The byte 0xFF
+# occurs in no UTF-8 encoding, so no client text's bytes are a statement's.
+STATEMENT_PREFIX = b"\xff" + b"ecld-stmt-1" + b"\x00"
+
+
+def statement_bytes(statement: str) -> bytes:
+    """The bytes a trustedzone signs for `statement` in the statement form."""
+    return STATEMENT_PREFIX + statement.encode("utf-8")
+
+
 def verify_certificate_signature(certificate_pem: str, message: bytes, signature_der: bytes) -> bool:
     """Whether `signature_der` (ECDSA, SHA-256, DER) over `message` was made
     with the key of the certificate `certificate_pem` carries: the signatures

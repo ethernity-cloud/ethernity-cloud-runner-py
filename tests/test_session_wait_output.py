@@ -68,6 +68,11 @@ class Runner:
     def retry_operation(self, fn, *args, **kwargs):
         return fn()
 
+    def _names_pox_matching(self):
+        """A network whose pricing names no PoxMatching: the plain form of
+        an etny-sw row verifies."""
+        return False
+
 
 def session_with(monkeypatch):
     monkeypatch.setattr(session_module, "decrypt_nacl", lambda key, data: {"success": True, "data": data})

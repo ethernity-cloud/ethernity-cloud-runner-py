@@ -74,6 +74,11 @@ class Runner:
     def retry_operation(self, fn, *args, **kwargs):
         return fn()
 
+    def _names_pox_matching(self):
+        """A network whose pricing names no PoxMatching: the plain form of
+        an etny-sw row verifies (test_statement_form.py has both kinds)."""
+        return False
+
 
 def session_with(rows, certificate_pem):
     return EthernityCloudSession(Runner(Caller(rows), certificate_pem), ORDER)

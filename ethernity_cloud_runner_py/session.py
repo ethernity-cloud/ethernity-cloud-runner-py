@@ -41,7 +41,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
-from .crypto import decrypt_nacl, encrypt, verify_certificate_signature
+from .crypto import decrypt_nacl, encrypt, statement_bytes, verify_certificate_signature
 from .ipfs import INTAKE_NOT_NAMED, owner_signature_message
 from .rpc import read_again
 
@@ -189,6 +189,11 @@ class EthernityCloudSession:
         self._protocol_contract = runner.protocol_contract
         self._certificate = runner.enclave_public_key
         self._private_key = runner.private_key
+        # Whether the network's pricing names a PoxMatching, where an etny-sw
+        # row verifies only in the statement form (_statement_only); read
+        # once, at the first etny-sw row. The runner takes no set_network()
+        # while it holds the handle.
+        self._matching_network: Optional[bool] = None
         # The message of the SessionError the handle raises once the runner's
         # close() has detached it (_detach); None while it serves.
         self._detached: Optional[str] = None
@@ -286,11 +291,25 @@ class EthernityCloudSession:
         row has been read and verified."""
         return self._attested_wallet
 
+    def _statement_only(self) -> bool:
+        """Whether an etny-sw row verifies only in the statement form: on a
+        network whose pricing names a PoxMatching
+        (EthernityCloudRunner._names_pox_matching), read once per handle."""
+        if self._matching_network is None:
+            self._matching_network = bool(self.runner._names_pox_matching())
+        return self._matching_network
+
     def _accept_wallet_attestation(self, value: str) -> bool:
         """Verify an 'etny-sw' row, 'v1:<orderId>:<taskWallet>:<sigDerHex>',
         against the trustedzone's certificate (the one the challenge was
-        sealed with) and keep its wallet. A row that does not verify is
-        ignored: a node cannot name the signer of this session's outputs."""
+        sealed with) and keep its wallet. The signature is over the statement
+        etny-sw|<orderId>|<taskWallet> in the statement form
+        (crypto.statement_bytes); on a network whose pricing names no
+        PoxMatching also over its UTF-8 bytes, the plain form of the
+        trustedzones built before the statement form (spec/matching.md 3.7,
+        reserved-prefixes.json cutRule; OD10 B). A row that does not verify
+        is ignored: a node cannot name the signer of this session's
+        outputs."""
         parts = value.split(":")
         if len(parts) != 4 or parts[0] != SESSION_WIRE_VERSION:
             return False
@@ -301,8 +320,11 @@ class EthernityCloudSession:
             signature = bytes.fromhex(sig[2:] if sig.startswith("0x") else sig)
         except ValueError:
             return False
-        message = f"{SESSION_WALLET_KEY}|{self.order_id}|{wallet}".encode("utf-8")
-        if not verify_certificate_signature(self._certificate, message, signature):
+        statement = f"{SESSION_WALLET_KEY}|{self.order_id}|{wallet}"
+        forms = [statement_bytes(statement)]
+        if not self._statement_only():
+            forms.append(statement.encode("utf-8"))
+        if not any(verify_certificate_signature(self._certificate, form, signature) for form in forms):
             self.runner.logger.error(
                 f"[session] task wallet attestation of {wallet} does not verify against the "
                 f"trustedzone's certificate -- IGNORING")
@@ -471,6 +493,12 @@ class EthernityCloudSession:
             except Exception:
                 break
             if key == SESSION_WALLET_KEY:
+                try:
+                    self._statement_only()
+                except Exception as e:
+                    self.runner.logger.debug(f"[session] the network's PoxMatching read failed: {e}; the etny-sw "
+                                             "row is read again at the next poll")
+                    break
                 self._accept_wallet_attestation(str(value or ""))
                 self._rows_seen = i + 1
                 continue
