@@ -23,7 +23,7 @@ from .contract.operation.imageRegistryContract import ImageRegistryContract
 from .contract.operation.protocolContract import protocolContract
 from .contract.operation.esrContract import ESRContract
 from .contract.operation.matchingContract import (NO_GENERATION, V2_ADD_ABI, MatchingContracts, PoxGeneration,
-                                                  read_generation)
+                                                  read_generation, read_term_bounds)
 from .claims import ClaimsPath, TermedRequest, claims_settings, pinned_ban, settle_pending, v2_settings
 from . import matching
 from .matching import LocalList
@@ -1523,10 +1523,25 @@ class EthernityCloudRunner:
         if not chain.claims_on():
             return None
         settings = claims_settings(resources)
+        self._check_pricing_bounds(settings, resources)
         chain.bind_reader()
         path = ClaimsPath(self, chain, settings)
         settle_pending(self)
         return path
+
+    def _check_pricing_bounds(self, settings: Any, resources: Dict[str, Any]) -> None:
+        """The bounds a PoX answering VERSION() "2.0" reads from its pricing
+        at a V2 add (read_term_bounds, read as the reads before a request
+        are): the request's duration at most maxOrderHours and its GFLOPS
+        ceiling at most gflopsMax (matching.check_pricing_bounds). Raises
+        ValueError, before anything is sent, for a term above its bound.
+        Nothing is read on another generation or without a pricing."""
+        generation = self._generation or NO_GENERATION
+        if generation.version != "2.0" or int(generation.pricing_address, 16) == 0:
+            return
+        bounds = self._read_before_request(lambda: read_term_bounds(self._sender(), generation.pricing_address))
+        matching.check_pricing_bounds(protocolContract.request_terms(resources)["duration"], settings.max_gflops,
+                                      bounds)
 
     def _termed_request(self, resources: Dict[str, Any]) -> Optional[TermedRequest]:
         """How a request not served by claims is added (8.4; OD26): with V2
@@ -1548,6 +1563,7 @@ class EthernityCloudRunner:
             raise ValueError(f"The PoX of {self.network_name} {self.network_type} answers VERSION() "
                              f"{generation.version!r} and takes no addDORequestV2: leave the V2 task settings out "
                              "for a request without terms.")
+        self._check_pricing_bounds(settings, resources)
         return TermedRequest(self, generation.version, self._matching_chain, settings)
 
     def _names_pox_matching(self) -> bool:

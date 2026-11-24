@@ -75,11 +75,22 @@ DIGITS = frozenset("0123456789")
 # average") to MAX_GAS_LEVEL ("gasLevel invalid"); the required GFLOPS at
 # most a stated ceiling ("maxGflops invalid"); one instance ("instance
 # invalid"); each of the four metadata strings at most MAX_METADATA_BYTES
-# bytes ("metadata1 too long", "metadata too long").
+# bytes ("metadata1 too long", "metadata too long"); each resource 1 to
+# MAX_RESOURCE (V2_RESOURCES, the task setting and the PoX's revert string
+# of each); a duration of 1 hour to the pricing's maxOrderHours and a GFLOPS
+# ceiling of at most its gflopsMax (TermBounds; "duration invalid",
+# "maxGflops invalid").
 MAX_PRICE_WEI = 2**128 - 1
 MIN_GAS_LEVEL = 10**18
 MAX_GAS_LEVEL = 2**128 - 1
 MAX_METADATA_BYTES = 2048
+MAX_RESOURCE = 255
+V2_RESOURCES = (("cpu", "cpu invalid"), ("memory", "mem invalid"), ("storage", "strg invalid"),
+                ("bandwidth", "bw invalid"))
+# The bounds a PoX answering VERSION() "2.0" reads from its pricing's params()
+# at a V2 add: gflopsMax, the largest GFLOPS ceiling, and maxOrderHours, the
+# longest duration in hours.
+TermBounds = namedtuple("TermBounds", "gflops_max max_order_hours")
 # An EPC figure's unit (spec/matching.md section 16, item 33): 64 MiB; a
 # figure is 0 to UINT16_MAX units.
 EPC_UNIT_MIB = 64
@@ -174,8 +185,8 @@ def epc_units_of_mib(mib: int) -> int:
     0 for 0. Raises ValueError for a figure above 65,535 units."""
     units = -(-int(mib) // EPC_UNIT_MIB)
     if units > UINT16_MAX:
-        raise ValueError(f"an EPC figure is at most {UINT16_MAX * EPC_UNIT_MIB} MiB ({UINT16_MAX} units of "
-                         f"{EPC_UNIT_MIB} MiB), not {mib}")
+        raise ValueError(f"EPC above 65,535 units: an EPC figure is at most {UINT16_MAX * EPC_UNIT_MIB} MiB "
+                         f"({UINT16_MAX} units of {EPC_UNIT_MIB} MiB), not {mib}")
     return units
 
 
@@ -201,8 +212,22 @@ def check_metadata(metadata: List[str]) -> None:
     for i, text in enumerate(metadata, start=1):
         size = len(str(text).encode("utf-8", "surrogatepass"))
         if size > MAX_METADATA_BYTES:
+            revert = "metadata1 too long" if i == 1 else "metadata too long"
             raise ValueError(f"metadata{i} of the request is {size} bytes, above the {MAX_METADATA_BYTES} bytes the "
-                             "PoX takes: the request is not sent.")
+                             f"PoX takes ({revert}): the request is not sent.")
+
+
+def check_pricing_bounds(hours: int, ceiling_gflops: int, bounds: TermBounds) -> None:
+    """Raises ValueError, before anything is sent, for a V2 add the PoX
+    refuses on its pricing's bounds: a duration above maxOrderHours
+    ("duration invalid") and a GFLOPS ceiling above gflopsMax ("maxGflops
+    invalid")."""
+    if int(hours) > bounds.max_order_hours:
+        raise ValueError(f"The request's duration of {hours} hours is above the pricing's maxOrderHours of "
+                         f"{bounds.max_order_hours}: the PoX refuses it (duration invalid).")
+    if int(ceiling_gflops) > bounds.gflops_max:
+        raise ValueError(f"The request's GFLOPS ceiling of {ceiling_gflops} is above the pricing's gflopsMax of "
+                         f"{bounds.gflops_max}: the PoX refuses it (maxGflops invalid).")
 
 
 def score_units(score) -> int:

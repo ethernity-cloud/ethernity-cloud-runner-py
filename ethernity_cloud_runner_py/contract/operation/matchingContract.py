@@ -7,7 +7,8 @@ from ..abi.matchingAbi import (image_registry as image_registry_abi, matching as
                                pox_1_2 as pox_1_2_abi, pricing as pricing_abi, reader as reader_abi,
                                session_registry as session_registry_abi)
 from ...errors import call_refused
-from ...matching import KIND_DEFAULT_RELEASE, UINT32_MAX, ImageRecords, Template, decode_template, template_key
+from ...matching import (KIND_DEFAULT_RELEASE, UINT32_MAX, ImageRecords, Template, TermBounds, decode_template,
+                         template_key)
 
 # The PoX generations that take addDORequestV2, by their VERSION() answer, and
 # the ABI of each one's add: "2.0" with maxGflops uint48 (the minimum EPC in
@@ -16,10 +17,11 @@ V2_ADD_ABI = {"2.0": pox_abi, "1.2": pox_1_2_abi}
 ZERO_ADDRESS = "0x" + "00" * 20
 
 # What a network's PoX answers before a request (OD18): `version`, its
-# VERSION() answer (None when it has none), and `matching_address`, the
+# VERSION() answer (None when it has none), `matching_address`, the
 # PoxMatching its pricing names (pricingAddress(), then the pricing's
-# matching()), the zero address when it names none.
-PoxGeneration = namedtuple("PoxGeneration", "version matching_address")
+# matching()), the zero address when it names none, and `pricing_address`,
+# the pricing pricingAddress() names, the zero address when none was read.
+PoxGeneration = namedtuple("PoxGeneration", "version matching_address pricing_address", defaults=(ZERO_ADDRESS,))
 NO_GENERATION = PoxGeneration(None, ZERO_ADDRESS)
 
 
@@ -49,7 +51,16 @@ def read_generation(contract: Any) -> PoxGeneration:
     if int(pricing_address, 16) == 0:
         return PoxGeneration(version, ZERO_ADDRESS)
     pricing = w3.eth.contract(address=Web3.to_checksum_address(pricing_address), abi=pricing_abi)
-    return PoxGeneration(version, _refused_as(lambda: pricing.functions.matching().call(), ZERO_ADDRESS))
+    return PoxGeneration(version, _refused_as(lambda: pricing.functions.matching().call(), ZERO_ADDRESS),
+                         pricing_address)
+
+
+def read_term_bounds(contract: Any, pricing_address: str) -> TermBounds:
+    """The pricing's bounds on a V2 add's terms (matching.TermBounds), its
+    params()' gflopsMax and maxOrderHours, read on `contract`'s provider."""
+    pricing = contract.provider.eth.contract(address=Web3.to_checksum_address(pricing_address), abi=pricing_abi)
+    held = dict(zip(_outputs(pricing_abi, "params"), pricing.functions.params().call()))
+    return TermBounds(int(held["gflopsMax"]), int(held["maxOrderHours"]))
 
 
 def send_v2_add(contract: Any, version: str, resources: Dict[str, int], bid_wei: int, max_gflops: int,

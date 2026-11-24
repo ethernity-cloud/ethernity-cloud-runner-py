@@ -96,13 +96,13 @@ def _protocol(answers):
 
 def test_a_2_0_pox_whose_pricing_names_a_pox_matching():
     contract = _protocol({PROTOCOL: {"VERSION": "2.0", "pricingAddress": PRICING}, PRICING: {"matching": MATCHING}})
-    assert read_generation(contract) == PoxGeneration("2.0", MATCHING)
+    assert read_generation(contract) == PoxGeneration("2.0", MATCHING, PRICING)
     assert contract.provider.reads == ["VERSION", "pricingAddress", "matching"]
 
 
 def test_a_1_2_pox_whose_pricing_answers_no_matching():
     contract = _protocol({PROTOCOL: {"VERSION": "1.2", "pricingAddress": PRICING}, PRICING: {"matching": REVERT}})
-    assert read_generation(contract) == PoxGeneration("1.2", ZERO)
+    assert read_generation(contract) == PoxGeneration("1.2", ZERO, PRICING)
 
 
 @pytest.mark.parametrize("version", ["1.1", REVERT])

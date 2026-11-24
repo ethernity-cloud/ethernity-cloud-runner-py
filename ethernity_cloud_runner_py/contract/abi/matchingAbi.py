@@ -32,6 +32,7 @@ pox_1_2 = [
 
 pricing = [
     {"type":"function","name":"matching","inputs":[],"outputs":[{"name":"","type":"address"}],"stateMutability":"view"},
+    {"type":"function","name":"params","inputs":[],"outputs":[{"components":[{"name":"baseMinWei","type":"uint256"},{"name":"baseRefWei","type":"uint256"},{"name":"uRef","type":"uint256"},{"name":"alpha","type":"uint256"},{"name":"growth","type":"uint256"},{"name":"decay","type":"uint256"},{"name":"k","type":"uint8"},{"name":"beta","type":"uint8"},{"name":"cRef","type":"uint32"},{"name":"gflopsMax","type":"uint32"},{"name":"epochSeconds","type":"uint32"},{"name":"dpRequestTtl","type":"uint32"},{"name":"maxOrderHours","type":"uint16"},{"name":"gasPerRow","type":"uint32"},{"name":"gasPerCommit","type":"uint32"},{"name":"gasPerResult","type":"uint32"},{"name":"gasEmaWindowEpochs","type":"uint32"},{"name":"priorityFeeWei","type":"uint64"},{"name":"oracleStaleSeconds","type":"uint32"},{"name":"divergenceBoundPercent","type":"uint8"},{"name":"emaWindowEpochs","type":"uint32"},{"name":"gflopsMaxDefault","type":"uint32"}],"name":"","type":"tuple"}],"stateMutability":"view"},
 ]
 
 matching = [

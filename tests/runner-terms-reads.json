@@ -1,0 +1,50 @@
+{
+  "description": "The reads before the add of each runner-terms.json case that adds a request (MATCHING-SYNC-PLAN.md 3.15, SF21): on the claims path the quote (bidQuoteFor, with the request's terms, the need and the ceiling of the add's maxGflops word as spec/matching.md section 4 reads them, its minimum EPC, the template and the minimum score the runner applies) and the escrow (escrowFor, with the add's maxGflops word and metadata1 v3:<image>:<template>); off the claims path neither (null). Both runners hold this file byte for byte and replay it with runner-terms.json; it is the runners' addition to runner-terms.json at pox-smart-contract-litvm 2f600f6, which states neither read.",
+  "terms": "spec/runner-terms.json at pox-smart-contract-litvm 2f600f6",
+  "image": "QmMatchingImageA",
+  "template": "ecld-nodenithy-matching",
+  "cases": {
+    "defaults": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 1, "template": "ecld-nodenithy-matching", "minScore": 0},
+      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "4294967296", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    },
+    "defaults-claims-off": {"quote": null, "escrow": null},
+    "version-1.2": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 1, "template": "ecld-nodenithy-matching", "minScore": 0},
+      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "4294967296", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    },
+    "ceiling-and-need": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 150, "ceilGflops": 250, "epcUnits": 1, "template": "ecld-nodenithy-matching", "minScore": 0},
+      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "4304797946", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    },
+    "client-epc": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 3, "template": "ecld-nodenithy-matching", "minScore": 0},
+      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "12884901888", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    },
+    "image-epc": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 5, "template": "ecld-nodenithy-matching", "minScore": 0},
+      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "21474836480", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    },
+    "client-above-image": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 16, "template": "ecld-nodenithy-matching", "minScore": 0},
+      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "68719476736", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    },
+    "price-at-u128": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 1, "template": "ecld-nodenithy-matching", "minScore": 0},
+      "escrow": {"hours": 1, "bidWei": "340282366920938463463374607431768211455", "maxGflops": "4294967296", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    },
+    "score-claims-on": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 1, "template": "ecld-nodenithy-matching", "minScore": 49000},
+      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "4294967296", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    },
+    "score-claims-off": {"quote": null, "escrow": null},
+    "score-half-up": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 1, "template": "ecld-nodenithy-matching", "minScore": 1},
+      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "4294967296", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    },
+    "score-decimal-digits": {
+      "quote": {"cpu": 1, "memGB": 1, "storageGB": 1, "bandwidth": 1, "hours": 1, "needGflops": 100, "ceilGflops": 0, "epcUnits": 1, "template": "ecld-nodenithy-matching", "minScore": 2901},
+      "escrow": {"hours": 1, "bidWei": "10000000000000000000", "maxGflops": "4294967296", "relaysPerHour": 0, "gasLevel": "1000000000000000000", "metadata1": "v3:QmMatchingImageA:ecld-nodenithy-matching"}
+    }
+  }
+}

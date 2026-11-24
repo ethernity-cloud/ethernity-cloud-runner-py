@@ -44,8 +44,11 @@ GAS_LEVEL_DEFAULT = 10**18
 # off, and recent_failure_slots, allow_marked_image, expire_unstarted,
 # note_refund and note_ambiguous, the switches of 3.10, 8.12, 8.9, 8.10 and
 # 8.16. Each bound the PoX sets on the terms (matching.MAX_PRICE_WEI,
-# MIN_GAS_LEVEL, MAX_GAS_LEVEL, max_gflops_arg) is tested before anything is
-# sent, and a V2 add takes one instance (validators 1).
+# MIN_GAS_LEVEL, MAX_GAS_LEVEL, max_gflops_arg, V2_RESOURCES, a duration of
+# at least one hour) is tested before anything is sent, each refusal naming
+# the PoX's revert string (spec/matching.md section 4), and a V2 add takes
+# one instance (validators 1); the pricing's bounds are tested once the
+# generation is read (matching.check_pricing_bounds).
 ClaimsSettings = namedtuple("ClaimsSettings", "bid_wei escrow_wei max_gflops required_gflops relays_per_hour "
                                               "gas_level max_bid_wei min_score recent_failure_slots "
                                               "allow_marked_image expire_unstarted note_refund note_ambiguous "
@@ -63,51 +66,76 @@ def _whole(resources: Dict[str, Any], key: str, default: Optional[int] = None) -
     return value
 
 
-def _within(key: str, value: Optional[int], low: int, high: int) -> Optional[int]:
+def _within(key: str, value: Optional[int], low: int, high: int, below: str,
+            above: Optional[str] = None) -> Optional[int]:
+    """`value`, raising ValueError for a value outside `low` to `high` that
+    names the PoX's revert string for it: `below` under `low`, `above` (else
+    `below`) over `high`."""
     if value is not None and not low <= value <= high:
+        revert = below if value < low else (above or below)
         raise ValueError(f"the task setting {key} must be {low} to {high}, not {value}: the PoX refuses a request "
-                         "outside that bound")
+                         f"outside that bound ({revert})")
     return value
 
 
 def v2_settings(resources: Dict[str, Any]) -> Optional[ClaimsSettings]:
     """The ClaimsSettings of a run's resources, None when they give none of
-    V2_KEYS. Raises ValueError, before anything is sent, for V2 keys
-    without a bid, for an escrow_wei of 0, for a setting out of its range or
-    out of the PoX's bound, and for more than one instance (validators)."""
+    V2_KEYS. Raises ValueError, before anything is sent, in the order of
+    spec/runner-terms.json: for a min_node_score that is no score, for a
+    resource given outside 1 to MAX_RESOURCE (matching.V2_RESOURCES; a
+    resource left out takes the legacy add's default), for more than one
+    instance (validators), for V2 keys without a bid, for an escrow_wei of
+    0, for a bid, a gas level, a duration given as 0, a required GFLOPS or a
+    ceiling out of the PoX's bound, and for an EPC figure above 65,535
+    units."""
     if not any(resources.get(key) is not None for key in V2_KEYS):
         return None
-    bid = _whole(resources, "max_price_per_cu_hour_wei")
-    escrow = _whole(resources, "escrow_wei")
-    if not bid or escrow == 0:
-        raise ValueError(
-            "A request with V2 terms needs the task setting max_price_per_cu_hour_wei (the bid per CU-hour, "
-            "wei), above 0; escrow_wei, when given, is the escrow addDORequestV2 pulls, above 0.")
+    min_score = resources.get("min_node_score")
+    min_units = None if min_score is None else matching.score_units(min_score)
+    for key, revert in matching.V2_RESOURCES:
+        _within(key, _whole(resources, key), 1, matching.MAX_RESOURCE, revert)
     validators = resources.get("validators") or 1
     if validators != 1:
         raise ValueError(f"A request with V2 terms takes one instance; the task setting validators is "
-                         f"{validators!r}. Give validators 1, or leave the V2 keys out for a legacy request.")
+                         f"{validators!r} (instance invalid). Give validators 1, or leave the V2 keys out for a "
+                         "legacy request.")
+    bid = _whole(resources, "max_price_per_cu_hour_wei")
+    escrow = _whole(resources, "escrow_wei")
+    if bid is None or escrow == 0:
+        raise ValueError(
+            "A request with V2 terms needs the task setting max_price_per_cu_hour_wei (the bid per CU-hour, "
+            "wei), above 0; escrow_wei, when given, is the escrow addDORequestV2 pulls, above 0.")
+    _within("max_price_per_cu_hour_wei", bid, 1, matching.MAX_PRICE_WEI, "price invalid")
+    gas_level = _within("gas_level", _whole(resources, "gas_level", GAS_LEVEL_DEFAULT), matching.MIN_GAS_LEVEL,
+                        matching.MAX_GAS_LEVEL, "gasLevel below average", "gasLevel invalid")
+    if _whole(resources, "duration") == 0:
+        raise ValueError("the task setting duration of a request with V2 terms must be 1 hour or more, not 0: the "
+                         "PoX refuses it (duration invalid)")
     max_gflops = _whole(resources, "max_gflops", 0)
     required = _whole(resources, "required_gflops", 0)
+    matching.max_gflops_arg(required, max_gflops)
     epc_units = matching.epc_units_of_mib(_whole(resources, "epc_mib", 0))
-    matching.max_gflops_arg(required, max_gflops, epc_units)
-    min_score = resources.get("min_node_score")
     return ClaimsSettings(
-        _within("max_price_per_cu_hour_wei", bid, 1, matching.MAX_PRICE_WEI), escrow, max_gflops, required,
-        _whole(resources, "relays_per_hour", 0),
-        _within("gas_level", _whole(resources, "gas_level", GAS_LEVEL_DEFAULT), matching.MIN_GAS_LEVEL,
-                matching.MAX_GAS_LEVEL),
-        _within("max_bid_per_cu_hour_wei", _whole(resources, "max_bid_per_cu_hour_wei"), 1, matching.MAX_PRICE_WEI),
-        None if min_score is None else matching.score_units(min_score),
-        _whole(resources, "recent_failure_slots", matching.DEFAULT_RECENT_FAILURE_SLOTS),
+        bid, escrow, max_gflops, required, _whole(resources, "relays_per_hour", 0), gas_level,
+        _within("max_bid_per_cu_hour_wei", _whole(resources, "max_bid_per_cu_hour_wei"), 1, matching.MAX_PRICE_WEI,
+                "price invalid"),
+        min_units, _whole(resources, "recent_failure_slots", matching.DEFAULT_RECENT_FAILURE_SLOTS),
         bool(resources.get("allow_marked_image", False)), bool(resources.get("expire_unstarted", True)),
         bool(resources.get("note_refund", True)), bool(resources.get("note_ambiguous", True)), epc_units)
 
 
 def claims_settings(resources: Dict[str, Any]) -> ClaimsSettings:
     """The ClaimsSettings of a request served by claims (v2_settings).
-    Raises ValueError, before anything is sent, for a request without a bid
+    Raises ValueError, before anything is sent, for a min_node_score that is
+    no score, for more than one instance (OD25), for a request without a bid
     and as v2_settings does."""
+    min_score = resources.get("min_node_score")
+    if min_score is not None:
+        matching.score_units(min_score)
+    validators = resources.get("validators") or 1
+    if validators != 1:
+        raise ValueError(f"validators above 1 under claims: the task setting validators is {validators!r}, and a "
+                         "request served by claims takes one instance.")
     settings = v2_settings(resources)
     if settings is None:
         raise ValueError(
