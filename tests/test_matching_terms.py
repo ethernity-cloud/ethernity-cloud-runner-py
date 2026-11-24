@@ -1,5 +1,5 @@
-"""The terms a runner adds a V2 request with, and the reads around them, at
-pox-smart-contract-litvm 52e36e0 (MATCHING-SYNC-PLAN.md 4.4, RUN-03 to
+"""The terms a runner adds a V2 request with, and the reads around them, on
+the spec copies of tests/spec/ (MATCHING-SYNC-PLAN.md 4.4, RUN-03 to
 RUN-14):
 
 - the PoX's generation, read from the chain (VERSION() for the add's form,
@@ -19,8 +19,6 @@ RUN-14):
 - receipts judged by their status; the securelock's own session.
 
 No chain: the contracts are stand-ins."""
-import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -42,9 +40,9 @@ from ethernity_cloud_runner_py.runner import EthernityCloudRunner
 
 from test_matching_claims import (DP, ESCROW, IMAGE, N1, NOW, PARAMS, QUOTE_DEFAULT, TEMPLATE, Deployed, FakeChain,
                                   Images, Runner, contracts_with, path_of, records_of)
+from spec_copies import load
 
-SPEC = Path(__file__).resolve().parent / "spec" / "matching"
-RANK = json.loads((SPEC / "matching-rank.json").read_text(encoding="utf-8"))
+RANK = load("matching-rank.json")
 QUOTES = {case["name"]: case for case in RANK["quotes"]}
 PROTOCOL = "0x" + "bb" * 20
 PRICING = "0x" + "0c" * 20

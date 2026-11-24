@@ -1,0 +1,1007 @@
+{
+  "description": "The runners' terms of a V2 request (SF21): for each case's settings, the add both runners send (its selector and arguments), the order of the sends, whether the claims path and a score test precede the add, or the refusal before anything is sent with the PoX's revert string (spec/matching.md section 4) or the runner's own message. Both runners replay it; a difference fails the suite of the runner that differs. The quote and the escrow are read on chain (bidQuoteFor, escrowFor) with the add's maxGflops word and are not in this file.",
+  "generator": "spec/make/runner-terms.js",
+  "source": "abi-selectors.json (addDORequestV2 now and before)",
+  "rules": {
+    "addForm": "the PoX's VERSION(): \"2.0\" the uint48 maxGflops (EPC minimum in bits 32 to 47), \"1.2\" the uint32 form; the claims path where the pricing's matching() is not zero (OD18 A)",
+    "defaults": {
+      "maxGflops": 0,
+      "relaysPerHour": 0,
+      "gasLevel": "1000000000000000000"
+    },
+    "epc": "max(1, the image's imageEpcUnits, the client's EPC in MiB rounded up to whole 64 MiB units), at most 65,535 (spec/matching.md section 16 item 41; OD23 A)",
+    "instances": "one; more under claims is refused by the runner (OD25 A); the V2 add refuses more (\"instance invalid\")",
+    "scoreUnits": "a minimum score given as a decimal text, times 10,000, rounded half up on the decimal digits, 0 to 50,000; applied to placements only with claims on (D196)",
+    "sends": "the token approval of the escrow, then the add",
+    "bounds": {
+      "gflopsMax": 6400,
+      "maxOrderHours": 168,
+      "metadataBytes": 2048,
+      "note": "the pricing's gflopsMax and maxOrderHours are the network's; the cases take 6,400 and the rehearsal set's 168 (scripts/lib/pox-2-0-rehearsal.js)"
+    }
+  },
+  "selectors": {
+    "addDORequestV2": "0x9f74fcce",
+    "addDORequestV2 before": "0x9fdaa26e"
+  },
+  "cases": [
+    {
+      "name": "defaults",
+      "rule": "no V2 keys given: maxGflops 0 (no ceiling, the need of D38), relaysPerHour 0, gasLevel 1e18 (OD26); the EPC minimum 1 unit (D200)",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "4294967296",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 1,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": false,
+        "minScoreUnits": null
+      }
+    },
+    {
+      "name": "defaults-claims-off",
+      "rule": "the same with claims off (the pricing names no PoxMatching): runner-py adds the V2 request too (OD26 A); no claims path",
+      "settings": {
+        "claims": false,
+        "matching": "zero",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "4294967296",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 1,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": false,
+        "scoreTestBeforeAdd": false,
+        "minScoreUnits": null
+      }
+    },
+    {
+      "name": "version-1.2",
+      "rule": "a PoX answering VERSION() \"1.2\" (the deployed sets): the uint32 add, no EPC bits",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "1.2",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9fdaa26e",
+          "form": "maxGflops uint32",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "0",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 0,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": false,
+        "minScoreUnits": null
+      }
+    },
+    {
+      "name": "ceiling-and-need",
+      "rule": "a ceiling of 250 and a need of 150 GFLOPS: maxGflops = 150 << 16 | 250 with the EPC above",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "ceilGflops": 250,
+        "needGflops": 150
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "4304797946",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 1,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": false,
+        "minScoreUnits": null
+      }
+    },
+    {
+      "name": "client-epc",
+      "rule": "a client EPC of 130 MiB: 3 units (rounded up to whole 64 MiB units, OD23 A)",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "clientEpcMiB": 130
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "12884901888",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 3,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": false,
+        "minScoreUnits": null
+      }
+    },
+    {
+      "name": "image-epc",
+      "rule": "an image need of 5 units and a client figure of 64 MiB: 5",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "imageEpcUnits": 5,
+        "clientEpcMiB": 64
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "21474836480",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 5,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": false,
+        "minScoreUnits": null
+      }
+    },
+    {
+      "name": "client-above-image",
+      "rule": "an image need of 2 units and a client figure of 1 GiB: 16",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "imageEpcUnits": 2,
+        "clientEpcMiB": 1024
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "68719476736",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 16,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": false,
+        "minScoreUnits": null
+      }
+    },
+    {
+      "name": "epc-above-max",
+      "rule": "a client EPC of 65,536 x 64 MiB: refused before anything is sent",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "clientEpcMiB": 4194304
+      },
+      "expected": {
+        "refused": {
+          "by": "runner",
+          "message": "EPC above 65,535 units"
+        }
+      }
+    },
+    {
+      "name": "resource-zero-cpu",
+      "rule": "cpu 0: the PoX refuses it (\"cpu invalid\"); the runner refuses before sending",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 0,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "cpu invalid"
+        }
+      }
+    },
+    {
+      "name": "resource-zero-memory",
+      "rule": "memory 0",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 0,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "mem invalid"
+        }
+      }
+    },
+    {
+      "name": "resource-zero-storage",
+      "rule": "storage 0",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 0,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "strg invalid"
+        }
+      }
+    },
+    {
+      "name": "resource-zero-bandwidth",
+      "rule": "bandwidth 0",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 0,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "bw invalid"
+        }
+      }
+    },
+    {
+      "name": "validators-two-claims-on",
+      "rule": "two instances under claims: refused (OD25 A)",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 2,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "runner",
+          "message": "validators above 1 under claims"
+        }
+      }
+    },
+    {
+      "name": "validators-two-claims-off",
+      "rule": "two instances with claims off: the V2 add takes one instance (\"instance invalid\")",
+      "settings": {
+        "claims": false,
+        "matching": "zero",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 2,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "instance invalid"
+        }
+      }
+    },
+    {
+      "name": "price-zero",
+      "rule": "a bid of 0",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "0",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "price invalid"
+        }
+      }
+    },
+    {
+      "name": "price-above-u128",
+      "rule": "a bid of 2^128",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "340282366920938463463374607431768211456",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "price invalid"
+        }
+      }
+    },
+    {
+      "name": "price-at-u128",
+      "rule": "a bid of 2^128 - 1: admitted",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "340282366920938463463374607431768211455",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "340282366920938463463374607431768211455",
+            "maxGflops": "4294967296",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 1,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": false,
+        "minScoreUnits": null
+      }
+    },
+    {
+      "name": "gas-level-below-average",
+      "rule": "a gasLevel below 1e18",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "gasLevel": "999999999999999999"
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "gasLevel below average"
+        }
+      }
+    },
+    {
+      "name": "gas-level-above-u128",
+      "rule": "a gasLevel of 2^128",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "gasLevel": "340282366920938463463374607431768211456"
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "gasLevel invalid"
+        }
+      }
+    },
+    {
+      "name": "duration-zero",
+      "rule": "zero hours",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 0,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "duration invalid"
+        }
+      }
+    },
+    {
+      "name": "duration-above-max",
+      "rule": "hours above the pricing's maxOrderHours (168, the rehearsal set's)",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 169,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "duration invalid"
+        }
+      }
+    },
+    {
+      "name": "ceiling-above-max",
+      "rule": "a ceiling above gflopsMax (6,400)",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "ceilGflops": 6401
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "maxGflops invalid"
+        }
+      }
+    },
+    {
+      "name": "need-above-ceiling",
+      "rule": "a need above the ceiling",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "ceilGflops": 200,
+        "needGflops": 201
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "maxGflops invalid"
+        }
+      }
+    },
+    {
+      "name": "metadata1-too-long",
+      "rule": "a metadata1 of 2,049 bytes",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 2049,
+        "metadataBytes": 60
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "metadata1 too long"
+        }
+      }
+    },
+    {
+      "name": "metadata-too-long",
+      "rule": "a metadata string after the first of 2,049 bytes",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 2049
+      },
+      "expected": {
+        "refused": {
+          "by": "pox",
+          "message": "metadata too long"
+        }
+      }
+    },
+    {
+      "name": "score-claims-on",
+      "rule": "a dApp minimum score of 4.9 with claims on: a score test precedes the add, 49,000 units",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "minScore": "4.9"
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "4294967296",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 1,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": true,
+        "minScoreUnits": 49000
+      }
+    },
+    {
+      "name": "score-claims-off",
+      "rule": "the same with claims off: no score test before the add (D196)",
+      "settings": {
+        "claims": false,
+        "matching": "zero",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "minScore": "4.9"
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "4294967296",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 1,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": false,
+        "scoreTestBeforeAdd": false,
+        "minScoreUnits": 49000
+      }
+    },
+    {
+      "name": "score-half-up",
+      "rule": "a score of 0.00005: rounded half up on the decimal digits, 1 unit",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "minScore": "0.00005"
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "4294967296",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 1,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": true,
+        "minScoreUnits": 1
+      }
+    },
+    {
+      "name": "score-decimal-digits",
+      "rule": "a score of 0.29005: 2,901 units (0.29005 x 10,000 in binary floating point is 2,900.4999999999995, which rounds to 2,900)",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "minScore": "0.29005"
+      },
+      "expected": {
+        "add": {
+          "selector": "0x9f74fcce",
+          "form": "maxGflops uint48",
+          "args": {
+            "cpu": 1,
+            "mem": 1,
+            "storageGB": 1,
+            "bw": 1,
+            "duration": 1,
+            "instances": 1,
+            "maxPricePerCuHourWei": "10000000000000000000",
+            "maxGflops": "4294967296",
+            "relaysPerHour": 0,
+            "gasLevel": "1000000000000000000"
+          }
+        },
+        "epcUnits": 1,
+        "sends": [
+          "token.approve(pox, escrowWei)",
+          "addDORequestV2"
+        ],
+        "claimsPath": true,
+        "scoreTestBeforeAdd": true,
+        "minScoreUnits": 2901
+      }
+    },
+    {
+      "name": "score-above-max",
+      "rule": "a score of 5.00005: above 50,000 units, refused as a setting",
+      "settings": {
+        "claims": true,
+        "matching": "set",
+        "version": "2.0",
+        "bid": "10000000000000000000",
+        "hours": 1,
+        "cpu": 1,
+        "mem": 1,
+        "storageGB": 1,
+        "bw": 1,
+        "instances": 1,
+        "metadata1Bytes": 120,
+        "metadataBytes": 60,
+        "minScore": "5.00005"
+      },
+      "expected": {
+        "refused": {
+          "by": "runner",
+          "message": "a minimum node score is 0 to 5.00"
+        }
+      }
+    }
+  ]
+}

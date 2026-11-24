@@ -1,8 +1,8 @@
 """matching (MATCHING-DESIGN.md 3.10, 3.15, 4.4 to 4.6; spec/matching.md
 sections 3 to 9, 13 and 17) on the shared fixtures of
-pox-smart-contract-litvm spec/ at 52e36e0, held byte for byte in
-tests/spec/matching/ with their MANIFEST lines, and the runner's ABI entries
-(contract/abi/matchingAbi.py) against that commit's.
+pox-smart-contract-litvm spec/ at spec_copies.SOURCE_COMMIT, held byte for
+byte in tests/spec/ (test_spec_fixture.py checks the copies), and the
+runner's ABI entries (contract/abi/matchingAbi.py) against that commit's.
 
 ranking.json holds, per ranking case, the reader's `candidates` answers;
 the runner's merge of those pages, its list hash, its matching count, the
@@ -13,10 +13,7 @@ the list's order, the mandated sequence, the stop band, the steps, the
 pages of a paged read, the approval rule's decisions and the bid a raise
 sends. result-fields.json holds the results whose fields 15 to 17 are read
 and those whose fields are not."""
-import hashlib
 import json
-import subprocess
-from pathlib import Path
 
 import pytest
 from eth_utils import keccak
@@ -25,49 +22,12 @@ from ethernity_cloud_runner_py import matching
 from ethernity_cloud_runner_py.contract.abi import matchingAbi
 from ethernity_cloud_runner_py.contract.abi.polygonProtocolAbi import contract as polygon_abi
 from ethernity_cloud_runner_py.runner import EthernityCloudRunner
+from spec_copies import SOURCE_COMMIT, checkout, load, shown
 
-SPEC = Path(__file__).resolve().parent / "spec" / "matching"
-SOURCE = Path(__file__).resolve().parents[2] / "pox-smart-contract-litvm"
-SOURCE_COMMIT = "52e36e0"
-COPIES = ["matching-rank.json", "matching.md", "ranking.json", "result-fields.json"]
-RANKING = json.loads((SPEC / "ranking.json").read_text(encoding="utf-8"))
-RANK = json.loads((SPEC / "matching-rank.json").read_text(encoding="utf-8"))
-FIELDS = json.loads((SPEC / "result-fields.json").read_text(encoding="utf-8"))
+RANKING = load("ranking.json")
+RANK = load("matching-rank.json")
+FIELDS = load("result-fields.json")
 RANK_CASES = {case["name"]: case for case in RANK["ranking"]}
-
-
-def manifest():
-    entries = {}
-    for line in (SPEC / "MANIFEST.sha256").read_text(encoding="ascii").splitlines():
-        digest, _, name = line.partition("  ")
-        entries[name] = digest
-    return entries
-
-
-@pytest.mark.parametrize("name", COPIES)
-def test_each_copy_hashes_to_its_manifest_line(name):
-    assert hashlib.sha256((SPEC / name).read_bytes()).hexdigest() == manifest()[name]
-
-
-@pytest.mark.parametrize("name", COPIES)
-def test_each_copy_is_the_source_commit_s(name):
-    if not (SOURCE / ".git").exists():
-        pytest.skip(f"no pox-smart-contract-litvm checkout at {SOURCE}")
-    shown = subprocess.run(["git", "-C", str(SOURCE), "show", f"{SOURCE_COMMIT}:spec/{name}"], capture_output=True)
-    if shown.returncode != 0:
-        pytest.skip(f"{SOURCE} holds no commit {SOURCE_COMMIT}")
-    assert (SPEC / name).read_bytes() == shown.stdout
-
-
-def test_the_manifest_lines_are_the_source_commit_s():
-    if not (SOURCE / ".git").exists():
-        pytest.skip(f"no pox-smart-contract-litvm checkout at {SOURCE}")
-    shown = subprocess.run(["git", "-C", str(SOURCE), "show", f"{SOURCE_COMMIT}:spec/MANIFEST.sha256"],
-                           capture_output=True, text=True)
-    if shown.returncode != 0:
-        pytest.skip(f"{SOURCE} holds no commit {SOURCE_COMMIT}")
-    source = dict(reversed(line.split("  ")) for line in shown.stdout.splitlines())
-    assert {name: source[name] for name in COPIES} == manifest()
 
 
 # Where each group of the runner's ABI entries comes from, in the source
@@ -110,13 +70,11 @@ def input_types(entry):
 
 @pytest.mark.parametrize("group", list(ABI_SOURCES))
 def test_each_abi_entry_is_the_source_commit_s(group):
-    if not (SOURCE / ".git").exists():
-        pytest.skip(f"no pox-smart-contract-litvm checkout at {SOURCE}")
     commit, path = ABI_SOURCES[group] if isinstance(ABI_SOURCES[group], tuple) else (SOURCE_COMMIT, ABI_SOURCES[group])
-    shown = subprocess.run(["git", "-C", str(SOURCE), "show", f"{commit}:{path}"], capture_output=True)
-    if shown.returncode != 0:
-        pytest.skip(f"{SOURCE} holds no commit {commit}")
-    source = json.loads(shown.stdout)
+    found = shown(path, commit)
+    if found is None:
+        pytest.skip(f"no pox-smart-contract-litvm checkout holding {commit} (found: {checkout()})")
+    source = json.loads(found)
     source = source["abi"] if isinstance(source, dict) else source
     for entry in getattr(matchingAbi, group):
         found = [e for e in source if e.get("type") == entry["type"] and e.get("name") == entry["name"]

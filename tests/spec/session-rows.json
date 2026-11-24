@@ -1,0 +1,325 @@
+{
+  "description": "spec/matching.md section 20 (SF20): the grammar of a session's etny-si input rows and close rows, which both trustedzones, the validators' members and the runners' session clients hold to; a row outside it is answered by the enclave with the malformed notice and kept out of the input root on every side. Accepted and refused rows read for order 7, and a row list read for it in the request's order.",
+  "generator": "spec/make/session-rows.js",
+  "specification": "spec/matching.md section 20",
+  "order": 7,
+  "grammar": [
+    "input-row = \"v1\" \":\" seq \":\" orderId \":\" cid \":\" sha256    ; exactly five fields",
+    "close-row = \"v1\" \":\" \"close\" \":\" orderId [ \":\" depth ]",
+    "seq, orderId = plain decimal (\"0\" | nonzero *digit), at most 2^64 - 1",
+    "depth = 1*9 digit",
+    "cid, sha256 = any bytes but \":\"; not part of the acceptance"
+  ],
+  "rule": "the row's value is read as its bytes stand: nothing trimmed, folded or decoded. An input row is taken for an order when it is in the grammar, names the order and its seq is the next expected one (from 0); a gap or a duplicate is skipped on every side. The root of the taken rows is over their whole values (field 7 of the result, as result-v5.json's session example computes it). A close row names the order's close and, with a depth, its landing depth, at most the network's session_landed_depth_max_blocks (etny-nodenithy v3/networks.yaml).",
+  "whys": [
+    "version",
+    "fields",
+    "seq",
+    "orderId",
+    "depth",
+    "otherOrder"
+  ],
+  "accepted": [
+    {
+      "name": "input",
+      "value": "v1:0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": "input",
+        "seq": "0"
+      }
+    },
+    {
+      "name": "input-seq-12",
+      "value": "v1:12:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": "input",
+        "seq": "12"
+      }
+    },
+    {
+      "name": "input-max",
+      "value": "v1:18446744073709551615:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": "input",
+        "seq": "18446744073709551615"
+      }
+    },
+    {
+      "name": "input-empty-cid-and-sha",
+      "value": "v1:3:7::",
+      "expected": {
+        "kind": "input",
+        "seq": "3"
+      }
+    },
+    {
+      "name": "close",
+      "value": "v1:close:7",
+      "expected": {
+        "kind": "close",
+        "depth": null
+      }
+    },
+    {
+      "name": "close-with-depth",
+      "value": "v1:close:7:1",
+      "expected": {
+        "kind": "close",
+        "depth": 1
+      }
+    },
+    {
+      "name": "close-depth-nine-digits",
+      "value": "v1:close:7:000000002",
+      "expected": {
+        "kind": "close",
+        "depth": 2
+      }
+    }
+  ],
+  "refused": [
+    {
+      "name": "empty-seq",
+      "value": "v1::7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "leading-space",
+      "value": "v1: 0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "trailing-space",
+      "value": "v1:0 :7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "plus-sign",
+      "value": "v1:+0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "leading-zero",
+      "value": "v1:00:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "hex",
+      "value": "v1:0x0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "exponent",
+      "value": "v1:0e0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "underscore",
+      "value": "v1:0_0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "non-ascii-digit",
+      "value": "v1:١:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "decimal-point",
+      "value": "v1:1.0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "six-fields",
+      "value": "v1:0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f:x",
+      "expected": {
+        "kind": null,
+        "why": "fields"
+      }
+    },
+    {
+      "name": "four-fields",
+      "value": "v1:0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy",
+      "expected": {
+        "kind": null,
+        "why": "fields"
+      }
+    },
+    {
+      "name": "upper-case-version",
+      "value": "V1:0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "version"
+      }
+    },
+    {
+      "name": "seq-above-u64",
+      "value": "v1:18446744073709551616:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "seq"
+      }
+    },
+    {
+      "name": "order-leading-zero",
+      "value": "v1:0:07:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "orderId"
+      }
+    },
+    {
+      "name": "close-order-leading-zero",
+      "value": "v1:close:07",
+      "expected": {
+        "kind": null,
+        "why": "orderId"
+      }
+    },
+    {
+      "name": "close-empty-depth",
+      "value": "v1:close:7:",
+      "expected": {
+        "kind": null,
+        "why": "depth"
+      }
+    },
+    {
+      "name": "close-depth-ten-digits",
+      "value": "v1:close:7:1234567890",
+      "expected": {
+        "kind": null,
+        "why": "depth"
+      }
+    },
+    {
+      "name": "close-depth-sign",
+      "value": "v1:close:7:+1",
+      "expected": {
+        "kind": null,
+        "why": "depth"
+      }
+    },
+    {
+      "name": "close-five-fields",
+      "value": "v1:close:7:1:x",
+      "expected": {
+        "kind": null,
+        "why": "fields"
+      }
+    },
+    {
+      "name": "other-order",
+      "value": "v1:0:8:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "expected": {
+        "kind": null,
+        "why": "otherOrder"
+      }
+    }
+  ],
+  "list": {
+    "rows": [
+      "v1:0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:2:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:1:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:1:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:00:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:2:8:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:2:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:close:7:1",
+      "v1:3:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f"
+    ],
+    "outcome": [
+      {
+        "index": 0,
+        "value": "v1:0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+        "read": "taken",
+        "seq": "0"
+      },
+      {
+        "index": 1,
+        "value": "v1:2:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+        "read": "gap",
+        "seq": "2"
+      },
+      {
+        "index": 2,
+        "value": "v1:1:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+        "read": "taken",
+        "seq": "1"
+      },
+      {
+        "index": 3,
+        "value": "v1:1:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+        "read": "duplicate",
+        "seq": "1"
+      },
+      {
+        "index": 4,
+        "value": "v1:00:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+        "read": "outsideGrammar"
+      },
+      {
+        "index": 5,
+        "value": "v1:2:8:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+        "read": "otherOrder"
+      },
+      {
+        "index": 6,
+        "value": "v1:2:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+        "read": "taken",
+        "seq": "2"
+      },
+      {
+        "index": 7,
+        "value": "v1:close:7:1",
+        "read": "close",
+        "depth": 1
+      },
+      {
+        "index": 8,
+        "value": "v1:3:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+        "read": "taken",
+        "seq": "3"
+      }
+    ],
+    "taken": [
+      "v1:0:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:1:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:2:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+      "v1:3:7:bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy:dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f"
+    ],
+    "root": "0xda816ac2d3a6e3dbafbd5182be588ce3e6cfb3b7ebe1c8155b2c0a94e90ce41f",
+    "count": "03"
+  }
+}

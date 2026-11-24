@@ -14,9 +14,7 @@ The chain is a stand-in for MatchingContracts that answers from Example 1 of
 3.8 (matching-rank.json `example-1`, bid 1.2 ECLD per CU-hour; its rounds
 open in block 1000, one-block steps after one lead block): its list words,
 and claims mined at the blocks a test names, visible from those blocks on."""
-import json
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -27,9 +25,9 @@ from ethernity_cloud_runner_py import matching
 from ethernity_cloud_runner_py.claims import ClaimsPath, claims_settings, pinned_ban, settle_pending
 from ethernity_cloud_runner_py.contract.abi import matchingAbi
 from ethernity_cloud_runner_py.contract.operation.matchingContract import MatchingContracts
+from spec_copies import load
 
-SPEC = Path(__file__).resolve().parent / "spec" / "matching"
-RANK = json.loads((SPEC / "matching-rank.json").read_text(encoding="utf-8"))
+RANK = load("matching-rank.json")
 CASE = next(c for c in RANK["ranking"] if c["name"] == "example-1")
 LABELS = {label: node for node, label in RANK["labels"].items()}
 N1, N2, N3, N4, N5 = (LABELS[n] for n in ("N1", "N2", "N3", "N4", "N5"))
