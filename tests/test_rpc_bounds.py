@@ -315,7 +315,7 @@ class _SessionCaller:
 
     def _getMetadataValueForRequest(self, do_req, index):
         self._miss("_getMetadataValueForRequest")
-        return ["etny-si", f"v1:2:{ORDER}:bafkreiinput:digest"]
+        return ["etny-si", f"v1:0:{ORDER}:bafkreiinput:digest"]
 
 
 def _session(caller):
@@ -335,7 +335,7 @@ def test_a_session_handle_reads_its_request_and_its_inputs_again_after_reads_the
     caller = _SessionCaller(["_getDORequest", "_getMetadataCountForRequest", "_getMetadataValueForRequest"])
     session = _session(caller)
     assert session.do_req == 12 and session.duration_hours == 1
-    assert session.get_status()["inputs_sent"] == 3
+    assert session.get_status()["inputs_sent"] == 1
     assert caller.unanswered == []
 
 

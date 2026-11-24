@@ -33,9 +33,10 @@ runner's handles.
 """
 
 import hashlib
+import re
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from eth_account import Account
 from eth_account.messages import encode_defunct
@@ -48,6 +49,81 @@ SESSION_INPUT_KEY = "etny-si"
 SESSION_OUTPUT_KEY = "etny-so"
 SESSION_WALLET_KEY = "etny-sw"
 SESSION_WIRE_VERSION = "v1"
+
+# The grammar of a session's etny-si rows (spec/matching.md section 20,
+# SF20), which both trustedzones and the validators' members read:
+#   input-row = "v1" ":" seq ":" orderId ":" cid ":" sha256   (five fields)
+#   close-row = "v1" ":" "close" ":" orderId [ ":" depth ]
+# seq and orderId plain decimal ("0", or a digit 1-9 and digits) of at most
+# 2^64 - 1, depth one to nine digits, cid and sha256 any text but ":"; a row
+# is read as its bytes stand.
+UINT64_MAX = 2**64 - 1
+_PLAIN_DECIMAL = re.compile(r"0|[1-9][0-9]*")
+_DEPTH = re.compile(r"[0-9]{1,9}")
+
+
+def _plain(text: str) -> Optional[int]:
+    if not _PLAIN_DECIMAL.fullmatch(text):
+        return None
+    value = int(text)
+    return value if value <= UINT64_MAX else None
+
+
+def session_row(value: str, order_id: int) -> Optional[Tuple[str, Optional[int]]]:
+    """An etny-si row of order `order_id` read by the grammar of section 20:
+    ("input", seq), ("close", depth) with depth None when the row states
+    none, or None for a row outside the grammar or naming another order."""
+    parts = str(value).split(":")
+    if len(parts) < 3 or parts[0] != SESSION_WIRE_VERSION:
+        return None
+    if parts[1] == "close":
+        if len(parts) > 4 or _plain(parts[2]) != order_id:
+            return None
+        if len(parts) == 3:
+            return ("close", None)
+        return ("close", int(parts[3])) if _DEPTH.fullmatch(parts[3]) else None
+    if len(parts) != 5:
+        return None
+    seq = _plain(parts[1])
+    if seq is None or _plain(parts[2]) != order_id:
+        return None
+    return ("input", seq)
+
+
+def next_input_seq(values: Iterable[str], order_id: int) -> int:
+    """The seq an input row of order `order_id` takes after the etny-si rows
+    `values`, in the request's order: the next one the enclave expects (from
+    0), every row outside the grammar, of another order, a gap or a
+    duplicate skipped, as the trustedzones and the members read them."""
+    expected = 0
+    for value in values:
+        row = session_row(value, order_id)
+        if row is not None and row[0] == "input" and row[1] == expected:
+            expected += 1
+    return expected
+
+
+def input_row(seq: int, order_id: int, cid: str, digest: str) -> str:
+    """The etny-si input row `v1:<seq>:<orderId>:<cid>:<digest>`. Raises
+    ValueError for a value the grammar of section 20 refuses: a seq or an
+    order id that is not a whole number of 0 to 2^64 - 1, a cid or a digest
+    holding ":"."""
+    for name, number in (("seq", seq), ("order id", order_id)):
+        if isinstance(number, bool) or not isinstance(number, int) or not 0 <= number <= UINT64_MAX:
+            raise ValueError(f"an etny-si row's {name} is a whole number of 0 to 2^64 - 1, not {number!r}")
+    for name, text in (("cid", cid), ("digest", digest)):
+        if ":" in str(text):
+            raise ValueError(f"an etny-si row's {name} holds no ':', not {text!r}")
+    return f"{SESSION_WIRE_VERSION}:{seq}:{order_id}:{cid}:{digest}"
+
+
+def close_row(order_id: int) -> str:
+    """The etny-si close row `v1:close:<orderId>`, which states no depth.
+    Raises ValueError for an order id that is not a whole number of 0 to
+    2^64 - 1."""
+    if isinstance(order_id, bool) or not isinstance(order_id, int) or not 0 <= order_id <= UINT64_MAX:
+        raise ValueError(f"an etny-si row's order id is a whole number of 0 to 2^64 - 1, not {order_id!r}")
+    return f"{SESSION_WIRE_VERSION}:close:{order_id}"
 # An output row whose payload no endpoint serves yet, or serves under its CID
 # with other bytes, is read again on later polls for this long before it is
 # given up: the node pins the payload in the background and the gateway may
@@ -186,27 +262,22 @@ class EthernityCloudSession:
 
     def _count_my_inputs(self) -> int:
         """Resume seq from chain state so a reattached session continues
-        exactly where the previous process stopped."""
+        exactly where the previous process stopped: the seq the enclave
+        expects after the request's etny-si rows read so far
+        (next_input_seq)."""
         try:
             count = int(self._read(lambda: self._caller()._getMetadataCountForRequest(self.do_req)))
         except Exception:
             return 0
-        seq = 0
+        values = []
         for i in range(count):
             try:
                 key, value = self._read(lambda: self._caller()._getMetadataValueForRequest(self.do_req, i))
             except Exception:
                 break
-            if key != SESSION_INPUT_KEY:
-                continue
-            parts = str(value or "").split(":")
-            if len(parts) == 5 and parts[0] == SESSION_WIRE_VERSION:
-                try:
-                    if int(parts[2]) == self.order_id:
-                        seq = max(seq, int(parts[1]) + 1)
-                except ValueError:
-                    continue
-        return seq
+            if key == SESSION_INPUT_KEY:
+                values.append(str(value or ""))
+        return next_input_seq(values, self.order_id)
 
     def _task_wallet(self) -> Optional[str]:
         """The task wallet the output rows are signed with: attested by the
@@ -318,7 +389,7 @@ class EthernityCloudSession:
             # row is on chain, so a client that stops before that leaves no
             # row without bytes.
             self._lodge_input(cid)
-            value = f"{SESSION_WIRE_VERSION}:{self._input_seq}:{self.order_id}:{cid}:{digest}"
+            value = input_row(self._input_seq, self.order_id, cid, digest)
             tx_hash = self._contract.add_metadata_to_request(self.do_req, SESSION_INPUT_KEY, value)
             row_sent = True
             receipt = self.runner._poll_receipt(self._contract.get_provider().eth, tx_hash, 60, self._attached)
@@ -561,7 +632,7 @@ class EthernityCloudSession:
         if self._summarized:
             return self._summary if wait else None
         if not self.closed:
-            value = f"{SESSION_WIRE_VERSION}:close:{self.order_id}"
+            value = close_row(self.order_id)
             tx_hash = self._contract.add_metadata_to_request(self.do_req, SESSION_INPUT_KEY, value)
             self.runner._poll_receipt(self._contract.get_provider().eth, tx_hash, 60, self._attached)
             self.closed = True
