@@ -494,7 +494,7 @@ def test_a_resource_of_0_takes_its_default():
 
 @pytest.mark.parametrize("score,units", [(0.5, 5000), ("0.5", 5000), (0.00005, 1), (0.00004, 0), (0.12345, 1235),
                                          ("0.12345", 1235), (1.00005, 10001), (5, 50_000), ("4.99995", 50_000),
-                                         (1e-7, 0), ("2.5e-1", 2500)])
+                                         (1e-7, 0), ("2.5e-1", 2500), (0.00015, 2)])
 def test_the_score_is_rounded_half_up_on_its_decimal_text(score, units):
     assert matching.score_units(score) == units
 
