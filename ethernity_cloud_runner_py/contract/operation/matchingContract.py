@@ -1,10 +1,74 @@
+from collections import namedtuple
 from typing import Any, Dict, List, Optional
 
 from web3 import Web3
 
 from ..abi.matchingAbi import (image_registry as image_registry_abi, matching as matching_abi, pox as pox_abi,
-                               reader as reader_abi, session_registry as session_registry_abi)
-from ...matching import KIND_DEFAULT_RELEASE, ImageRecords, Template, decode_template, template_key
+                               pox_1_2 as pox_1_2_abi, pricing as pricing_abi, reader as reader_abi,
+                               session_registry as session_registry_abi)
+from ...errors import call_refused
+from ...matching import KIND_DEFAULT_RELEASE, UINT32_MAX, ImageRecords, Template, decode_template, template_key
+
+# The PoX generations that take addDORequestV2, by their VERSION() answer, and
+# the ABI of each one's add: "2.0" with maxGflops uint48 (the minimum EPC in
+# bits 32 to 47), "1.2" with maxGflops uint32 (MATCHING-SYNC-PLAN.md 3.9).
+V2_ADD_ABI = {"2.0": pox_abi, "1.2": pox_1_2_abi}
+ZERO_ADDRESS = "0x" + "00" * 20
+
+# What a network's PoX answers before a request (OD18): `version`, its
+# VERSION() answer (None when it has none), and `matching_address`, the
+# PoxMatching its pricing names (pricingAddress(), then the pricing's
+# matching()), the zero address when it names none.
+PoxGeneration = namedtuple("PoxGeneration", "version matching_address")
+NO_GENERATION = PoxGeneration(None, ZERO_ADDRESS)
+
+
+def _refused_as(read: Any, refused: Any) -> Any:
+    """`read()`, or `refused` when the contract refuses the call
+    (errors.call_refused); any other failure is raised."""
+    try:
+        return read()
+    except Exception as e:
+        if call_refused(e):
+            return refused
+        raise
+
+
+def read_generation(contract: Any) -> PoxGeneration:
+    """The PoxGeneration of the PoX at `contract`'s protocol address, read on
+    its provider: VERSION(), and for a PoX whose answer takes addDORequestV2
+    (V2_ADD_ABI) its pricing's matching(). A read the contract refuses is
+    an answer (no version, no PoxMatching); a read the RPC does not answer
+    is raised."""
+    w3 = contract.provider
+    pox = w3.eth.contract(address=Web3.to_checksum_address(contract.protocol_address), abi=pox_abi)
+    version = _refused_as(lambda: pox.functions.VERSION().call(), None)
+    if version not in V2_ADD_ABI:
+        return PoxGeneration(version, ZERO_ADDRESS)
+    pricing_address = _refused_as(lambda: pox.functions.pricingAddress().call(), ZERO_ADDRESS)
+    if int(pricing_address, 16) == 0:
+        return PoxGeneration(version, ZERO_ADDRESS)
+    pricing = w3.eth.contract(address=Web3.to_checksum_address(pricing_address), abi=pricing_abi)
+    return PoxGeneration(version, _refused_as(lambda: pricing.functions.matching().call(), ZERO_ADDRESS))
+
+
+def send_v2_add(contract: Any, version: str, resources: Dict[str, int], bid_wei: int, max_gflops: int,
+                relays_per_hour: int, gas_level: int, metadata: List[str]) -> str:
+    """addDORequestV2 in the form of the PoX's VERSION() (V2_ADD_ABI) with
+    the resources of `resources`, one instance, the bid per CU-hour, the
+    maxGflops argument, the chain fee's relays per hour and gas level, and
+    the four metadata strings, made as a call from the runner's wallet
+    first and sent through `contract`'s _build_sign_send when the call
+    passes. The "1.2" form carries the low 32 bits of `max_gflops`, which
+    hold no minimum EPC."""
+    word = int(max_gflops) if version == "2.0" else int(max_gflops) & UINT32_MAX
+    pox = contract.provider.eth.contract(address=Web3.to_checksum_address(contract.protocol_address),
+                                         abi=V2_ADD_ABI[version])
+    fn = pox.functions.addDORequestV2(
+        resources["cpu"], resources["memory"], resources["storage"], resources["bandwidth"],
+        resources["duration"], 1, int(bid_wei), word, int(relays_per_hour), int(gas_level), *metadata)
+    fn.call({"from": contract.signer.address})
+    return contract._build_sign_send(fn, GAS_FLOOR["addDORequestV2"])
 
 # The roll entries one paged read of the reader asks for (`count` of
 # candidates, bidQuote, bidQuoteFor and tierScore) where the network entry
@@ -40,18 +104,21 @@ def _outputs(abi: List[dict], name: str) -> List[str]:
 class MatchingContracts:
     """The PoX 2.0 contracts of a network with matching, as a runner reads
     and sends to them (MATCHING-DESIGN.md section 8): the PoX at the
-    protocol contract's address, PoxMatching at the network entry's
-    MATCHING_ADDRESS and PoxMatchReader at the address PoxMatching's
-    reader() answers (bind_reader), all on the protocol contract's provider.
-    Every transaction is first made as a call from the runner's wallet, and
-    sent through the protocol contract's _build_sign_send only when the call
-    passes; a call that reverts raises what the provider raised and nothing
-    is sent."""
+    protocol contract's address, whose VERSION() answer `version` names the
+    form of its V2 add (V2_ADD_ABI), PoxMatching at the address the PoX's
+    pricing names (read_generation) and PoxMatchReader at the address
+    PoxMatching's reader() answers (bind_reader), all on the protocol
+    contract's provider. Every transaction is first made as a call from the
+    runner's wallet, and sent through the protocol contract's
+    _build_sign_send only when the call passes; a call that reverts raises
+    what the provider raised and nothing is sent."""
 
-    def __init__(self, contract: Any, matching_address: str, page_entries: Optional[int] = None) -> None:
+    def __init__(self, contract: Any, matching_address: str, page_entries: Optional[int] = None,
+                 version: str = "2.0") -> None:
         self.contract = contract
         w3 = contract.provider
         self.w3 = w3
+        self.version = version
         self.pox = w3.eth.contract(address=Web3.to_checksum_address(contract.protocol_address), abi=pox_abi)
         self.matching = w3.eth.contract(address=Web3.to_checksum_address(matching_address), abi=matching_abi)
         self.reader: Any = None
@@ -76,15 +143,13 @@ class MatchingContracts:
 
     def add_do_request_v2(self, resources: Dict[str, int], bid_wei: int, max_gflops: int, relays_per_hour: int,
                           gas_level: int, metadata: List[str]) -> str:
-        """addDORequestV2 with the resources of `resources`, one instance, the
-        bid per CU-hour, the maxGflops argument (the required GFLOPS and the
-        ceiling), the chain fee's relays per hour and gas level, and the four
-        metadata strings."""
-        fn = self.pox.functions.addDORequestV2(
-            resources["cpu"], resources["memory"], resources["storage"], resources["bandwidth"],
-            resources["duration"], 1, int(bid_wei), int(max_gflops), int(relays_per_hour), int(gas_level),
-            *metadata)
-        return self._send(fn, "addDORequestV2")
+        """addDORequestV2 in the PoX's form (send_v2_add) with the resources
+        of `resources`, one instance, the bid per CU-hour, the maxGflops
+        argument (the minimum EPC, the required GFLOPS and the ceiling), the
+        chain fee's relays per hour and gas level, and the four metadata
+        strings."""
+        return send_v2_add(self.contract, self.version, resources, bid_wei, max_gflops, relays_per_hour, gas_level,
+                           metadata)
 
     def place_order(self, do_request_id: int, dp_request_id: int) -> str:
         """The approval of a claim: _placeOrder from the data owner on the
@@ -232,14 +297,15 @@ class MatchingContracts:
 
     def bid_quote_for(self, terms: Dict[str, int], template_name: str, min_score: int) -> Dict[str, int]:
         """bidQuoteFor over its pages for the terms of a request about to be
-        added: the nodes counted and the lowest bid at which one matches
-        (2^256 - 1: none), at the network price of the read."""
+        added (`epcUnits` the minimum EPC, 0 for none): the nodes counted and
+        the lowest bid at which one matches (2^256 - 1: none), at the network
+        price of the read."""
         band, index, carry, counted = 49, 0, 0, 0
         while True:
             values = self.reader.functions.bidQuoteFor(
                 terms["cpu"], terms["memGB"], terms["storageGB"], terms["bandwidth"], terms["hours"],
-                terms["needGflops"], terms["ceilGflops"], template_key(template_name), int(min_score), band, index,
-                self.page_entries, carry).call()
+                terms["needGflops"], terms["ceilGflops"], terms["epcUnits"], template_key(template_name),
+                int(min_score), band, index, self.page_entries, carry).call()
             page = dict(zip(_outputs(reader_abi, "bidQuoteFor"), values))
             counted += int(page["counted"])
             if page["done"]:
@@ -260,6 +326,11 @@ class MatchingContracts:
         """The timestamp of the latest block."""
         return int(self.w3.eth.get_block("latest")["timestamp"])
 
+    def request_status(self, do_request_id: int) -> int:
+        """The status the storage holds for the DO request
+        (Models.RequestStatus: 0 AVAILABLE, 1 BOOKED, 2 CANCELED)."""
+        return int(self.pox.functions._getDORequest(int(do_request_id)).call()[7])
+
     def order_approved_at(self, order_id: int) -> int:
         return int(self.pox.functions.orderApprovedAt(int(order_id)).call())
 
@@ -274,6 +345,17 @@ class MatchingContracts:
         of it is noted (bit 0 of ambiguousOf's word)."""
         return bool(int(self.matching.functions.ambiguousOf(int(order_id)).call()) & 255)
 
+    def image_epc_units(self, image_cid: str) -> int:
+        """The EPC need, in units of 64 MiB, the image registry PoxMatching
+        names records for the securelock image `image_cid` (imageEpcUnits;
+        D200): 0 when PoxMatching names no registry. A read the registry
+        does not answer is raised."""
+        registry = self.matching.functions.imageRegistry().call()
+        if int(registry, 16) == 0:
+            return 0
+        images = self.w3.eth.contract(address=registry, abi=image_registry_abi)
+        return int(images.functions.imageEpcUnits(image_cid).call())
+
     def image_records(self, image_cid: str) -> Dict[str, Any]:
         """What the image registry PoxMatching names (ECImageRegistryV4)
         and its SessionRegistry hold for the securelock image `image_cid`:
@@ -282,7 +364,14 @@ class MatchingContracts:
         `release_language` (the language of the default release kind 1
         records name, else None), the session it is bound to (`session`,
         zero for none), the newest version of that session's name (`latest`)
-        and the image that version is bound to (`current_image`)."""
+        and the image that version is bound to (`current_image`). The
+        session sessionOfImage names counts only when it is the securelock's
+        own: its record's name is the session the registry's securelock
+        table holds for the CID (getImageSession). A CID can stand in both of
+        the registry's tables and sessionOfImage names its last binding, so
+        a binding to the trustedzone table's session, or a CID outside the
+        securelock table (getImageSession refuses it), is no session of the
+        image's."""
         registry = self.matching.functions.imageRegistry().call()
         found = {"registry": None, "records": None, "release_language": None, "session": b"\x00" * 32,
                  "latest": b"\x00" * 32, "current_image": None}
@@ -301,10 +390,13 @@ class MatchingContracts:
             return found
         sessions = self.w3.eth.contract(address=sessions_address, abi=session_registry_abi)
         session = bytes(sessions.functions.sessionOfImage(image_cid).call())
-        found["session"] = session
         if int.from_bytes(session, "big") == 0:
             return found
         name = sessions.functions.record(session).call()[2]
+        own = _refused_as(lambda: images.functions.getImageSession(image_cid).call(), None)
+        if not own or own != name:
+            return found
+        found["session"] = session
         latest = bytes(sessions.functions.latest(name).call())
         found["latest"] = latest
         if latest != session and int.from_bytes(latest, "big") != 0:

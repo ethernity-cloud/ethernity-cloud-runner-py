@@ -1,18 +1,22 @@
 """EthernityCloudRunner chooses per request, before its add, between the
 claims path and the path it has served requests by before (MATCHING-DESIGN.md
-section 8 item 4 and section 13, roll-out step 3): a network whose entry
-names no PoxMatching, every PoX 1.0 network among them, reads nothing of
-matching; on one that names it, claimsOn() decides, and with claims off the
-request is added and approved as before; with claims on the PoxMatchReader is
-the one PoxMatching's reader() names. A request pinned to a banned node is
-refused on such a network whatever claimsOn() answers (D33). No chain: the
-contracts are stand-ins."""
+section 8 item 4 and section 13, roll-out step 3; OD18): the PoX's
+generation is read from the chain first (VERSION(), and the PoxMatching its
+pricing names); a network whose pricing names no PoxMatching reads nothing of
+matching, and one whose protocol is the token (the bloxberg mainnet PoX and
+its TESTNET_POX10 copy) reads nothing at all; on one whose pricing names a
+PoxMatching, claimsOn() decides, and with claims off the request is added and
+approved as before; with claims on the PoxMatchReader is the one
+PoxMatching's reader() names. A request pinned to a banned node is refused on
+such a network whatever claimsOn() answers (D33). No entry names a
+PoxMatching. No chain: the contracts are stand-ins."""
 from types import SimpleNamespace
 
 import pytest
 
 from ethernity_cloud_runner_py import runner as runner_module
 from ethernity_cloud_runner_py.claims import ClaimsPath
+from ethernity_cloud_runner_py.contract.operation.matchingContract import NO_GENERATION, PoxGeneration
 from ethernity_cloud_runner_py.enums import ECNetwork
 from ethernity_cloud_runner_py.runner import EthernityCloudRunner
 
@@ -21,6 +25,9 @@ V2 = dict(RESOURCES, max_price_per_cu_hour_wei=10**18, escrow_wei=3 * 10**18, ma
 NODE = "0x" + "12" * 20
 TX = "0x" + "ab" * 32
 NOW = 1795008240
+MATCHING = "0x" + "01" * 20
+ZERO = "0x" + "00" * 20
+TOKEN_PROTOCOL = {("BLOXBERG", "MAINNET"), ("BLOXBERG", "TESTNET_POX10")}
 
 
 def entries():
@@ -33,17 +40,22 @@ def entries():
 
 
 @pytest.mark.parametrize("network_name,type_name", [(n, t) for n, t, _ in entries()])
-def test_a_network_without_pox_matching_reads_nothing_of_it(network_name, type_name, monkeypatch):
+def test_a_pricing_that_names_no_pox_matching_reads_nothing_of_it(network_name, type_name, monkeypatch):
     def refuse(*args, **kwargs):
-        raise AssertionError("MatchingContracts built for a network whose entry names no PoxMatching")
+        raise AssertionError("MatchingContracts built for a network whose pricing names no PoxMatching")
+    reads = []
     monkeypatch.setattr(runner_module, "MatchingContracts", refuse)
+    monkeypatch.setattr(runner_module, "read_generation", lambda contract: reads.append(contract) or
+                        PoxGeneration("2.0", ZERO))
     runner = EthernityCloudRunner(network_name, type_name)
     assert runner._claims_path(V2, NODE) is None
+    assert runner._generation == (NO_GENERATION if (network_name, type_name) in TOKEN_PROTOCOL
+                                  else PoxGeneration("2.0", ZERO))
+    assert len(reads) == (0 if (network_name, type_name) in TOKEN_PROTOCOL else 1)
 
 
-@pytest.mark.parametrize("network_name,type_name", [("BLOXBERG", "MAINNET"), ("BLOXBERG", "TESTNET_POX10"),
-                                                    ("POLYGON", "MAINNET"), ("POLYGON", "AMOY_POX10")])
-def test_the_pox_1_0_networks_name_no_pox_matching(network_name, type_name):
+@pytest.mark.parametrize("network_name,type_name", [(n, t) for n, t, _ in entries()])
+def test_no_entry_names_a_pox_matching(network_name, type_name):
     entry = getattr(getattr(ECNetwork, network_name), type_name)
     assert getattr(entry, "MATCHING_ADDRESS", None) is None
 
@@ -78,16 +90,17 @@ class Chain:
 
 @pytest.fixture
 def matching_network(monkeypatch):
-    """BLOXBERG TESTNET's entry naming a PoxMatching, and the
-    MatchingContracts the runner builds for it."""
-    monkeypatch.setattr(ECNetwork.BLOXBERG.TESTNET, "MATCHING_ADDRESS", "0x" + "01" * 20, raising=False)
+    """BLOXBERG TESTNET's PoX answering VERSION() "2.0" with a pricing that
+    names a PoxMatching, and the MatchingContracts the runner builds for
+    it."""
+    monkeypatch.setattr(runner_module, "read_generation", lambda contract: PoxGeneration("2.0", MATCHING))
     built = {}
 
     def build(claims_on, banned_until=0, reader=READER):
         chain = Chain(claims_on, banned_until, reader)
 
-        def contracts(contract, matching_address, page_entries):
-            built["args"] = (matching_address, page_entries)
+        def contracts(contract, matching_address, page_entries, version):
+            built["args"] = (matching_address, page_entries, version)
             return chain
         monkeypatch.setattr(runner_module, "MatchingContracts", contracts)
         return chain
@@ -100,7 +113,8 @@ def test_claims_off_serves_the_request_as_before(matching_network):
     runner = EthernityCloudRunner("BLOXBERG", "TESTNET")
     assert runner._claims_path(V2, "") is None
     assert chain.reads == ["claimsOn"]
-    assert built["args"] == ("0x" + "01" * 20, None)
+    assert built["args"] == (MATCHING, None, "2.0")
+    assert runner._matching_chain is chain
 
 
 def test_claims_on_serves_the_request_by_claims_on_the_reader_pox_matching_names(matching_network):

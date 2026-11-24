@@ -1,6 +1,6 @@
 """matching (MATCHING-DESIGN.md 3.10, 3.15, 4.4 to 4.6; spec/matching.md
 sections 3 to 9, 13 and 17) on the shared fixtures of
-pox-smart-contract-litvm spec/ at 7611a81, held byte for byte in
+pox-smart-contract-litvm spec/ at 52e36e0, held byte for byte in
 tests/spec/matching/ with their MANIFEST lines, and the runner's ABI entries
 (contract/abi/matchingAbi.py) against that commit's.
 
@@ -28,7 +28,7 @@ from ethernity_cloud_runner_py.runner import EthernityCloudRunner
 
 SPEC = Path(__file__).resolve().parent / "spec" / "matching"
 SOURCE = Path(__file__).resolve().parents[2] / "pox-smart-contract-litvm"
-SOURCE_COMMIT = "7611a81"
+SOURCE_COMMIT = "52e36e0"
 COPIES = ["matching-rank.json", "matching.md", "ranking.json", "result-fields.json"]
 RANKING = json.loads((SPEC / "ranking.json").read_text(encoding="utf-8"))
 RANK = json.loads((SPEC / "matching-rank.json").read_text(encoding="utf-8"))
@@ -70,14 +70,27 @@ def test_the_manifest_lines_are_the_source_commit_s():
     assert {name: source[name] for name in COPIES} == manifest()
 
 
-# Where each group of the runner's ABI entries comes from in the source
-# commit; an artifact holds its ABI under "abi".
+# Where each group of the runner's ABI entries comes from, in the source
+# commit unless another is named; an artifact holds its ABI under "abi".
+# pox_1_2 is the V2 add of a PoX that answers VERSION() "1.2", the entry of
+# 7611a81, before the minimum EPC took bits 32 to 47 of maxGflops.
 ABI_SOURCES = {
     "pox": "abi/EthernityImplementationV2_2_0.json",
+    "pox_1_2": ("7611a81", "abi/EthernityImplementationV2_2_0.json"),
+    "pricing": "abi/IPoxPricing.json",
     "matching": "abi/IPoxMatching.json",
     "reader": "abi/IPoxMatchReader.json",
     "image_registry": "abi/IECImageRegistryV4.json",
     "session_registry": "artifacts/PoxMatchingState.sol/IMatchingSessionRegistry.json",
+}
+# The selectors of the entries whose arguments the EPC commit changed, now
+# and in the 1.2 form (MATCHING-SYNC-PLAN.md 3.9; spec/abi-selectors.json at
+# the spec round's commit).
+SELECTORS = {
+    ("pox", "addDORequestV2"): "0x9f74fcce",
+    ("pox_1_2", "addDORequestV2"): "0x9fdaa26e",
+    ("reader", "bidQuoteFor"): "0xd1d5decb",
+    ("reader", "escrowFor"): "0xdc4e3133",
 }
 
 
@@ -99,10 +112,10 @@ def input_types(entry):
 def test_each_abi_entry_is_the_source_commit_s(group):
     if not (SOURCE / ".git").exists():
         pytest.skip(f"no pox-smart-contract-litvm checkout at {SOURCE}")
-    shown = subprocess.run(["git", "-C", str(SOURCE), "show", f"{SOURCE_COMMIT}:{ABI_SOURCES[group]}"],
-                           capture_output=True)
+    commit, path = ABI_SOURCES[group] if isinstance(ABI_SOURCES[group], tuple) else (SOURCE_COMMIT, ABI_SOURCES[group])
+    shown = subprocess.run(["git", "-C", str(SOURCE), "show", f"{commit}:{path}"], capture_output=True)
     if shown.returncode != 0:
-        pytest.skip(f"{SOURCE} holds no commit {SOURCE_COMMIT}")
+        pytest.skip(f"{SOURCE} holds no commit {commit}")
     source = json.loads(shown.stdout)
     source = source["abi"] if isinstance(source, dict) else source
     for entry in getattr(matchingAbi, group):
@@ -110,6 +123,13 @@ def test_each_abi_entry_is_the_source_commit_s(group):
                  and input_types(e) == input_types(entry)]
         assert len(found) == 1, entry["name"]
         assert bare(found[0]) == bare(entry), entry["name"]
+
+
+@pytest.mark.parametrize("group,name", list(SELECTORS), ids=[f"{g}.{n}" for g, n in SELECTORS])
+def test_the_selector_of_each_changed_entry(group, name):
+    entry = next(e for e in getattr(matchingAbi, group) if e.get("name") == name)
+    signature = f"{name}({','.join(input_types(entry))})"
+    assert "0x" + keccak(text=signature)[:4].hex() == SELECTORS[(group, name)]
 
 
 # ------------------------------------------------------------- helpers
@@ -400,6 +420,34 @@ def test_the_three_fields_are_read(vector):
 def test_the_three_fields_are_not_read(vector):
     assert code_of(vector["result"]) == vector["expected"]["code"]
     assert matching.result_fields(vector["result"]) is None
+
+
+@pytest.mark.parametrize("vector", FIELDS["stored"], ids=[v["name"] for v in FIELDS["stored"]])
+def test_the_stored_result_s_grammar(vector):
+    expected = vector["expected"]
+    read = matching.read_stored(vector["stored"], FIELDS["transaction"]["orderId"])
+    assert read.status == expected["status"]
+    if expected["transaction"]:
+        assert (read.order_id, read.signer) == (expected["orderId"], expected["signer"])
+    else:
+        assert read == matching.StoredRead(expected["status"], None, None, None)
+    assert read.code == (expected["code"] if expected["status"] == matching.STORED_DECODED else None)
+
+
+def test_the_grammar_s_vectors_cover_every_status():
+    assert {v["expected"]["status"] for v in FIELDS["stored"]} == {
+        matching.STORED_DECODED, matching.STORED_NOT_V3, matching.STORED_NO_TRANSACTION, matching.STORED_OTHER_ORDER,
+        matching.STORED_NO_CODE}
+    assert len(FIELDS["stored"]) == 53
+
+
+@pytest.mark.parametrize("vector", FIELDS["accepted"] + FIELDS["refused"],
+                         ids=[v["name"] for v in FIELDS["accepted"] + FIELDS["refused"]])
+def test_the_stored_form_of_each_result_is_decoded_for_its_order(vector):
+    read = matching.read_stored(vector["stored"], FIELDS["transaction"]["orderId"])
+    assert read.status == matching.STORED_DECODED and read.code == vector["expected"]["code"]
+    other = matching.read_stored(vector["stored"], FIELDS["transaction"]["orderId"] + 1)
+    assert other.status == matching.STORED_OTHER_ORDER and other.order_id == FIELDS["transaction"]["orderId"]
 
 
 @pytest.mark.parametrize("vector", FIELDS["accepted"] + FIELDS["refused"],

@@ -97,6 +97,11 @@ class FakeChain:
                        "escrowGflops": 400, "trustedZoneFee": 10, "secureLockFee": 5}
         self.escrow_reads = []
         self.list_reads = 0
+        self.claims_on_set = True
+        self.created_at = NOW - 60
+        self.status = matching.REQUEST_AVAILABLE
+        self.epc_need = 0
+        self.epc_reads = []
 
     # requestInfo advances the chain by one block a read
     def request_info(self, do_request_id):
@@ -104,7 +109,8 @@ class FakeChain:
         if self.block > self.last_block:
             self.runner.running = False
         visible = [c for c in self.claims if c[1] <= self.block]
-        return {"settled": True, "ranked": True, "round": self.round, "roundStamp": self.stamp,
+        return {"settled": True, "claims": self.claims_on_set, "createdAt": self.created_at,
+                "ranked": True, "round": self.round, "roundStamp": self.stamp,
                 "seed": bytes.fromhex(CASE["expected"]["seed"][2:]), "roundBlock": self.round_block,
                 "closedStep": max(0, matching.step_at(self.block + 1, self.round_block, PARAMS["stepBlocks"],
                                                       PARAMS["leadBlocks"]) - 1),
@@ -115,6 +121,15 @@ class FakeChain:
     def parameter_set(self, index):
         self.parameter_reads.append(index)
         return dict(PARAMS)
+
+    def request_status(self, do_request_id):
+        return self.status
+
+    def image_epc_units(self, image_cid):
+        self.epc_reads.append(image_cid)
+        if isinstance(self.epc_need, Exception):
+            raise self.epc_need
+        return self.epc_need
 
     def candidate_pages(self, do_request_id, round_number, beyond=False, start=None):
         self.list_reads += 1

@@ -49,11 +49,12 @@ Notes
 
 import logging
 from typing import Optional, Iterable
-from web3.exceptions import ContractLogicError, Web3RPCError
+from web3.exceptions import BadFunctionCallOutput, ContractLogicError, Web3RPCError
 
 __all__ = [
     "raw_rpc_error_message",
     "provider_message",
+    "call_refused",
     "ECWeb3RPCError",
     "FeeCeilingError",
     "RunEndedError",
@@ -86,6 +87,15 @@ def provider_message(e: BaseException) -> str:
     if isinstance(e, ContractLogicError) and e.message:
         return e.message
     return str(e)
+
+def call_refused(e: BaseException) -> bool:
+    """Whether a contract read failed because the contract answered it with
+    a revert (ContractLogicError, web3's reading of a geth revert and of the
+    bloxberg node's "Reverted 0x..." answer) or with no output of the
+    function's type (BadFunctionCallOutput: an address without code, a
+    contract without the function), rather than because the RPC did not
+    answer it."""
+    return isinstance(e, (ContractLogicError, BadFunctionCallOutput))
 
 def raw_rpc_error_code(e: Web3RPCError):
         """

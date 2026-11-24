@@ -102,14 +102,16 @@ UNSAFE_NETWORK_SUFFIX = "_UNSAFE"
 UNSAFE_TRUSTEDZONE_SUFFIX = "-unsafe"
 
 
-# An entry of a PoX 2.0 deployment that carries PoxMatching names it in
-# MATCHING_ADDRESS, and may name the roll entries one paged read of the
-# reader asks for in MATCH_PAGE_ENTRIES (spec/matching.md section 2: 650 on
-# bloxberg, 800 on Polygon and Amoy, 1,450 on LitVM); the PoxMatchReader is
-# the one PoxMatching's reader() names. A request on such a network is
-# served by claims while PoxMatching's claimsOn() answers true
-# (EthernityCloudRunner._claims_path). No entry names one: no PoxMatching is
-# deployed.
+# A network's PoxMatching is the one its PoX's pricing names, read from the
+# chain before each request (pricingAddress(), then the pricing's matching();
+# matchingContract.read_generation), and the form of its V2 add is the one the
+# PoX's VERSION() names; an entry names neither. An entry may name the roll
+# entries one paged read of the reader asks for in MATCH_PAGE_ENTRIES
+# (spec/matching.md section 2: 650 on bloxberg, 800 on Polygon and Amoy, 1,450
+# on LitVM); the PoxMatchReader is the one PoxMatching's reader() names. A
+# request on a network whose pricing names a PoxMatching is served by claims
+# while PoxMatching's claimsOn() answers true
+# (EthernityCloudRunner._claims_path).
 class ECNetwork:
     class BLOXBERG:
 

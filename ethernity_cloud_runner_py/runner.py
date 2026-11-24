@@ -22,8 +22,10 @@ from .contract.abi.ECLDAbi import contract as ECLDAbi
 from .contract.operation.imageRegistryContract import ImageRegistryContract
 from .contract.operation.protocolContract import protocolContract
 from .contract.operation.esrContract import ESRContract
-from .contract.operation.matchingContract import MatchingContracts
-from .claims import ClaimsPath, claims_settings, pinned_ban, settle_pending
+from .contract.operation.matchingContract import (NO_GENERATION, V2_ADD_ABI, MatchingContracts, PoxGeneration,
+                                                  read_generation)
+from .claims import ClaimsPath, TermedRequest, claims_settings, pinned_ban, settle_pending, v2_settings
+from . import matching
 from .matching import LocalList
 from .rpc import read_again, rpc_answers
 from .state_cache import StateCache, parse_result_envelope
@@ -323,6 +325,14 @@ class EthernityCloudRunner:
         # The request in hand when it is served by claims (claims.ClaimsPath),
         # chosen before each add (_claims_path); None on every other path.
         self._claims: Optional[ClaimsPath] = None
+        # The request in hand when it is added with V2 terms and not served by
+        # claims (claims.TermedRequest, _termed_request); None otherwise.
+        self._termed: Optional[TermedRequest] = None
+        # The PoX's generation the request in hand read (_claims_path), None
+        # before a request reads it; the network's MatchingContracts where
+        # its pricing names a PoxMatching, None otherwise.
+        self._generation: Optional[PoxGeneration] = None
+        self._matching_chain: Optional[MatchingContracts] = None
         # What the claims path told the client during the last run or
         # session submission, in order.
         self.matching_notices: List[str] = []
@@ -510,6 +520,8 @@ class EthernityCloudRunner:
             if self._run is run:
                 self._run = None
                 self._claims = None
+                self._termed = None
+                self._generation = None
             del self._calling.run
             run.ended.set()
     def _hold_session(self, run: _Run, session: Any) -> None:
@@ -664,11 +676,16 @@ class EthernityCloudRunner:
         is not mined or reverts. A request served by claims makes the reads
         before its add (ClaimsPath.check_before_add) and then reads its V2
         escrow (escrowFor), checks the balance against it and approves it, in
-        wei (ClaimsPath.check_escrow)."""
+        wei (ClaimsPath.check_escrow). A request added with V2 terms and not
+        served by claims states its image's minimum EPC and approves its
+        escrow_wei (TermedRequest.check_escrow)."""
         if self._claims is not None:
             template = self._claims.template_name()
             self._claims.check_before_add(self.enclave_image_ipfs_hash, template)
             self._claims.check_escrow(f"{TRUSTEDZONE_VERSION}:{self.enclave_image_ipfs_hash}:{template}")
+            return
+        if self._termed is not None:
+            self._termed.check_escrow(self.enclave_image_ipfs_hash)
             return
         if not self.escrow_needs_allowance():
             return
@@ -712,8 +729,13 @@ class EthernityCloudRunner:
         (protocolContract.get_balance) is raised as it is, and no faucet is
         drawn on it. A request served by claims is checked against its V2
         escrow once its image is known, by check_allowance
-        (ClaimsPath.check_escrow), and nothing is read here."""
+        (ClaimsPath.check_escrow), and nothing is read here; one added with
+        V2 terms and not served by claims is checked against its escrow_wei,
+        in wei (TermedRequest.check_balance)."""
         if self._claims is not None:
+            return
+        if self._termed is not None:
+            self._termed.check_balance()
             return
         self.logger.info("Checking wallet balance...")
         balance = int(self._read_before_request(self.contract.get_balance))
@@ -960,9 +982,14 @@ class EthernityCloudRunner:
         # therefore written as the empty string, like no address at all.
         node_address = normalize_node_address(node_address)
         node_address = Web3.to_checksum_address(node_address) if node_address else ""
+        metadata = [image_metadata, code_metadata, input_metadata, node_address]
+        if self._claims is not None or self._termed is not None:
+            matching.check_metadata(metadata)
         def send_tx():
             if self._claims is not None:
-                return self._claims.add_request([image_metadata, code_metadata, input_metadata, node_address])
+                return self._claims.add_request(metadata)
+            if self._termed is not None:
+                return self._termed.add_request(metadata)
             return self._sender().add_do_request(image_metadata, code_metadata, input_metadata, node_address, self.resources)
         # A request the fee ceiling refuses is not sent again: the refusal
         # ends the tries and the submission.
@@ -1138,7 +1165,11 @@ class EthernityCloudRunner:
         derives when there is a challenge, else against `signer`. With
         neither, nothing is read and None is returned: a result whose signer
         is not checked is not taken, and its envelope sets neither the ESR
-        wallet of the enclave nor the state cache (_apply_envelope).
+        wallet of the enclave nor the state cache (_apply_envelope). On a
+        network whose PoX names a PoxMatching (_names_pox_matching) the
+        stored result is read by its grammar (matching.read_stored) first,
+        and only one it reads as `decoded` for the order is taken (OD11);
+        elsewhere it is read as before.
 
         On failure this returns None and, when the failure is attributable to
         the node operator (timeout, unusable output, operator-fault task code),
@@ -1252,6 +1283,14 @@ class EthernityCloudRunner:
             return None
         self.logger.info(f"Task {order_id} was successfully processed.")
         order_result = self.retry_operation(lambda: self.contract.get_result_from_order(order_id), max_retries)
+        if self._names_pox_matching():
+            stored = matching.read_stored(order_result, order_id)
+            if stored.status != matching.STORED_DECODED:
+                self._fault = (f"order {order_id}: the stored result is outside the grammar of spec/matching.md 17 "
+                               f"({stored.status}): it carries no enclave transaction for the order")
+                self.logger.error(self._fault)
+                self.logger.error("Tokens will be refunded after validation.")
+                return None
         try:
             parsed_order_result = self.parse_order_result(order_result)
             self.logger.info(f"Checking result hash: {parsed_order_result['result_ipfs_hash']}")
@@ -1429,23 +1468,53 @@ class EthernityCloudRunner:
             self.logger.error(f"Could not look the order of request {self.do_request} up: {e}")
         self.logger.error(f"Request {self.do_request} could not be cancelled: {cancel_error}")
         return False
+    def _choose_path(self, resources: Dict[str, Any], node_address: str) -> None:
+        """The path of the request about to be added, before anything of it
+        is sent: self._claims (_claims_path) when it is served by claims,
+        else self._termed (_termed_request) when it is added with V2 terms;
+        neither for a request without terms. The client's notices of the
+        last run are cleared first."""
+        self.matching_notices = []
+        self._claims = None
+        self._termed = None
+        self._claims = self._claims_path(resources, node_address)
+        if self._claims is None:
+            self._termed = self._termed_request(resources)
+
+    def _read_generation(self) -> PoxGeneration:
+        """The PoxGeneration of the network's PoX (read_generation: its
+        VERSION() and the PoxMatching its pricing names), read as the reads
+        before a request are (_read_before_request); NO_GENERATION, with
+        nothing read, where the protocol is the token (escrow_needs_allowance:
+        the bloxberg mainnet PoX and its TESTNET_POX10 copy, which take no V2
+        request)."""
+        if not self.escrow_needs_allowance():
+            return NO_GENERATION
+        return self._read_before_request(lambda: read_generation(self._sender()))
+
     def _claims_path(self, resources: Dict[str, Any], node_address: str) -> Optional[ClaimsPath]:
         """The claims path of the request about to be added (section 8;
-        roll-out step 3). On a network whose entry names PoxMatching
-        (MATCHING_ADDRESS) a request pinned to a banned node is refused with
+        roll-out step 3; OD18). The PoX's generation is read first
+        (_read_generation) and kept in self._generation; where its pricing
+        names a PoxMatching, self._matching_chain holds the network's
+        MatchingContracts, a request pinned to a banned node is refused with
         ValueError (D33, 8.11), and while claimsOn() answers true the request
         is served by claims: the task settings are read
         (claims.claims_settings), the PoxMatchReader PoxMatching names
         (reader()) is bound, refused with ValueError while it names none, and
         the work earlier requests left (settle_matching) is sent. None on
         every other network and while claims are off: the request is served
-        as before, and on a network whose entry names no PoxMatching nothing
-        of it is read."""
+        as before (_termed_request decides whether with V2 terms), and on a
+        network whose pricing names no PoxMatching nothing of it is read."""
         cfg = self.network_config
-        address = getattr(cfg, "MATCHING_ADDRESS", None)
-        if not address:
+        self._matching_chain = None
+        self._generation = self._read_generation()
+        address = self._generation.matching_address
+        if int(address, 16) == 0:
             return None
-        chain = MatchingContracts(self._sender(), address, getattr(cfg, "MATCH_PAGE_ENTRIES", None))
+        chain = MatchingContracts(self._sender(), address, getattr(cfg, "MATCH_PAGE_ENTRIES", None),
+                                  self._generation.version)
+        self._matching_chain = chain
         node = normalize_node_address(node_address)
         if node:
             ban = pinned_ban(chain, node)
@@ -1458,15 +1527,50 @@ class EthernityCloudRunner:
         path = ClaimsPath(self, chain, settings)
         settle_pending(self)
         return path
+
+    def _termed_request(self, resources: Dict[str, Any]) -> Optional[TermedRequest]:
+        """How a request not served by claims is added (8.4; OD26): with V2
+        terms (claims.TermedRequest) when the task settings give them with an
+        escrow_wei, in the form the PoX's VERSION() names (V2_ADD_ABI);
+        without terms (_addDORequest) when they give none, and when they
+        give no escrow_wei, which is told to the client. Raises ValueError,
+        before anything is sent, for V2 terms with an escrow_wei on a PoX
+        that takes no V2 request, and as claims.v2_settings does."""
+        settings = v2_settings(resources)
+        if settings is None:
+            return None
+        if settings.escrow_wei is None:
+            self._matching_notice("The task settings give V2 terms without escrow_wei and the request is not "
+                                  "served by claims: it is added without terms, at its taskPrice.")
+            return None
+        generation = self._generation or NO_GENERATION
+        if generation.version not in V2_ADD_ABI:
+            raise ValueError(f"The PoX of {self.network_name} {self.network_type} answers VERSION() "
+                             f"{generation.version!r} and takes no addDORequestV2: leave the V2 task settings out "
+                             "for a request without terms.")
+        return TermedRequest(self, generation.version, self._matching_chain, settings)
+
+    def _names_pox_matching(self) -> bool:
+        """Whether the network's PoX names a PoxMatching (its pricing's
+        matching() is not zero): the generation the run's request read, else
+        read now (an order attached to with attach_task)."""
+        generation = self._generation if self._generation is not None else self._read_generation()
+        return int(generation.matching_address, 16) != 0
     def _await_claim_approval(self) -> bool:
         """The wait of a request served by claims and pinned to no node: the
         runner approves a claim itself (ClaimsPath.await_approval) within
         the order wait, and the order that approval placed, PROCESSING at
-        once, is the run's; a request with no approval by then is cancelled
-        (cancel_unclaimed_request)."""
+        once, is the run's; a request with no approval by then, or that
+        takes no claims any more, is cancelled (cancel_unclaimed_request). A
+        request whose parameter set has claims off (ClaimsPath.claims_off) is
+        served without claims from then on: the claims path is dropped and
+        the node's order is waited for and approved as before."""
         wait_seconds = getattr(self, "order_wait_seconds", DEFAULT_ORDER_WAIT_SECONDS)
         self.logger.info(f"Request {self.do_request} is served by claims: approving a claim...")
         order_id = self._claims.await_approval(self.do_request, wait_seconds)
+        if order_id is None and self._claims.claims_off and self.is_running():
+            self._claims = None
+            return self.check_order_for_task()
         if order_id is None:
             return self.is_running() and self.cancel_unclaimed_request(wait_seconds)
         self.order_id = order_id
@@ -2022,6 +2126,8 @@ class EthernityCloudRunner:
                 self._run = None
                 self.running = False
                 self._claims = None
+                self._termed = None
+                self._generation = None
             del self._calling.run
             run.ended.set()
 
@@ -2117,9 +2223,7 @@ class EthernityCloudRunner:
                 break
             if event == ECEvent.INIT:
                 self.progress = ECEvent.INIT
-                self.matching_notices = []
-                self._claims = None
-                self._claims = self._claims_path(resources, node_address)
+                self._choose_path(resources, node_address)
                 self._check_balance()
                 self.verify_protocol()
                 self.logger.info("Verifying node address...")
@@ -2222,9 +2326,7 @@ class EthernityCloudRunner:
                 # published.
                 self.running = True
                 try:
-                    self.matching_notices = []
-                    self._claims = None
-                    self._claims = self._claims_path(resources, node_address)
+                    self._choose_path(resources, node_address)
                     self._check_balance()
                     self.verify_protocol()
                     self.logger.info("Verifying node address...")

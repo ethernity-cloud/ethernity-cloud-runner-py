@@ -85,7 +85,8 @@ def _gwei(wei: int) -> str:
 
 class protocolContract:
 
-    # The _addDORequest arguments, with the values a resources dict leaves out.
+    # The _addDORequest arguments, with the values a resources dict leaves out
+    # or gives as 0 (runner-js requestTerms reads them the same way).
     REQUEST_DEFAULTS = {
         "cpu": 1,
         "memory": 1,
@@ -99,8 +100,9 @@ class protocolContract:
     @classmethod
     def request_terms(cls, resources: dict) -> dict:
         """The _addDORequest arguments of `resources`: its values for the keys
-        of REQUEST_DEFAULTS, the defaults for the keys it leaves out."""
-        return {key: resources.get(key, default) for key, default in cls.REQUEST_DEFAULTS.items()}
+        of REQUEST_DEFAULTS, the defaults for the keys it leaves out or gives
+        as 0 or None (the PoX refuses a resource of 0)."""
+        return {key: resources.get(key) or default for key, default in cls.REQUEST_DEFAULTS.items()}
 
     @classmethod
     def request_escrow(cls, resources: dict) -> int:

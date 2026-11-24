@@ -1,14 +1,20 @@
-# The ABI entries the runner calls on a PoX 2.0 deployment with matching, each
-# equal to its entry in pox-smart-contract-litvm at 7611a81:
+# The ABI entries the runner calls on a PoX 2.0 deployment, each equal to its
+# entry in pox-smart-contract-litvm at 52e36e0:
 # abi/EthernityImplementationV2_2_0.json (pox, every selector of the
 # implementation and its two extensions answering at the PoX's address),
-# abi/IPoxMatching.json (matching), abi/IPoxMatchReader.json (reader),
-# abi/IECImageRegistryV4.json (image_registry) and PoxMatchingState.sol's
-# IMatchingSessionRegistry (session_registry), the SessionRegistry's views
-# PoxMatching reads at a request's add.
+# abi/IPoxPricing.json (pricing), abi/IPoxMatching.json (matching),
+# abi/IPoxMatchReader.json (reader), abi/IECImageRegistryV4.json
+# (image_registry) and PoxMatchingState.sol's IMatchingSessionRegistry
+# (session_registry), the SessionRegistry's views PoxMatching reads at a
+# request's add. pox_1_2 is the V2 add of a PoX that answers VERSION() "1.2",
+# maxGflops uint32: the entry of abi/EthernityImplementationV2_2_0.json at
+# 7611a81.
 
 pox = [
-    {"type":"function","name":"addDORequestV2","inputs":[{"name":"cpu","type":"uint8"},{"name":"mem","type":"uint8"},{"name":"storageGB","type":"uint8"},{"name":"bw","type":"uint8"},{"name":"duration","type":"uint16"},{"name":"instances","type":"uint8"},{"name":"maxPricePerCuHourWei","type":"uint256"},{"name":"maxGflops","type":"uint32"},{"name":"relaysPerHour","type":"uint16"},{"name":"gasLevel","type":"uint256"},{"name":"metadata1","type":"string"},{"name":"metadata2","type":"string"},{"name":"metadata3","type":"string"},{"name":"metadata4","type":"string"}],"outputs":[{"name":"requestId","type":"uint256"}],"stateMutability":"nonpayable"},
+    {"type":"function","name":"addDORequestV2","inputs":[{"name":"cpu","type":"uint8"},{"name":"mem","type":"uint8"},{"name":"storageGB","type":"uint8"},{"name":"bw","type":"uint8"},{"name":"duration","type":"uint16"},{"name":"instances","type":"uint8"},{"name":"maxPricePerCuHourWei","type":"uint256"},{"name":"maxGflops","type":"uint48"},{"name":"relaysPerHour","type":"uint16"},{"name":"gasLevel","type":"uint256"},{"name":"metadata1","type":"string"},{"name":"metadata2","type":"string"},{"name":"metadata3","type":"string"},{"name":"metadata4","type":"string"}],"outputs":[{"name":"requestId","type":"uint256"}],"stateMutability":"nonpayable"},
+    {"type":"function","name":"VERSION","inputs":[],"outputs":[{"name":"","type":"string"}],"stateMutability":"view"},
+    {"type":"function","name":"pricingAddress","inputs":[],"outputs":[{"name":"","type":"address"}],"stateMutability":"view"},
+    {"type":"function","name":"_getDORequest","inputs":[{"name":"_requestListItem","type":"uint256"}],"outputs":[{"name":"downer","type":"address"},{"name":"cpuRequest","type":"uint8"},{"name":"memoryRequest","type":"uint8"},{"name":"storageRequest","type":"uint8"},{"name":"bandwidthRequest","type":"uint8"},{"name":"duration","type":"uint16"},{"name":"maxPrice","type":"uint8"},{"name":"status","type":"uint256"}],"stateMutability":"view"},
     {"type":"function","name":"_placeOrder","inputs":[{"name":"_doRequestItem","type":"uint256"},{"name":"_dpRequestItem","type":"uint256"}],"outputs":[{"name":"_orderNumber","type":"uint256"}],"stateMutability":"nonpayable"},
     {"type":"function","name":"increaseBid","inputs":[{"name":"doRequestId","type":"uint256"},{"name":"maxPricePerCuHourWei","type":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},
     {"type":"function","name":"expireUnstarted","inputs":[{"name":"orderId","type":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},
@@ -17,6 +23,14 @@ pox = [
     {"type":"function","name":"orderStartedAt","inputs":[{"name":"orderId","type":"uint256"}],"outputs":[{"name":"","type":"uint64"}],"stateMutability":"view"},
     {"type":"function","name":"orderResultAt","inputs":[{"name":"orderId","type":"uint256"}],"outputs":[{"name":"at","type":"uint64"},{"name":"blockNumber","type":"uint64"}],"stateMutability":"view"},
     {"type":"event","name":"_orderPlacedEV","inputs":[{"name":"_orderNumber","type":"uint256","indexed":False},{"name":"_doRequestId","type":"uint256","indexed":False},{"name":"_dpRequestId","type":"uint256","indexed":False}],"anonymous":False},
+]
+
+pox_1_2 = [
+    {"type":"function","name":"addDORequestV2","inputs":[{"name":"cpu","type":"uint8"},{"name":"mem","type":"uint8"},{"name":"storageGB","type":"uint8"},{"name":"bw","type":"uint8"},{"name":"duration","type":"uint16"},{"name":"instances","type":"uint8"},{"name":"maxPricePerCuHourWei","type":"uint256"},{"name":"maxGflops","type":"uint32"},{"name":"relaysPerHour","type":"uint16"},{"name":"gasLevel","type":"uint256"},{"name":"metadata1","type":"string"},{"name":"metadata2","type":"string"},{"name":"metadata3","type":"string"},{"name":"metadata4","type":"string"}],"outputs":[{"name":"requestId","type":"uint256"}],"stateMutability":"nonpayable"},
+]
+
+pricing = [
+    {"type":"function","name":"matching","inputs":[],"outputs":[{"name":"","type":"address"}],"stateMutability":"view"},
 ]
 
 matching = [
@@ -39,12 +53,12 @@ matching = [
 
 reader = [
     {"type":"function","name":"requestInfo","inputs":[{"name":"doRequestId","type":"uint256"}],"outputs":[{"name":"claims","type":"bool"},{"name":"ranked","type":"bool"},{"name":"imageMarked","type":"bool"},{"name":"settled","type":"bool"},{"name":"isFinal","type":"bool"},{"name":"round","type":"uint8"},{"name":"roundStamp","type":"bytes32"},{"name":"seed","type":"bytes32"},{"name":"roundBlock","type":"uint48"},{"name":"roundTime","type":"uint32"},{"name":"createdAt","type":"uint32"},{"name":"rollSlot","type":"uint32"},{"name":"bidWei","type":"uint256"},{"name":"baseWei","type":"uint256"},{"name":"stepNow","type":"uint32"},{"name":"closedStep","type":"uint32"},{"name":"lastOpenStep","type":"uint8"},{"name":"filledStep","type":"uint8"},{"name":"claimCount","type":"uint16"},{"name":"claimedInRound","type":"bool"},{"name":"parameterSet","type":"uint16"}],"stateMutability":"view"},
-    {"type":"function","name":"escrowFor","inputs":[{"name":"hoursWanted","type":"uint16"},{"name":"maxPricePerCuHourWei","type":"uint256"},{"name":"maxGflops","type":"uint32"},{"name":"relaysPerHour","type":"uint16"},{"name":"gasLevel","type":"uint256"},{"name":"metadata1","type":"string"}],"outputs":[{"name":"escrowWei","type":"uint256"},{"name":"workWei","type":"uint256"},{"name":"chainFeeWei","type":"uint256"},{"name":"escrowGflops","type":"uint16"},{"name":"trustedZoneFee","type":"uint8"},{"name":"secureLockFee","type":"uint8"}],"stateMutability":"view"},
+    {"type":"function","name":"escrowFor","inputs":[{"name":"hoursWanted","type":"uint16"},{"name":"maxPricePerCuHourWei","type":"uint256"},{"name":"maxGflops","type":"uint48"},{"name":"relaysPerHour","type":"uint16"},{"name":"gasLevel","type":"uint256"},{"name":"metadata1","type":"string"}],"outputs":[{"name":"escrowWei","type":"uint256"},{"name":"workWei","type":"uint256"},{"name":"chainFeeWei","type":"uint256"},{"name":"escrowGflops","type":"uint16"},{"name":"trustedZoneFee","type":"uint8"},{"name":"secureLockFee","type":"uint8"}],"stateMutability":"view"},
     {"type":"function","name":"canClaimOf","inputs":[{"name":"doRequestId","type":"uint256"},{"name":"nodes","type":"address[]"}],"outputs":[{"name":"roundStamp","type":"bytes32"},{"name":"canClaim","type":"bool[]"}],"stateMutability":"view"},
     {"type":"function","name":"candidates","inputs":[{"name":"doRequestId","type":"uint256"},{"name":"round","type":"uint8"},{"name":"fromBand","type":"uint8"},{"name":"from","type":"uint256"},{"name":"count","type":"uint256"},{"name":"h","type":"bytes32"},{"name":"matchFound","type":"uint8"},{"name":"beyond","type":"bool"}],"outputs":[{"name":"roundStamp","type":"bytes32"},{"name":"eligible","type":"uint256[]"},{"name":"tips","type":"uint256[]"},{"name":"places","type":"uint40[]"},{"name":"hOut","type":"bytes32"},{"name":"matchFoundOut","type":"uint8"},{"name":"nextBand","type":"uint8"},{"name":"nextFrom","type":"uint256"},{"name":"done","type":"bool"},{"name":"settled","type":"bool"}],"stateMutability":"view"},
     {"type":"function","name":"claimersOf","inputs":[{"name":"doRequestId","type":"uint256"},{"name":"from","type":"uint256"},{"name":"count","type":"uint256"}],"outputs":[{"name":"nodes","type":"address[]"},{"name":"claims","type":"uint256[]"},{"name":"approvable","type":"bool[]"}],"stateMutability":"view"},
     {"type":"function","name":"bidQuote","inputs":[{"name":"doRequestId","type":"uint256"},{"name":"minScore","type":"uint16"},{"name":"fromBand","type":"uint8"},{"name":"from","type":"uint256"},{"name":"count","type":"uint256"},{"name":"carry","type":"uint256"}],"outputs":[{"name":"roundStamp","type":"bytes32"},{"name":"counted","type":"uint32"},{"name":"canClaimNow","type":"uint32"},{"name":"minBidWei","type":"uint256"},{"name":"baseNowWei","type":"uint256"},{"name":"bidWei","type":"uint256"},{"name":"addedEscrowWei","type":"uint256"},{"name":"nextBand","type":"uint8"},{"name":"nextFrom","type":"uint256"},{"name":"done","type":"bool"}],"stateMutability":"view"},
-    {"type":"function","name":"bidQuoteFor","inputs":[{"name":"cpu","type":"uint8"},{"name":"memGB","type":"uint8"},{"name":"storageGB","type":"uint8"},{"name":"bandwidth","type":"uint8"},{"name":"hoursWanted","type":"uint16"},{"name":"needGflops","type":"uint16"},{"name":"ceilGflops","type":"uint16"},{"name":"templateHash","type":"bytes32"},{"name":"minScore","type":"uint16"},{"name":"fromBand","type":"uint8"},{"name":"from","type":"uint256"},{"name":"count","type":"uint256"},{"name":"carry","type":"uint256"}],"outputs":[{"name":"counted","type":"uint32"},{"name":"minBidWei","type":"uint256"},{"name":"baseNowWei","type":"uint256"},{"name":"nextBand","type":"uint8"},{"name":"nextFrom","type":"uint256"},{"name":"done","type":"bool"}],"stateMutability":"view"},
+    {"type":"function","name":"bidQuoteFor","inputs":[{"name":"cpu","type":"uint8"},{"name":"memGB","type":"uint8"},{"name":"storageGB","type":"uint8"},{"name":"bandwidth","type":"uint8"},{"name":"hoursWanted","type":"uint16"},{"name":"needGflops","type":"uint16"},{"name":"ceilGflops","type":"uint16"},{"name":"epcUnits","type":"uint16"},{"name":"templateHash","type":"bytes32"},{"name":"minScore","type":"uint16"},{"name":"fromBand","type":"uint8"},{"name":"from","type":"uint256"},{"name":"count","type":"uint256"},{"name":"carry","type":"uint256"}],"outputs":[{"name":"counted","type":"uint32"},{"name":"minBidWei","type":"uint256"},{"name":"baseNowWei","type":"uint256"},{"name":"nextBand","type":"uint8"},{"name":"nextFrom","type":"uint256"},{"name":"done","type":"bool"}],"stateMutability":"view"},
     {"type":"function","name":"tierScore","inputs":[{"name":"doRequestId","type":"uint256"},{"name":"fromBand","type":"uint8"},{"name":"from","type":"uint256"},{"name":"count","type":"uint256"},{"name":"carry","type":"uint256[7]"}],"outputs":[{"name":"score","type":"uint16"},{"name":"carryOut","type":"uint256[7]"},{"name":"nextBand","type":"uint8"},{"name":"nextFrom","type":"uint256"},{"name":"done","type":"bool"}],"stateMutability":"view"},
 ]
 
@@ -52,6 +66,8 @@ image_registry = [
     {"type":"function","name":"imageRecords","inputs":[{"name":"ipfsHash","type":"string"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"kind","type":"uint8"},{"name":"release","type":"uint32"},{"name":"networkOn","type":"bool"},{"name":"enclaveMemoryGiB","type":"uint8"},{"name":"minScoreSet","type":"bool"},{"name":"minScore","type":"uint16"},{"name":"bundleCiphertextSha256","type":"bytes32"},{"name":"bundlePlaintextSha256","type":"bytes32"}]}],"stateMutability":"view"},
     {"type":"function","name":"defaultRelease","inputs":[{"name":"index","type":"uint256"}],"outputs":[{"name":"","type":"tuple","components":[{"name":"language","type":"uint8"},{"name":"trustedZoneImage","type":"string"},{"name":"trustedZoneMrenclave","type":"bytes32"},{"name":"securelockMrenclave","type":"bytes32"},{"name":"trustedZoneTemplate","type":"bytes32"},{"name":"securelockTemplate","type":"bytes32"},{"name":"executorTemplate","type":"bytes32"},{"name":"probeTemplate","type":"bytes32"}]}],"stateMutability":"view"},
     {"type":"function","name":"sessionRegistry","inputs":[],"outputs":[{"name":"","type":"address"}],"stateMutability":"view"},
+    {"type":"function","name":"imageEpcUnits","inputs":[{"name":"ipfsHash","type":"string"}],"outputs":[{"name":"","type":"uint16"}],"stateMutability":"view"},
+    {"type":"function","name":"getImageSession","inputs":[{"name":"ipfsHash","type":"string"}],"outputs":[{"name":"","type":"string"}],"stateMutability":"view"},
 ]
 
 session_registry = [

@@ -17,11 +17,17 @@ request through them.
   the runner's local list (3.19, D120).
 - The three result fields after v5 and the report of an end by class (3.19;
   spec/matching.md 17; section 8 items 15 and 16).
+- The stored result's grammar (spec/matching.md 17, "The stored result").
 - The template's record and the envelope its mark chooses (3.19; 8.13).
-- An image's records in ECImageRegistryV4 (8.12; D126, D138, D150)."""
+- An image's records in ECImageRegistryV4 (8.12; D126, D138, D150) and the
+  request's memory and EPC minimum they set (D150, D200).
+- The bounds of a V2 request's terms (spec/matching.md section 4)."""
+import re
 from collections import namedtuple
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Dict, Iterable, List, Optional
 
+from eth_keys import keys
 from eth_utils import keccak
 
 SCORE_MAX = 50_000
@@ -61,6 +67,27 @@ DEFAULT_CLASS = 1
 RESULT_FIELDS_MIN = 18
 RESULT_FIELD_BOUNDS = ((15, UINT64_MAX), (16, UINT64_MAX), (17, 1))
 DIGITS = frozenset("0123456789")
+# The bounds the PoX 2.0 sets on a V2 request's terms (spec/matching.md
+# section 4; Ethernity20Extension.sol _addTermedDORequest and
+# _insertDORequest, Ethernity20Extension2.sol increaseBid, PoxPricing's
+# chainFeeWei): a bid of 1 to MAX_PRICE_WEI wei per CU-hour at the add and at
+# a raise ("price invalid"); a gasLevel of MIN_GAS_LEVEL ("gasLevel below
+# average") to MAX_GAS_LEVEL ("gasLevel invalid"); the required GFLOPS at
+# most a stated ceiling ("maxGflops invalid"); one instance ("instance
+# invalid"); each of the four metadata strings at most MAX_METADATA_BYTES
+# bytes ("metadata1 too long", "metadata too long").
+MAX_PRICE_WEI = 2**128 - 1
+MIN_GAS_LEVEL = 10**18
+MAX_GAS_LEVEL = 2**128 - 1
+MAX_METADATA_BYTES = 2048
+# An EPC figure's unit (spec/matching.md section 16, item 33): 64 MiB; a
+# figure is 0 to UINT16_MAX units.
+EPC_UNIT_MIB = 64
+# The status the storage holds for a DO request (Models.RequestStatus).
+REQUEST_AVAILABLE = 0
+# The text of a score in points: decimal digits with an optional sign, point
+# and exponent, as score_units and runner-js's scoreUnits read it.
+DECIMAL_TEXT = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 
 ZERO_HASH = b"\x00" * 32
 
@@ -108,14 +135,21 @@ def image_key(image_cid: str) -> bytes:
     return keccak(image_cid.encode("utf-8"))[:31]
 
 
-def max_gflops_arg(required_gflops: int, ceiling_gflops: int) -> int:
-    """The V2 add's maxGflops argument of a PoX with matching: the required
-    GFLOPS in bits 16 to 31 and the ceiling in bits 0 to 15 (spec/matching.md
-    section 3); 0 states none of either. One CU is 100 GFLOPS."""
-    for name, value in (("required", required_gflops), ("ceiling", ceiling_gflops)):
+def max_gflops_arg(required_gflops: int, ceiling_gflops: int, epc_units: int = 0) -> int:
+    """The V2 add's maxGflops argument (spec/matching.md section 3): the
+    minimum EPC in units of 64 MiB in bits 32 to 47, the required GFLOPS in
+    bits 16 to 31 and the ceiling in bits 0 to 15; 0 states none of each.
+    One CU is 100 GFLOPS. Raises ValueError for a value outside 0 to 65,535
+    and for a required GFLOPS above a stated ceiling, which the PoX refuses
+    ("maxGflops invalid")."""
+    for name, value in (("required GFLOPS", required_gflops), ("GFLOPS ceiling", ceiling_gflops),
+                        ("minimum EPC in units of 64 MiB", epc_units)):
         if not 0 <= int(value) <= UINT16_MAX:
-            raise ValueError(f"the {name} GFLOPS of a request must be 0 to {UINT16_MAX}, not {value}")
-    return (int(required_gflops) << 16) | int(ceiling_gflops)
+            raise ValueError(f"the {name} of a request must be 0 to {UINT16_MAX}, not {value}")
+    if int(ceiling_gflops) != 0 and int(required_gflops) > int(ceiling_gflops):
+        raise ValueError(f"the required GFLOPS of a request, {required_gflops}, is above its GFLOPS ceiling of "
+                         f"{ceiling_gflops}: the PoX refuses such a request (maxGflops invalid).")
+    return (int(epc_units) << 32) | (int(required_gflops) << 16) | int(ceiling_gflops)
 
 
 def need_of(max_gflops: int) -> tuple:
@@ -129,13 +163,63 @@ def need_of(max_gflops: int) -> tuple:
     return need, ceiling
 
 
+def epc_of(max_gflops: int) -> int:
+    """The minimum EPC, in units of 64 MiB, of a maxGflops argument: its bits
+    32 to 47."""
+    return (int(max_gflops) >> 32) & UINT16_MAX
+
+
+def epc_units_of_mib(mib: int) -> int:
+    """An EPC figure in MiB in units of 64 MiB, rounded up (D191, D200; OD23):
+    0 for 0. Raises ValueError for a figure above 65,535 units."""
+    units = -(-int(mib) // EPC_UNIT_MIB)
+    if units > UINT16_MAX:
+        raise ValueError(f"an EPC figure is at most {UINT16_MAX * EPC_UNIT_MIB} MiB ({UINT16_MAX} units of "
+                         f"{EPC_UNIT_MIB} MiB), not {mib}")
+    return units
+
+
+def minimum_epc(image_units: int, client_units: int) -> int:
+    """The minimum EPC a runner states on a request it adds (spec/matching.md
+    section 16, item 41; D200): the largest of one unit, the image's recorded
+    need (imageEpcUnits) and the client's figure, in units of 64 MiB."""
+    return max(1, int(image_units), int(client_units))
+
+
+def memory_need(client_gb: int, records: Optional["ImageRecords"]) -> int:
+    """The memory a request needs (8.12; D150): the larger of the client's
+    memory and the enclave memory the image's records hold, in GB; the
+    client's alone without records."""
+    if records is None:
+        return int(client_gb)
+    return max(int(client_gb), int(records.enclave_memory_gib))
+
+
+def check_metadata(metadata: List[str]) -> None:
+    """Raises ValueError when one of a V2 add's four metadata strings is
+    longer than MAX_METADATA_BYTES bytes of UTF-8, which the PoX refuses."""
+    for i, text in enumerate(metadata, start=1):
+        size = len(str(text).encode("utf-8", "surrogatepass"))
+        if size > MAX_METADATA_BYTES:
+            raise ValueError(f"metadata{i} of the request is {size} bytes, above the {MAX_METADATA_BYTES} bytes the "
+                             "PoX takes: the request is not sent.")
+
+
 def score_units(score) -> int:
     """A score given as points (0.50, 1, 4.9) in units of 0.0001, the unit
-    nodeStanding answers in; 0 to 5.00."""
-    units = round(float(score) * SCORE_UNITS_PER_POINT)
+    nodeStanding answers in; 0 to 5.00. The points are read as the decimal
+    text of the value (str(), the shortest text that reads back as a float)
+    and rounded half up to a whole unit, as runner-js reads them."""
+    text = str(score).strip()
+    if isinstance(score, bool) or not DECIMAL_TEXT.fullmatch(text):
+        raise ValueError(f"a minimum node score is 0 to 5.00, not {score!r}")
+    try:
+        units = (Decimal(text) * SCORE_UNITS_PER_POINT).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise ValueError(f"a minimum node score is 0 to 5.00, not {score!r}") from None
     if not 0 <= units <= SCORE_MAX:
-        raise ValueError(f"a minimum node score is 0 to 5.00, not {score}")
-    return units
+        raise ValueError(f"a minimum node score is 0 to 5.00, not {score!r}")
+    return int(units)
 
 
 # ------------------------------------------------------------- the clock
@@ -476,15 +560,29 @@ WAIT = "wait"
 REPORT = "report"
 
 
+def takes_claims(claims: bool, status: int, created_at: int, max_request_age_seconds: int, now: int) -> bool:
+    """Whether a request served by claims takes claims now (spec/matching.md
+    section 9, takesClaims; section 16, item 23): its parameter set has
+    claims on (requestInfo's `claims`), the storage holds it AVAILABLE, and
+    it is at most maxRequestAgeSeconds old at `now`. A request the runner
+    added on the claims path is neither pinned nor reserved, and the
+    approval that fills it books it, so AVAILABLE is also unfilled. The
+    quote of a request that takes no claims answers canClaimNow 0 because no
+    node can claim it, not because its bid is too low: such a request is
+    never raised."""
+    return bool(claims) and int(status) == REQUEST_AVAILABLE and int(now) <= int(created_at) + int(
+        max_request_age_seconds)
+
+
 def decide_raise(quote: Quote, claimers_counted: int, approvable_counted: int, claimed_in_round: bool,
                  step_now: int, max_steps: int, round_number: int, max_rounds: int,
                  ceiling_wei: Optional[int]) -> RaiseDecision:
-    """Whether to raise the bid (3.10 rule 4, 3.15, D92, D23), when the
-    approval rule found no standing claim. `quote` is the reader's quote over
-    the nodes at or above the minimum the runner applies, so claimers below
-    it hold nothing back; `claimers_counted` is the number of claimers at or
-    above that minimum and `approvable_counted` how many of their claims can
-    be approved now.
+    """Whether to raise the bid (3.10 rule 4, 3.15, D92, D23) of a request
+    that takes claims (takes_claims), when the approval rule found no
+    standing claim. `quote` is the reader's quote over the nodes at or above
+    the minimum the runner applies, so claimers below it hold nothing back;
+    `claimers_counted` is the number of claimers at or above that minimum
+    and `approvable_counted` how many of their claims can be approved now.
 
     No claim the runner would approve can come when no counted node can
     claim at the bid in force, or every one that can has claimed and none of
@@ -493,7 +591,8 @@ def decide_raise(quote: Quote, claimers_counted: int, approvable_counted: int, c
     admits a raise while nobody claimed in the round and, once a claim was
     mined in it, from step maxSteps + 1; a request is raised at most
     maxRounds - 1 times. The bid sent is max(minBidWei, bid + 1), sent only
-    within the client's ceiling; with no ceiling the quote is reported."""
+    within the client's ceiling, which the settings hold at most the PoX's
+    bound MAX_PRICE_WEI; with no ceiling the quote is reported."""
     if quote.counted == 0 or quote.min_bid_wei == UINT256_MAX:
         return RaiseDecision(REPORT, None, "no listed node at or above the minimum score covers the request's "
                                            "resources and template: a raise cannot help")
@@ -598,6 +697,161 @@ def result_fields(result: str) -> Optional[ResultFields]:
             return None
         values.append(value)
     return ResultFields(*values)
+
+
+# ------------------------------------------------------------- stored result
+
+# What the stored result's grammar reads for an order (spec/matching.md 17,
+# "The stored result"; result-fields.json `stored`): the status, and for a
+# string that carries a transaction the order it calls for, its signer (lower
+# case) and, `decoded`, the task code.
+StoredRead = namedtuple("StoredRead", "status order_id code signer")
+STORED_DECODED = "decoded"
+STORED_NOT_V3 = "notV3"
+STORED_NO_TRANSACTION = "noTransaction"
+STORED_OTHER_ORDER = "otherOrder"
+STORED_NO_CODE = "noCode"
+# The most bytes of transaction the stored result's hex run holds.
+MAX_STORED_TRANSACTION_BYTES = 4096
+# Half the order of secp256k1: the highest s of a signature that is read.
+SECP256K1_HALF_ORDER = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0
+# The selector of _addResultToOrder(uint256,string).
+ADD_RESULT_SELECTOR = bytes.fromhex("14e9f384")
+HEX_DIGITS = frozenset(b"0123456789abcdef")
+
+
+def _rlp_item(b: bytes, at: int) -> Optional[tuple]:
+    """(is_list, offset, length) of the RLP item of `b` at `at` in canonical
+    form, None otherwise: the short form below 56 bytes, the long form with
+    no leading zero byte from 56 on, and a single byte below 0x80 written as
+    itself, never as a one-byte string."""
+    if at >= len(b):
+        return None
+    c = b[at]
+    if c < 0x80:
+        return False, at, 1
+    is_list = c >= 0xc0
+    short = c - 0xc0 if is_list else c - 0x80
+    if short <= 55:
+        off, length = at + 1, short
+        if not is_list and length == 1 and (off >= len(b) or b[off] < 0x80):
+            return None
+    else:
+        n = short - 55
+        if at + 1 + n > len(b) or b[at + 1] == 0:
+            return None
+        length = int.from_bytes(b[at + 1:at + 1 + n], "big")
+        if length < 56 or length > len(b):
+            return None
+        off = at + 1 + n
+    if off + length > len(b):
+        return None
+    return is_list, off, length
+
+
+def _rlp_list_header(length: int) -> bytes:
+    """The header of an RLP list whose payload is `length` bytes."""
+    if length <= 55:
+        return bytes([0xc0 + length])
+    size = length.to_bytes((length.bit_length() + 7) // 8, "big")
+    return bytes([0xf7 + len(size)]) + size
+
+
+def _rlp_integer(value: int) -> bytes:
+    """The RLP item of the integer `value`: its big-endian bytes without
+    leading zeros."""
+    data = value.to_bytes((value.bit_length() + 7) // 8, "big") if value else b""
+    if len(data) == 1 and data[0] < 0x80:
+        return data
+    return bytes([0x80 + len(data)]) + data
+
+
+def read_stored(stored: str, order_id: int) -> StoredRead:
+    """What the grammar of spec/matching.md 17 reads from the stored result
+    `stored`, its UTF-8 bytes as they stand (nothing trimmed or folded), for
+    order `order_id`:
+
+        stored = "v3:" "0x" 1*( hexdig hexdig ) [ ":" rest ]
+
+    with lower-case hex digits, an even count of them and at most 4,096
+    bytes. A string that does not begin "v3:" is notV3; one outside the
+    grammar, or whose run is not one canonical RLP list of the nine items of
+    a legacy transaction (to empty or 20 bytes; v, r, s of at most 8, 32 and
+    32 bytes; v 27, 28 or 35 and above; s at most half the curve's order)
+    signed over items 0 to 5 (with the chain id, 0 and 0 for EIP-155) and
+    calling exactly _addResultToOrder(orderId < 2^64, a valid UTF-8 string),
+    is noTransaction. Otherwise the transaction's signer and order are read:
+    otherOrder for another order, noCode when field 1 of its result string
+    is not a run of ASCII digits, and decoded with that task code (at most
+    2^64 - 1)."""
+    s = str(stored).encode("utf-8", "surrogatepass")
+    if s[:3] != b"v3:":
+        return StoredRead(STORED_NOT_V3, None, None, None)
+    none = StoredRead(STORED_NO_TRANSACTION, None, None, None)
+    if s[3:5] != b"0x":
+        return none
+    end = s.find(b":", 5)
+    run = s[5:] if end < 0 else s[5:end]
+    if len(run) % 2 or len(run) // 2 > MAX_STORED_TRANSACTION_BYTES or any(c not in HEX_DIGITS for c in run):
+        return none
+    raw = bytes.fromhex(run.decode("ascii"))
+    top = _rlp_item(raw, 0)
+    if top is None or not top[0] or top[1] + top[2] != len(raw):
+        return none
+    items = []
+    at = top[1]
+    while at < len(raw):
+        item = _rlp_item(raw, at)
+        if len(items) == 9 or item is None or item[0]:
+            return none
+        items.append(item)
+        at = item[1] + item[2]
+    if len(items) != 9:
+        return none
+
+    def item_bytes(i: int) -> bytes:
+        return raw[items[i][1]:items[i][1] + items[i][2]]
+
+    if items[3][2] not in (0, 20) or items[6][2] > 8 or items[7][2] > 32 or items[8][2] > 32:
+        return none
+    v = int.from_bytes(item_bytes(6), "big")
+    r = int.from_bytes(item_bytes(7), "big")
+    sig_s = int.from_bytes(item_bytes(8), "big")
+    if v >= 35:
+        recid = (v - 35) % 2
+        suffix = _rlp_integer((v - 35) // 2) + b"\x80\x80"
+    elif v in (27, 28):
+        recid = v - 27
+        suffix = b""
+    else:
+        return none
+    if sig_s > SECP256K1_HALF_ORDER:
+        return none
+    body = raw[top[1]:items[5][1] + items[5][2]] + suffix
+    digest = keccak(_rlp_list_header(len(body)) + body)
+    try:
+        signer = keys.Signature(vrs=(recid, r, sig_s)).recover_public_key_from_msg_hash(digest).to_address().lower()
+    except Exception:
+        return none
+    data = item_bytes(5)
+    if len(data) < 100 or data[:4] != ADD_RESULT_SELECTOR:
+        return none
+    called = int.from_bytes(data[4:36], "big")
+    length = int.from_bytes(data[68:100], "big")
+    if called > UINT64_MAX or int.from_bytes(data[36:68], "big") != 0x40 or length > len(data):
+        return none
+    if len(data) != 100 + -(-length // 32) * 32 or any(data[100 + length:]):
+        return none
+    try:
+        text = data[100:100 + length].decode("utf-8")
+    except UnicodeDecodeError:
+        return none
+    if called != int(order_id):
+        return StoredRead(STORED_OTHER_ORDER, called, None, signer)
+    fields = text.split(":")
+    if len(fields) < 2 or not fields[1] or any(c not in DIGITS for c in fields[1]):
+        return StoredRead(STORED_NO_CODE, called, None, signer)
+    return StoredRead(STORED_DECODED, called, min(int(fields[1]), UINT64_MAX), signer)
 
 
 # The ends section 8 item 16 reports by class, with their names (3.19; SLH 7).
